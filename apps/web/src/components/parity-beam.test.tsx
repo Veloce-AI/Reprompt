@@ -73,4 +73,47 @@ describe("ParityBeam", () => {
     render(<ParityBeam score={96.4} cost="$0.42/1k" />);
     expect(screen.getByText("$0.42/1k")).toBeInTheDocument();
   });
+
+  it("gives each animated instance an independent stagger delay via inline style, not a shared class", () => {
+    const { container } = render(
+      <div>
+        <ParityBeam score={90} animateIn animateDelay={0} />
+        <ParityBeam score={80} animateIn animateDelay={60} />
+      </div>
+    );
+    const tracks = container.querySelectorAll('[data-testid="beam-track"]');
+    expect(tracks).toHaveLength(2);
+    expect(tracks[0].getAttribute("style")).toContain("0ms");
+    expect(tracks[1].getAttribute("style")).toContain("60ms");
+    // No global <style> tag with a shared keyframe class should be injected.
+    expect(container.querySelectorAll("style").length).toBe(0);
+  });
+
+  it("keeps the marker's centering transform intact when animateIn is used", () => {
+    const { container } = render(
+      <ParityBeam score={96.4} animateIn animateDelay={0} />
+    );
+    const marker = container.querySelector(".bg-parity-pass")?.parentElement;
+    expect(marker?.className).toContain("-translate-x-1/2");
+    expect(marker?.className).toContain("-translate-y-1/2");
+    expect(marker?.getAttribute("style") ?? "").not.toContain("scaleX");
+  });
+
+  it("beam track clips to zero width before animating in, and clips to full width when animateIn is off", () => {
+    const animated = render(
+      <ParityBeam score={90} animateIn animateDelay={0} />
+    );
+    const animatedTrack = animated.container.querySelector(
+      '[data-testid="beam-track"]'
+    );
+    expect(animatedTrack?.getAttribute("style")).toContain(
+      "inset(0 100% 0 0)"
+    );
+
+    const staticRender = render(<ParityBeam score={90} />);
+    const staticTrack = staticRender.container.querySelector(
+      '[data-testid="beam-track"]'
+    );
+    expect(staticTrack?.getAttribute("style")).toContain("inset(0 0% 0 0)");
+  });
 });

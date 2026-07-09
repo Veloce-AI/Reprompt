@@ -1,4 +1,5 @@
 import { cn } from "@/lib/utils";
+import { useEffect, useState } from "react";
 
 export type ParityStatus = "pass" | "near" | "fail";
 
@@ -65,6 +66,21 @@ export function ParityBeam({
   const status = parityStatus(score, passThreshold, nearThreshold);
   const markerPosition = Math.max(0, Math.min(100, score));
 
+  // Beam draws in left-to-right via a clip-path transition, not a shared
+  // global keyframe class — each instance's delay lives in its own inline
+  // style so multiple beams on one page (e.g. the /dev/kit stagger demo)
+  // don't fight over a single CSS class definition.
+  const [drawn, setDrawn] = useState(!animateIn);
+
+  useEffect(() => {
+    if (!animateIn) return;
+    setDrawn(false);
+    const raf = requestAnimationFrame(() => {
+      requestAnimationFrame(() => setDrawn(true));
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [animateIn]);
+
   return (
     <div
       role="meter"
@@ -76,8 +92,15 @@ export function ParityBeam({
       style={{ height: "var(--beam-thickness)" }}
     >
       <div
+        data-testid="beam-track"
         className="absolute inset-0 flex"
-        style={{ height: "var(--beam-thickness)" }}
+        style={{
+          height: "var(--beam-thickness)",
+          clipPath: drawn ? "inset(0 0% 0 0)" : "inset(0 100% 0 0)",
+          transition: animateIn
+            ? `clip-path var(--duration-base) var(--ease-out) ${animateDelay}ms`
+            : undefined,
+        }}
       >
         <div
           className="h-full"
@@ -86,9 +109,6 @@ export function ParityBeam({
             backgroundColor: "var(--ink)",
             borderTopLeftRadius: "calc(var(--beam-thickness) / 2)",
             borderBottomLeftRadius: "calc(var(--beam-thickness) / 2)",
-            clipPath: animateIn
-              ? undefined
-              : undefined,
           }}
         />
         <div
@@ -102,10 +122,7 @@ export function ParityBeam({
       </div>
 
       <div
-        className={cn(
-          "absolute top-1/2 -translate-x-1/2 -translate-y-1/2",
-          animateIn && "animate-beam-draw-in"
-        )}
+        className="absolute top-1/2 -translate-x-1/2 -translate-y-1/2"
         style={{
           left: `${markerPosition}%`,
           transition: animateIn
@@ -134,19 +151,6 @@ export function ParityBeam({
         <span className="absolute right-0 top-1/2 -translate-y-1/2 text-12 font-mono tabular-nums text-ink-soft pl-2">
           {cost}
         </span>
-      )}
-
-      {animateIn && (
-        <style>{`
-          @keyframes beam-draw-in {
-            from { opacity: 0; transform: scaleX(0); }
-            to { opacity: 1; transform: scaleX(1); }
-          }
-          .animate-beam-draw-in {
-            animation: beam-draw-in var(--duration-base) var(--ease-out) ${animateDelay}ms both;
-            transform-origin: left center;
-          }
-        `}</style>
       )}
     </div>
   );

@@ -1,0 +1,102 @@
+/* ============================================================
+   Refract design tokens — "Instrument Grade"
+   Source of truth: docs/refract-master-build-prompt.md §3.
+   Everything in the UI derives from these variables.
+   Do not use raw hex or px values in components — token it.
+   ============================================================ */
+
+:root {
+  /* ---- Color: light "laboratory" theme (default) ---- */
+  --paper: #FAFBFD;        /* cool near-white, main bg */
+  --ink: #10182B;          /* deep blue-black, primary text */
+  --ink-soft: #5A6478;     /* secondary text, labels */
+  --line: #E3E8F0;         /* hairline borders, 1px — used instead of shadows */
+  --beam: #4C5FE8;         /* refraction indigo — actions, links, focus rings, active nodes */
+  --beam-soft: #EDEFFE;    /* indigo tint for selected/hover surfaces */
+
+  /* Parity semantics — fixed meanings, never decorative */
+  --parity-pass: #0E9F6E;
+  --parity-near: #D97706;
+  --parity-fail: #DC2626;
+
+  /* Spectrum gradient (violet -> indigo -> teal)
+     Reserved EXCLUSIVELY for the ParityBeam component.
+     Note: spec names the hues but not hex values for violet/teal;
+     indigo is anchored to --beam. Violet/teal below are the only
+     two interpreted values in this file — flag at review. */
+  --spectrum-violet: #8B5CF6;
+  --spectrum-indigo: var(--beam);
+  --spectrum-teal: #14B8A6;
+  --spectrum: linear-gradient(
+    90deg,
+    var(--spectrum-violet) 0%,
+    var(--spectrum-indigo) 50%,
+    var(--spectrum-teal) 100%
+  );
+
+  /* ---- Type ---- */
+  --font-display: "Spectral", Georgia, serif;         /* SemiBold only; page titles, big scorecard
+                                                          numbers, empty-state headlines; max ~2/screen */
+  --font-sans: "IBM Plex Sans", system-ui, sans-serif; /* UI/body, weights 400/500/600 */
+  --font-mono: "IBM Plex Mono", ui-monospace, monospace; /* prompts, diffs, tokens, code;
+                                                            all table numerals via tabular-nums */
+
+  /* Scale: 12 / 13 / 14 (base) / 16 / 20 / 28 / 40 */
+  --text-12: 12px;
+  --text-13: 13px;
+  --text-14: 14px;   /* base */
+  --text-16: 16px;
+  --text-20: 20px;
+  --text-28: 28px;
+  --text-40: 40px;
+
+  --weight-regular: 400;
+  --weight-medium: 500;
+  --weight-semibold: 600;
+
+  /* Dense but breathable: small data type earns generous line-height */
+  --leading-normal: 1.5;
+  --leading-display: 1.2;
+
+  /* ---- Layout: 4px spacing grid ---- */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-10: 40px;
+  --space-12: 48px;
+  --space-16: 64px;
+
+  --radius-card: 6px;
+  --radius-control: 4px;
+
+  --nav-rail-width: 220px;   /* left nav rail: icons + labels */
+  --content-max-width: 1440px;
+
+  /* Depth via hairlines + tints, not drop shadows.
+     One shadow level allowed, for popovers ONLY: */
+  --shadow-popover: 0 4px 16px rgba(16, 24, 43, 0.10);
+
+  /* Keyboard focus: visible 2px --beam ring */
+  --focus-ring: 0 0 0 2px var(--beam);
+
+  /* ---- Motion: 150–200ms ease-out, state changes only ---- */
+  --duration-fast: 150ms;
+  --duration-base: 200ms;
+  --ease-out: cubic-bezier(0, 0, 0.2, 1);
+  --beam-stagger: 60ms;      /* scorecard beams draw-in stagger */
+
+  /* ---- ParityBeam geometry ---- */
+  --beam-thickness: 3px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --duration-fast: 0ms;
+    --duration-base: 0ms;
+    --beam-stagger: 0ms;
+  }
+}

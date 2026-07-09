@@ -3,7 +3,14 @@ import { Drawer as DrawerPrimitive } from "vaul";
 import { cn } from "@/lib/utils";
 import { X } from "lucide-react";
 
-const DrawerRoot = DrawerPrimitive.Root;
+const DrawerRoot = ({
+  direction = "right",
+  ...props
+}: React.ComponentProps<typeof DrawerPrimitive.Root>) => (
+  <DrawerPrimitive.Root direction={direction} {...props} />
+);
+DrawerRoot.displayName = "DrawerRoot";
+
 const DrawerTrigger = DrawerPrimitive.Trigger;
 const DrawerClose = DrawerPrimitive.Close;
 const DrawerPortal = DrawerPrimitive.Portal;

@@ -1,9 +1,9 @@
-import { createRouter, createRoute, createRootRoute } from "@tanstack/react-router";
+import { createRouter, createRoute, createRootRoute, Outlet } from "@tanstack/react-router";
 import Home from "./routes/home";
 import DevKit from "./routes/dev-kit";
 
 const rootRoute = createRootRoute({
-  component: () => <Home />,
+  component: () => <Outlet />,
 });
 
 const homeRoute = createRoute({

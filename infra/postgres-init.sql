@@ -1,0 +1,2 @@
+CREATE DATABASE refract;
+CREATE DATABASE langfuse;

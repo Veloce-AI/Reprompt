@@ -19,6 +19,15 @@ from refract_core.llm.client import (
     UnsupportedFeatureError,
     complete,
 )
+from refract_core.llm.model_card import (
+    FamilyCard,
+    TransformRule,
+    applicable_rules,
+    apply_model_card_transform,
+    get_transform_rules,
+    is_small_variant,
+    resolve_family,
+)
 from refract_core.llm.registry import (
     ModelCapabilities,
     get_model_capabilities,
@@ -41,4 +50,11 @@ __all__ = [
     "get_model_capabilities",
     "supports_json_mode",
     "missing_credential_env_vars",
+    "TransformRule",
+    "FamilyCard",
+    "resolve_family",
+    "is_small_variant",
+    "get_transform_rules",
+    "applicable_rules",
+    "apply_model_card_transform",
 ]

@@ -10,6 +10,7 @@ dependencies = [
     "pydantic>=2.7",
     "sentence-transformers>=3.0",
     "litellm>=1.63",
+    "optuna>=3.6",
 ]
 
 [project.optional-dependencies]

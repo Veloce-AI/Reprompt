@@ -55,9 +55,14 @@ export default function PipelineDetail() {
             Pipeline canvas
           </h1>
         </div>
-        <Link to="/pipelines/$pipelineId/rubrics" params={{ pipelineId }}>
-          <Button variant="secondary">Review rubrics</Button>
-        </Link>
+        <div className="flex gap-3">
+          <Link to="/pipelines/$pipelineId/rubrics" params={{ pipelineId }}>
+            <Button variant="secondary">Review rubrics</Button>
+          </Link>
+          <Link to="/pipelines/$pipelineId/migrations/new" params={{ pipelineId }}>
+            <Button variant="primary">New migration</Button>
+          </Link>
+        </div>
       </div>
 
       {isLoading && (

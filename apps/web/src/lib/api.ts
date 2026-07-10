@@ -111,6 +111,57 @@ export function getPipelineDag(pipelineId: number): Promise<DagResponse> {
   return request<DagResponse>(`/pipelines/${pipelineId}/dag`);
 }
 
+export interface ModelOption {
+  model: string;
+  provider: string | null;
+  input_cost_per_1m: number | null;
+  output_cost_per_1m: number | null;
+  max_input_tokens: number | null;
+  max_output_tokens: number | null;
+  supports_json_mode: boolean;
+  supports_function_calling: boolean;
+  requires_api_key: boolean;
+}
+
+export interface TargetModelConfig {
+  default: string;
+  stages: Record<string, string>;
+}
+
+export interface MigrationCreate {
+  target_model_config: TargetModelConfig;
+  budget: number;
+  parity_threshold: number;
+}
+
+export interface MigrationOut {
+  id: number;
+  pipeline_id: number;
+  target_model_config: TargetModelConfig;
+  budget: number;
+  parity_threshold: number;
+  status: string;
+}
+
+export function listModelOptions(pipelineId: number): Promise<ModelOption[]> {
+  return request<ModelOption[]>(`/pipelines/${pipelineId}/models`);
+}
+
+export function createMigration(
+  pipelineId: number,
+  migration: MigrationCreate
+): Promise<MigrationOut> {
+  return request<MigrationOut>(`/pipelines/${pipelineId}/migrations`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(migration),
+  });
+}
+
+export function listMigrations(pipelineId: number): Promise<MigrationOut[]> {
+  return request<MigrationOut[]>(`/pipelines/${pipelineId}/migrations`);
+}
+
 export async function importPipeline(file: File): Promise<ImportResult> {
   const formData = new FormData();
   formData.append("file", file);

@@ -4,6 +4,7 @@ import DevKit from "./routes/dev-kit";
 import PipelinesImport from "./routes/pipelines-import";
 import PipelineDetail from "./routes/pipeline-detail";
 import RubricReview from "./routes/rubric-review";
+import NewMigration from "./routes/new-migration";
 
 const rootRoute = createRootRoute({
   component: () => <Outlet />,
@@ -39,12 +40,19 @@ const rubricReviewRoute = createRoute({
   component: RubricReview,
 });
 
+const newMigrationRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/pipelines/$pipelineId/migrations/new",
+  component: NewMigration,
+});
+
 const routeTree = rootRoute.addChildren([
   homeRoute,
   devKitRoute,
   pipelinesImportRoute,
   pipelineDetailRoute,
   rubricReviewRoute,
+  newMigrationRoute,
 ]);
 
 const router = createRouter({ routeTree });

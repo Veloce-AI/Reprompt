@@ -7,6 +7,8 @@ dependencies = [
     "fastapi",
     "sqlalchemy>=2.0.51",
     "uvicorn[standard]",
+    "refract-core",
+    "python-multipart",
 ]
 
 [project.optional-dependencies]
@@ -14,6 +16,9 @@ dev = [
     "pytest",
     "httpx",
 ]
+
+[tool.uv.sources]
+refract-core = { path = "../../packages/core", editable = true }
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

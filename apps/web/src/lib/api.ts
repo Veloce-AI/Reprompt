@@ -170,3 +170,80 @@ export async function importPipeline(file: File): Promise<ImportResult> {
     body: formData,
   });
 }
+
+// ---------------------------------------------------------------------------
+// Auth (magic link)
+// ---------------------------------------------------------------------------
+//
+// See apps/api/src/refract_api/auth.py's module docstring for the full
+// design (lazy account creation, dev-mode magic links, the session token
+// mechanism). The session token is stored in localStorage (not a cookie) -
+// simplest option that works across the Vite dev server (:5173) and API
+// (:8000) running on different origins without needing to reason about
+// cross-origin cookie/CORS credential settings for an MVP that doesn't need
+// route guards yet (see login.tsx / auth-verify.tsx).
+
+const SESSION_TOKEN_STORAGE_KEY = "refract_session_token";
+
+export function setSessionToken(token: string): void {
+  localStorage.setItem(SESSION_TOKEN_STORAGE_KEY, token);
+}
+
+export function getSessionToken(): string | null {
+  return localStorage.getItem(SESSION_TOKEN_STORAGE_KEY);
+}
+
+export function clearSessionToken(): void {
+  localStorage.removeItem(SESSION_TOKEN_STORAGE_KEY);
+}
+
+export interface RequestMagicLinkResult {
+  message: string;
+  // Only present when the API's dev-mode-link flag is on (default in this
+  // environment - there's no real email provider configured yet).
+  dev_magic_link: string | null;
+}
+
+export function requestMagicLink(email: string): Promise<RequestMagicLinkResult> {
+  return request<RequestMagicLinkResult>("/auth/request-link", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email }),
+  });
+}
+
+export interface AuthUser {
+  id: number;
+  email: string;
+}
+
+export interface AuthWorkspace {
+  id: number;
+  name: string;
+}
+
+export interface VerifyMagicLinkResult {
+  session_token: string;
+  user: AuthUser;
+  workspace: AuthWorkspace;
+}
+
+export function verifyMagicLink(token: string): Promise<VerifyMagicLinkResult> {
+  return request<VerifyMagicLinkResult>("/auth/verify", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ token }),
+  });
+}
+
+export interface MeResult {
+  user: AuthUser;
+  workspace: AuthWorkspace;
+}
+
+export function getCurrentUser(): Promise<MeResult> {
+  const token = getSessionToken();
+  return request<MeResult>("/auth/me", {
+    headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+  });
+}

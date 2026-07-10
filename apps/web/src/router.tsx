@@ -5,6 +5,8 @@ import PipelinesImport from "./routes/pipelines-import";
 import PipelineDetail from "./routes/pipeline-detail";
 import RubricReview from "./routes/rubric-review";
 import NewMigration from "./routes/new-migration";
+import Login from "./routes/login";
+import AuthVerify from "./routes/auth-verify";
 
 const rootRoute = createRootRoute({
   component: () => <Outlet />,
@@ -46,6 +48,24 @@ const newMigrationRoute = createRoute({
   component: NewMigration,
 });
 
+const loginRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/login",
+  component: Login,
+});
+
+// search-param validation, not a path param: the token travels in the
+// magic-link URL's query string (`/auth/verify?token=...`), same shape the
+// API itself hands back in `dev_magic_link` (see auth.py / api.ts).
+const authVerifyRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/auth/verify",
+  validateSearch: (search: Record<string, unknown>): { token?: string } => ({
+    token: typeof search.token === "string" ? search.token : undefined,
+  }),
+  component: AuthVerify,
+});
+
 const routeTree = rootRoute.addChildren([
   homeRoute,
   devKitRoute,
@@ -53,6 +73,8 @@ const routeTree = rootRoute.addChildren([
   pipelineDetailRoute,
   rubricReviewRoute,
   newMigrationRoute,
+  loginRoute,
+  authVerifyRoute,
 ]);
 
 const router = createRouter({ routeTree });

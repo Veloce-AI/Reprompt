@@ -310,3 +310,78 @@ class Candidate(Base):
 
     migration: Mapped["Migration"] = relationship(back_populates="candidates")
     stage: Mapped["Stage"] = relationship(back_populates="candidates")
+
+
+# ---------------------------------------------------------------------------
+# Auth: User / Workspace / MagicLinkToken (M5)
+# ---------------------------------------------------------------------------
+#
+# Per the master build prompt §4: "email magic-link, single workspace per
+# user. No teams/RBAC yet." Two ways to model "single workspace per user":
+# fold workspace fields directly onto User, or a real Workspace table with a
+# unique owner_user_id (today's 1:1 enforced via UniqueConstraint, tomorrow's
+# teams support just relaxes that constraint to many-workspaces-per-user and
+# adds a membership table). The plan's own Settings screen ("workspace name")
+# and the explicit backlog item "teams/RBAC" (post-MVP, not "never") both
+# point at Workspace being a first-class concept later - so this goes with
+# the real separate table now, to avoid a data migration + API reshape when
+# teams land. The only thing enforced today is the 1:1 cardinality.
+
+
+class User(Base):
+    __tablename__ = "users"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    email: Mapped[str] = mapped_column(String(255), unique=True, index=True, nullable=False)
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    # uselist=False + a unique constraint on Workspace.owner_user_id is what
+    # actually enforces "single workspace per user" - see class docstring.
+    workspace: Mapped["Workspace | None"] = relationship(
+        back_populates="owner", cascade="all, delete-orphan", uselist=False
+    )
+
+
+class Workspace(Base):
+    __tablename__ = "workspaces"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    owner_user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"),
+        unique=True,  # enforces 1:1 - the "single workspace per user" MVP rule
+        nullable=False,
+        index=True,
+    )
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    owner: Mapped["User"] = relationship(back_populates="workspace")
+
+
+class MagicLinkToken(Base):
+    """A one-time login token. Only the token's hash is ever stored - same
+
+    principle as never logging a real API key: if this table leaked, no raw
+    token (and therefore no live login credential) leaks with it. The raw
+    token only ever exists in memory on the server for the request that
+    minted it, and in the URL the user's email client shows them.
+    """
+
+    __tablename__ = "magic_link_tokens"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    # sha256 hex digest (64 chars) of the raw token - see class docstring.
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True, nullable=False)
+    # Lowercased, not yet tied to a User row at creation time - see
+    # refract_api.auth module docstring for why account creation is lazy
+    # (deferred to a successful /auth/verify, not /auth/request-link).
+    email: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    expires_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    used_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )

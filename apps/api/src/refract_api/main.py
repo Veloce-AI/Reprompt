@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from refract_api.auth import router as auth_router
 from refract_api.db import engine
 from refract_api.migrations import router as migrations_router
 from refract_api.models import Base
@@ -34,6 +35,7 @@ app.add_middleware(
 app.include_router(pipelines_router)
 app.include_router(rubrics_router)
 app.include_router(migrations_router)
+app.include_router(auth_router)
 
 
 @app.get("/health")

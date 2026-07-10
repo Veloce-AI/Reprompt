@@ -7,3 +7,6 @@ __pycache__
 *.egg-info
 
 test-results
+
+# Real production/customer data - never committed, local reference only
+/Sample Queries/

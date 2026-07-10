@@ -1,0 +1,511 @@
+{
+  "schema_version": "1.0",
+  "pipeline": {
+    "id": "valuation-pipeline",
+    "name": "10-K filing valuation pipeline",
+    "stages": [
+      {
+        "id": "ingest_filing",
+        "name": "Ingest and segment 10-K filing",
+        "depends_on": [],
+        "model": "gpt-4o-mini-2024-07-18",
+        "prompt_template": "Segment this 10-K filing into its standard item sections.\n\n{{filing_text}}",
+        "params": {
+          "temperature": 0.0,
+          "max_tokens": 4000
+        }
+      },
+      {
+        "id": "extract_financials",
+        "name": "Extract financial statement line items",
+        "depends_on": [
+          "ingest_filing"
+        ],
+        "model": "gpt-4o-2024-08-06",
+        "prompt_template": "Extract income statement, balance sheet, and cash flow line items as JSON from the filing sections below.\n\n{{ingest_filing.output}}",
+        "params": {
+          "temperature": 0.0,
+          "format_mode": "json",
+          "max_tokens": 800
+        }
+      },
+      {
+        "id": "extract_risk_factors",
+        "name": "Extract risk factor disclosures",
+        "depends_on": [
+          "ingest_filing"
+        ],
+        "model": "claude-3-5-sonnet-20241022",
+        "prompt_template": "List and categorize the risk factors disclosed in Item 1A.\n\n{{ingest_filing.output}}",
+        "params": {
+          "temperature": 0.1,
+          "max_tokens": 600
+        }
+      },
+      {
+        "id": "extract_management_commentary",
+        "name": "Extract MD&A management commentary",
+        "depends_on": [
+          "ingest_filing"
+        ],
+        "model": "gemini-1.5-flash",
+        "prompt_template": "Summarize management's discussion & analysis (Item 7) commentary.\n\n{{ingest_filing.output}}",
+        "params": {
+          "temperature": 0.2,
+          "max_tokens": 500
+        }
+      },
+      {
+        "id": "normalize_financials",
+        "name": "Normalize financials to standard schema",
+        "depends_on": [
+          "extract_financials"
+        ],
+        "model": "gpt-4o-mini-2024-07-18",
+        "prompt_template": "Normalize these extracted line items to our standard valuation schema (revenue, cogs, opex, ebitda, net_income, total_assets, total_liabilities, operating_cash_flow, capex).\n\n{{extract_financials.output}}",
+        "params": {
+          "temperature": 0.0,
+          "format_mode": "json",
+          "max_tokens": 400
+        }
+      },
+      {
+        "id": "compute_ratios",
+        "name": "Compute valuation ratios",
+        "depends_on": [
+          "normalize_financials"
+        ],
+        "model": "gpt-4o-mini-2024-07-18",
+        "prompt_template": "Compute EV/EBITDA-relevant ratios (gross margin, EBITDA margin, net margin, current ratio, debt/equity, FCF margin) from these normalized financials.\n\n{{normalize_financials.output}}",
+        "params": {
+          "temperature": 0.0,
+          "format_mode": "json",
+          "max_tokens": 350
+        }
+      },
+      {
+        "id": "peer_comparison",
+        "name": "Compare ratios against peer set",
+        "depends_on": [
+          "compute_ratios"
+        ],
+        "model": "gemini-1.5-pro",
+        "prompt_template": "Compare these ratios against the sector peer median and flag which are above/below peer norms.\n\n{{compute_ratios.output}}\n\nPeer set: {{peer_set}}",
+        "params": {
+          "temperature": 0.2,
+          "max_tokens": 500
+        }
+      },
+      {
+        "id": "risk_scoring",
+        "name": "Score disclosed risk severity",
+        "depends_on": [
+          "extract_risk_factors"
+        ],
+        "model": "claude-3-5-sonnet-20241022",
+        "prompt_template": "Score each disclosed risk factor's severity (1-5) and likelihood (1-5) for a valuation discount.\n\n{{extract_risk_factors.output}}",
+        "params": {
+          "temperature": 0.2,
+          "max_tokens": 450
+        }
+      },
+      {
+        "id": "sentiment_analysis",
+        "name": "Score management tone sentiment",
+        "depends_on": [
+          "extract_management_commentary"
+        ],
+        "model": "claude-3-5-haiku-20241022",
+        "prompt_template": "Rate management's tone in this commentary as bullish / neutral / cautious, with a one-sentence justification.\n\n{{extract_management_commentary.output}}",
+        "params": {
+          "temperature": 0.3,
+          "max_tokens": 150
+        }
+      },
+      {
+        "id": "synthesize_valuation",
+        "name": "Synthesize valuation adjustment factors",
+        "depends_on": [
+          "peer_comparison",
+          "risk_scoring",
+          "sentiment_analysis"
+        ],
+        "model": "gpt-4o-2024-08-06",
+        "prompt_template": "Combine peer comparison, risk scoring, and management sentiment into a single set of valuation adjustment factors (multiple expansion/contraction, discount rate adjustment) with rationale.\n\nPeer comparison: {{peer_comparison.output}}\n\nRisk scoring: {{risk_scoring.output}}\n\nSentiment: {{sentiment_analysis.output}}",
+        "params": {
+          "temperature": 0.3,
+          "max_tokens": 600
+        }
+      },
+      {
+        "id": "generate_narrative",
+        "name": "Generate valuation memo narrative",
+        "depends_on": [
+          "synthesize_valuation"
+        ],
+        "model": "claude-3-5-sonnet-20241022",
+        "prompt_template": "Write a valuation memo narrative (3-4 paragraphs) for an investment committee based on these adjustment factors.\n\n{{synthesize_valuation.output}}",
+        "params": {
+          "temperature": 0.4,
+          "max_tokens": 700,
+          "format_mode": "markdown"
+        }
+      },
+      {
+        "id": "qa_consistency_check",
+        "name": "QA check memo against source financials",
+        "depends_on": [
+          "generate_narrative"
+        ],
+        "model": "gpt-4o-2024-08-06",
+        "prompt_template": "Check this memo for any numeric claims that don't match the normalized financials. List discrepancies, or confirm none found.\n\nMemo: {{generate_narrative.output}}\n\nFinancials: {{normalize_financials.output}}",
+        "params": {
+          "temperature": 0.0,
+          "max_tokens": 300
+        }
+      }
+    ]
+  },
+  "traces": [
+    {
+      "trace_id": "trace-val-001",
+      "query": {
+        "filing_text": "NORTHWIND ROBOTICS, INC. — FORM 10-K (FY2025)\nItem 1A. Risk Factors: Dependence on a small number of automotive OEM customers; exposure to semiconductor component shortages; unionization risk at the Ohio plant.\nItem 7. MD&A: Revenue grew 22% YoY driven by expansion into warehouse automation. Management remains confident in the FY2026 order backlog despite supply constraints.\nFinancial Statements: Revenue $412M, COGS $247M, Opex $98M, Net Income $41M, Total Assets $520M, Total Liabilities $210M, Operating Cash Flow $58M, Capex $34M.",
+        "company": "Northwind Robotics, Inc.",
+        "peer_set": "Industrial automation peers: median EBITDA margin 18%, median gross margin 42%, median D/E 0.6"
+      },
+      "records": [
+        {
+          "stage_id": "ingest_filing",
+          "input": {
+            "filing_text": "NORTHWIND ROBOTICS, INC. — FORM 10-K (FY2025)\nItem 1A. Risk Factors: Dependence on a small number of automotive OEM customers; exposure to semiconductor component shortages; unionization risk at the Ohio plant.\nItem 7. MD&A: Revenue grew 22% YoY driven by expansion into warehouse automation. Management remains confident in the FY2026 order backlog despite supply constraints.\nFinancial Statements: Revenue $412M, COGS $247M, Opex $98M, Net Income $41M, Total Assets $520M, Total Liabilities $210M, Operating Cash Flow $58M, Capex $34M."
+          },
+          "rendered_prompt": "[rendered prompt for ingest_filing — see prompt_template]",
+          "output": "ITEM 1A — RISK FACTORS: (1) customer concentration among automotive OEMs, (2) semiconductor supply shortages, (3) unionization risk at Ohio plant.\nITEM 7 — MD&A: revenue +22% YoY on warehouse automation expansion; management confident in FY2026 backlog despite supply constraints.\nFINANCIAL STATEMENTS: Revenue $412M; COGS $247M; Opex $98M; Net Income $41M; Total Assets $520M; Total Liabilities $210M; Operating Cash Flow $58M; Capex $34M.",
+          "tokens": {
+            "in": 820,
+            "out": 240
+          },
+          "latency_ms": 1320.5
+        },
+        {
+          "stage_id": "extract_financials",
+          "input": {
+            "ingest_filing.output": "ITEM 1A — RISK FACTORS: (1) customer concentration among automotive OEMs, (2) semiconductor supply shortages, (3) unionization risk at Ohio plant.\nITEM 7 — MD&A: revenue +22% YoY on warehouse automation expansion; management confident in FY2026 backlog despite supply constraints.\nFINANCIAL STATEMENTS: Revenue $412M; COGS $247M; Opex $98M; Net Income $41M; Total Assets $520M; Total Liabilities $210M; Operating Cash Flow $58M; Capex $34M."
+          },
+          "rendered_prompt": "[rendered prompt for extract_financials — see prompt_template]",
+          "output": "{\"revenue\": 412000000, \"cogs\": 247000000, \"opex\": 98000000, \"net_income\": 41000000, \"total_assets\": 520000000, \"total_liabilities\": 210000000, \"operating_cash_flow\": 58000000, \"capex\": 34000000}",
+          "tokens": {
+            "in": 280,
+            "out": 190
+          },
+          "latency_ms": 2210.8
+        },
+        {
+          "stage_id": "extract_risk_factors",
+          "input": {
+            "ingest_filing.output": "ITEM 1A — RISK FACTORS: (1) customer concentration among automotive OEMs, (2) semiconductor supply shortages, (3) unionization risk at Ohio plant.\nITEM 7 — MD&A: revenue +22% YoY on warehouse automation expansion; management confident in FY2026 backlog despite supply constraints.\nFINANCIAL STATEMENTS: Revenue $412M; COGS $247M; Opex $98M; Net Income $41M; Total Assets $520M; Total Liabilities $210M; Operating Cash Flow $58M; Capex $34M."
+          },
+          "rendered_prompt": "[rendered prompt for extract_risk_factors — see prompt_template]",
+          "output": "1. Customer concentration (automotive OEMs) — category: commercial.\n2. Semiconductor component shortages — category: supply chain.\n3. Unionization risk at Ohio manufacturing plant — category: labor.",
+          "tokens": {
+            "in": 280,
+            "out": 140
+          },
+          "latency_ms": 1680.3
+        },
+        {
+          "stage_id": "extract_management_commentary",
+          "input": {
+            "ingest_filing.output": "ITEM 1A — RISK FACTORS: (1) customer concentration among automotive OEMs, (2) semiconductor supply shortages, (3) unionization risk at Ohio plant.\nITEM 7 — MD&A: revenue +22% YoY on warehouse automation expansion; management confident in FY2026 backlog despite supply constraints.\nFINANCIAL STATEMENTS: Revenue $412M; COGS $247M; Opex $98M; Net Income $41M; Total Assets $520M; Total Liabilities $210M; Operating Cash Flow $58M; Capex $34M."
+          },
+          "rendered_prompt": "[rendered prompt for extract_management_commentary — see prompt_template]",
+          "output": "Management reports 22% YoY revenue growth driven by warehouse automation expansion, and expresses confidence in the FY2026 order backlog despite ongoing supply chain constraints.",
+          "tokens": {
+            "in": 280,
+            "out": 90
+          },
+          "latency_ms": 640.2
+        },
+        {
+          "stage_id": "normalize_financials",
+          "input": {
+            "extract_financials.output": "{\"revenue\": 412000000, \"cogs\": 247000000, \"opex\": 98000000, \"net_income\": 41000000, \"total_assets\": 520000000, \"total_liabilities\": 210000000, \"operating_cash_flow\": 58000000, \"capex\": 34000000}"
+          },
+          "rendered_prompt": "[rendered prompt for normalize_financials — see prompt_template]",
+          "output": "{\"revenue\": 412000000, \"cogs\": 247000000, \"opex\": 98000000, \"ebitda\": 67000000, \"net_income\": 41000000, \"total_assets\": 520000000, \"total_liabilities\": 210000000, \"operating_cash_flow\": 58000000, \"capex\": 34000000}",
+          "tokens": {
+            "in": 210,
+            "out": 130
+          },
+          "latency_ms": 780.6
+        },
+        {
+          "stage_id": "compute_ratios",
+          "input": {
+            "normalize_financials.output": "{\"revenue\": 412000000, \"cogs\": 247000000, \"opex\": 98000000, \"ebitda\": 67000000, \"net_income\": 41000000, \"total_assets\": 520000000, \"total_liabilities\": 210000000, \"operating_cash_flow\": 58000000, \"capex\": 34000000}"
+          },
+          "rendered_prompt": "[rendered prompt for compute_ratios — see prompt_template]",
+          "output": "{\"gross_margin\": 0.40, \"ebitda_margin\": 0.163, \"net_margin\": 0.099, \"current_ratio\": 1.8, \"debt_equity\": 0.68, \"fcf_margin\": 0.058}",
+          "tokens": {
+            "in": 150,
+            "out": 110
+          },
+          "latency_ms": 590.1
+        },
+        {
+          "stage_id": "peer_comparison",
+          "input": {
+            "compute_ratios.output": "{\"gross_margin\": 0.40, \"ebitda_margin\": 0.163, \"net_margin\": 0.099, \"current_ratio\": 1.8, \"debt_equity\": 0.68, \"fcf_margin\": 0.058}",
+            "peer_set": "Industrial automation peers: median EBITDA margin 18%, median gross margin 42%, median D/E 0.6"
+          },
+          "rendered_prompt": "[rendered prompt for peer_comparison — see prompt_template]",
+          "output": "Gross margin 40% is slightly below the peer median of 42%. EBITDA margin 16.3% is below the peer median of 18%. Debt/equity of 0.68 is modestly above the peer median of 0.6, consistent with recent capex-funded expansion.",
+          "tokens": {
+            "in": 170,
+            "out": 120
+          },
+          "latency_ms": 1450.9
+        },
+        {
+          "stage_id": "risk_scoring",
+          "input": {
+            "extract_risk_factors.output": "1. Customer concentration (automotive OEMs) — category: commercial.\n2. Semiconductor component shortages — category: supply chain.\n3. Unionization risk at Ohio manufacturing plant — category: labor."
+          },
+          "rendered_prompt": "[rendered prompt for risk_scoring — see prompt_template]",
+          "output": "1. Customer concentration — severity 4, likelihood 3.\n2. Semiconductor shortages — severity 3, likelihood 4.\n3. Unionization risk — severity 2, likelihood 2.",
+          "tokens": {
+            "in": 160,
+            "out": 110
+          },
+          "latency_ms": 1710.4
+        },
+        {
+          "stage_id": "sentiment_analysis",
+          "input": {
+            "extract_management_commentary.output": "Management reports 22% YoY revenue growth driven by warehouse automation expansion, and expresses confidence in the FY2026 order backlog despite ongoing supply chain constraints."
+          },
+          "rendered_prompt": "[rendered prompt for sentiment_analysis — see prompt_template]",
+          "output": "cautious — management cites confidence in backlog but explicitly flags ongoing supply constraints as an offsetting concern.",
+          "tokens": {
+            "in": 110,
+            "out": 45
+          },
+          "latency_ms": 420.7
+        },
+        {
+          "stage_id": "synthesize_valuation",
+          "input": {
+            "peer_comparison.output": "Gross margin 40% is slightly below the peer median of 42%. EBITDA margin 16.3% is below the peer median of 18%. Debt/equity of 0.68 is modestly above the peer median of 0.6, consistent with recent capex-funded expansion.",
+            "risk_scoring.output": "1. Customer concentration — severity 4, likelihood 3.\n2. Semiconductor shortages — severity 3, likelihood 4.\n3. Unionization risk — severity 2, likelihood 2.",
+            "sentiment_analysis.output": "cautious — management cites confidence in backlog but explicitly flags ongoing supply constraints as an offsetting concern."
+          },
+          "rendered_prompt": "[rendered prompt for synthesize_valuation — see prompt_template]",
+          "output": "Multiple contraction of ~0.5x recommended given below-peer margins and elevated supply-chain risk (severity 3, likelihood 4). Discount rate adjustment: +50bps for customer concentration risk. Partially offset by above-average revenue growth (22% YoY), which supports a modest terminal-growth premium.",
+          "tokens": {
+            "in": 410,
+            "out": 160
+          },
+          "latency_ms": 2340.6
+        },
+        {
+          "stage_id": "generate_narrative",
+          "input": {
+            "synthesize_valuation.output": "Multiple contraction of ~0.5x recommended given below-peer margins and elevated supply-chain risk (severity 3, likelihood 4). Discount rate adjustment: +50bps for customer concentration risk. Partially offset by above-average revenue growth (22% YoY), which supports a modest terminal-growth premium."
+          },
+          "rendered_prompt": "[rendered prompt for generate_narrative — see prompt_template]",
+          "output": "## Valuation Memo — Northwind Robotics, Inc.\n\nNorthwind Robotics posted 22% YoY revenue growth to $412M, driven by expansion into warehouse automation, but profitability metrics trail peers: EBITDA margin of 16.3% sits below the 18% sector median, and gross margin of 40% is two points below peers at 42%.\n\nRisk disclosures center on automotive OEM customer concentration and semiconductor supply shortages, the latter scored as both severe and likely to persist through FY2026. Management's tone is cautiously confident -- backlog strength is cited alongside explicit supply-chain caveats.\n\nWe recommend a ~0.5x multiple contraction versus sector peers and a 50bps discount rate premium for customer concentration, partially offset by above-average top-line growth supporting a modest terminal-growth premium.",
+          "tokens": {
+            "in": 190,
+            "out": 280
+          },
+          "latency_ms": 2680.3
+        },
+        {
+          "stage_id": "qa_consistency_check",
+          "input": {
+            "generate_narrative.output": "## Valuation Memo — Northwind Robotics, Inc.\n\nNorthwind Robotics posted 22% YoY revenue growth to $412M, driven by expansion into warehouse automation, but profitability metrics trail peers: EBITDA margin of 16.3% sits below the 18% sector median, and gross margin of 40% is two points below peers at 42%.\n\nRisk disclosures center on automotive OEM customer concentration and semiconductor supply shortages, the latter scored as both severe and likely to persist through FY2026. Management's tone is cautiously confident -- backlog strength is cited alongside explicit supply-chain caveats.\n\nWe recommend a ~0.5x multiple contraction versus sector peers and a 50bps discount rate premium for customer concentration, partially offset by above-average top-line growth supporting a modest terminal-growth premium.",
+            "normalize_financials.output": "{\"revenue\": 412000000, \"cogs\": 247000000, \"opex\": 98000000, \"ebitda\": 67000000, \"net_income\": 41000000, \"total_assets\": 520000000, \"total_liabilities\": 210000000, \"operating_cash_flow\": 58000000, \"capex\": 34000000}"
+          },
+          "rendered_prompt": "[rendered prompt for qa_consistency_check — see prompt_template]",
+          "output": "No discrepancies found. All figures in the memo (revenue, EBITDA margin, gross margin, YoY growth) match the normalized financials and computed ratios.",
+          "tokens": {
+            "in": 350,
+            "out": 60
+          },
+          "latency_ms": 1580.2
+        }
+      ]
+    },
+    {
+      "trace_id": "trace-val-002",
+      "query": {
+        "filing_text": "CASCADE BIOLOGICS, INC. — FORM 10-K (FY2025)\nItem 1A. Risk Factors: Lead candidate CBL-104 in Phase III trials, no guarantee of FDA approval; reliance on a single contract manufacturer; going-concern dependent on additional financing within 18 months.\nItem 7. MD&A: No commercial revenue yet; R&D spend increased 31% YoY to advance CBL-104 Phase III readout expected Q2 FY2026. Cash runway estimated at 14 months.\nFinancial Statements: Revenue $6M (licensing), COGS $1M, Opex $88M, Net Income -$76M, Total Assets $140M, Total Liabilities $45M, Operating Cash Flow -$71M, Capex $4M.",
+        "company": "Cascade BioLogics, Inc.",
+        "peer_set": "Mid-cap biotech peers: median EBITDA margin -5% (pre-commercial), median gross margin 68%, median D/E 0.3"
+      },
+      "records": [
+        {
+          "stage_id": "ingest_filing",
+          "input": {
+            "filing_text": "CASCADE BIOLOGICS, INC. — FORM 10-K (FY2025)\nItem 1A. Risk Factors: Lead candidate CBL-104 in Phase III trials, no guarantee of FDA approval; reliance on a single contract manufacturer; going-concern dependent on additional financing within 18 months.\nItem 7. MD&A: No commercial revenue yet; R&D spend increased 31% YoY to advance CBL-104 Phase III readout expected Q2 FY2026. Cash runway estimated at 14 months.\nFinancial Statements: Revenue $6M (licensing), COGS $1M, Opex $88M, Net Income -$76M, Total Assets $140M, Total Liabilities $45M, Operating Cash Flow -$71M, Capex $4M."
+          },
+          "rendered_prompt": "[rendered prompt for ingest_filing — see prompt_template]",
+          "output": "ITEM 1A — RISK FACTORS: (1) CBL-104 Phase III / FDA approval uncertainty, (2) single contract manufacturer dependency, (3) going-concern / financing risk within 18 months.\nITEM 7 — MD&A: no commercial revenue; R&D spend +31% YoY ahead of CBL-104 Phase III readout (Q2 FY2026); cash runway ~14 months.\nFINANCIAL STATEMENTS: Revenue $6M; COGS $1M; Opex $88M; Net Income -$76M; Total Assets $140M; Total Liabilities $45M; Operating Cash Flow -$71M; Capex $4M.",
+          "tokens": {
+            "in": 760,
+            "out": 220
+          },
+          "latency_ms": 1260.4
+        },
+        {
+          "stage_id": "extract_financials",
+          "input": {
+            "ingest_filing.output": "ITEM 1A — RISK FACTORS: (1) CBL-104 Phase III / FDA approval uncertainty, (2) single contract manufacturer dependency, (3) going-concern / financing risk within 18 months.\nITEM 7 — MD&A: no commercial revenue; R&D spend +31% YoY ahead of CBL-104 Phase III readout (Q2 FY2026); cash runway ~14 months.\nFINANCIAL STATEMENTS: Revenue $6M; COGS $1M; Opex $88M; Net Income -$76M; Total Assets $140M; Total Liabilities $45M; Operating Cash Flow -$71M; Capex $4M."
+          },
+          "rendered_prompt": "[rendered prompt for extract_financials — see prompt_template]",
+          "output": "{\"revenue\": 6000000, \"cogs\": 1000000, \"opex\": 88000000, \"net_income\": -76000000, \"total_assets\": 140000000, \"total_liabilities\": 45000000, \"operating_cash_flow\": -71000000, \"capex\": 4000000}",
+          "tokens": {
+            "in": 260,
+            "out": 170
+          },
+          "latency_ms": 2150.6
+        },
+        {
+          "stage_id": "extract_risk_factors",
+          "input": {
+            "ingest_filing.output": "ITEM 1A — RISK FACTORS: (1) CBL-104 Phase III / FDA approval uncertainty, (2) single contract manufacturer dependency, (3) going-concern / financing risk within 18 months.\nITEM 7 — MD&A: no commercial revenue; R&D spend +31% YoY ahead of CBL-104 Phase III readout (Q2 FY2026); cash runway ~14 months.\nFINANCIAL STATEMENTS: Revenue $6M; COGS $1M; Opex $88M; Net Income -$76M; Total Assets $140M; Total Liabilities $45M; Operating Cash Flow -$71M; Capex $4M."
+          },
+          "rendered_prompt": "[rendered prompt for extract_risk_factors — see prompt_template]",
+          "output": "1. CBL-104 Phase III trial outcome / FDA approval uncertainty — category: regulatory.\n2. Single contract manufacturer dependency — category: supply chain.\n3. Going-concern risk, financing needed within 18 months — category: liquidity.",
+          "tokens": {
+            "in": 260,
+            "out": 150
+          },
+          "latency_ms": 1640.7
+        },
+        {
+          "stage_id": "extract_management_commentary",
+          "input": {
+            "ingest_filing.output": "ITEM 1A — RISK FACTORS: (1) CBL-104 Phase III / FDA approval uncertainty, (2) single contract manufacturer dependency, (3) going-concern / financing risk within 18 months.\nITEM 7 — MD&A: no commercial revenue; R&D spend +31% YoY ahead of CBL-104 Phase III readout (Q2 FY2026); cash runway ~14 months.\nFINANCIAL STATEMENTS: Revenue $6M; COGS $1M; Opex $88M; Net Income -$76M; Total Assets $140M; Total Liabilities $45M; Operating Cash Flow -$71M; Capex $4M."
+          },
+          "rendered_prompt": "[rendered prompt for extract_management_commentary — see prompt_template]",
+          "output": "Management reports no commercial revenue to date, a 31% YoY increase in R&D spending to advance the CBL-104 Phase III program toward a Q2 FY2026 readout, and an estimated 14-month cash runway.",
+          "tokens": {
+            "in": 260,
+            "out": 95
+          },
+          "latency_ms": 610.5
+        },
+        {
+          "stage_id": "normalize_financials",
+          "input": {
+            "extract_financials.output": "{\"revenue\": 6000000, \"cogs\": 1000000, \"opex\": 88000000, \"net_income\": -76000000, \"total_assets\": 140000000, \"total_liabilities\": 45000000, \"operating_cash_flow\": -71000000, \"capex\": 4000000}"
+          },
+          "rendered_prompt": "[rendered prompt for normalize_financials — see prompt_template]",
+          "output": "{\"revenue\": 6000000, \"cogs\": 1000000, \"opex\": 88000000, \"ebitda\": -83000000, \"net_income\": -76000000, \"total_assets\": 140000000, \"total_liabilities\": 45000000, \"operating_cash_flow\": -71000000, \"capex\": 4000000}",
+          "tokens": {
+            "in": 200,
+            "out": 125
+          },
+          "latency_ms": 745.3
+        },
+        {
+          "stage_id": "compute_ratios",
+          "input": {
+            "normalize_financials.output": "{\"revenue\": 6000000, \"cogs\": 1000000, \"opex\": 88000000, \"ebitda\": -83000000, \"net_income\": -76000000, \"total_assets\": 140000000, \"total_liabilities\": 45000000, \"operating_cash_flow\": -71000000, \"capex\": 4000000}"
+          },
+          "rendered_prompt": "[rendered prompt for compute_ratios — see prompt_template]",
+          "output": "{\"gross_margin\": 0.833, \"ebitda_margin\": -13.83, \"net_margin\": -12.67, \"current_ratio\": 2.4, \"debt_equity\": 0.47, \"fcf_margin\": -12.5}",
+          "tokens": {
+            "in": 145,
+            "out": 105
+          },
+          "latency_ms": 575.8
+        },
+        {
+          "stage_id": "peer_comparison",
+          "input": {
+            "compute_ratios.output": "{\"gross_margin\": 0.833, \"ebitda_margin\": -13.83, \"net_margin\": -12.67, \"current_ratio\": 2.4, \"debt_equity\": 0.47, \"fcf_margin\": -12.5}",
+            "peer_set": "Mid-cap biotech peers: median EBITDA margin -5% (pre-commercial), median gross margin 68%, median D/E 0.3"
+          },
+          "rendered_prompt": "[rendered prompt for peer_comparison — see prompt_template]",
+          "output": "Gross margin of 83.3% is well above the peer median of 68%, though on a small licensing-revenue base so less meaningful pre-commercial. EBITDA margin of -13.83x revenue reflects heavy R&D investment, deeper than the peer median of -5%. Debt/equity of 0.47 is above the peer median of 0.3.",
+          "tokens": {
+            "in": 165,
+            "out": 130
+          },
+          "latency_ms": 1410.2
+        },
+        {
+          "stage_id": "risk_scoring",
+          "input": {
+            "extract_risk_factors.output": "1. CBL-104 Phase III trial outcome / FDA approval uncertainty — category: regulatory.\n2. Single contract manufacturer dependency — category: supply chain.\n3. Going-concern risk, financing needed within 18 months — category: liquidity."
+          },
+          "rendered_prompt": "[rendered prompt for risk_scoring — see prompt_template]",
+          "output": "1. Phase III / FDA approval uncertainty — severity 5, likelihood 3.\n2. Single contract manufacturer dependency — severity 3, likelihood 2.\n3. Going-concern / financing risk — severity 5, likelihood 3.",
+          "tokens": {
+            "in": 155,
+            "out": 115
+          },
+          "latency_ms": 1690.1
+        },
+        {
+          "stage_id": "sentiment_analysis",
+          "input": {
+            "extract_management_commentary.output": "Management reports no commercial revenue to date, a 31% YoY increase in R&D spending to advance the CBL-104 Phase III program toward a Q2 FY2026 readout, and an estimated 14-month cash runway."
+          },
+          "rendered_prompt": "[rendered prompt for sentiment_analysis — see prompt_template]",
+          "output": "cautious — management is forward-looking about the Phase III catalyst but explicitly discloses a 14-month cash runway, an implicit near-term financing overhang.",
+          "tokens": {
+            "in": 105,
+            "out": 48
+          },
+          "latency_ms": 405.9
+        },
+        {
+          "stage_id": "synthesize_valuation",
+          "input": {
+            "peer_comparison.output": "Gross margin of 83.3% is well above the peer median of 68%, though on a small licensing-revenue base so less meaningful pre-commercial. EBITDA margin of -13.83x revenue reflects heavy R&D investment, deeper than the peer median of -5%. Debt/equity of 0.47 is above the peer median of 0.3.",
+            "risk_scoring.output": "1. Phase III / FDA approval uncertainty — severity 5, likelihood 3.\n2. Single contract manufacturer dependency — severity 3, likelihood 2.\n3. Going-concern / financing risk — severity 5, likelihood 3.",
+            "sentiment_analysis.output": "cautious — management is forward-looking about the Phase III catalyst but explicitly discloses a 14-month cash runway, an implicit near-term financing overhang."
+          },
+          "rendered_prompt": "[rendered prompt for synthesize_valuation — see prompt_template]",
+          "output": "Given binary regulatory risk (severity 5) and going-concern disclosure (severity 5, likelihood 3), apply a substantial discount rate premium (+400bps) reflecting elevated cost of capital pre-catalyst. Valuation should be treated as option-like on the Phase III outcome rather than multiple-based; peer EBITDA-margin comparison is not meaningful pre-commercial.",
+          "tokens": {
+            "in": 400,
+            "out": 155
+          },
+          "latency_ms": 2290.4
+        },
+        {
+          "stage_id": "generate_narrative",
+          "input": {
+            "synthesize_valuation.output": "Given binary regulatory risk (severity 5) and going-concern disclosure (severity 5, likelihood 3), apply a substantial discount rate premium (+400bps) reflecting elevated cost of capital pre-catalyst. Valuation should be treated as option-like on the Phase III outcome rather than multiple-based; peer EBITDA-margin comparison is not meaningful pre-commercial."
+          },
+          "rendered_prompt": "[rendered prompt for generate_narrative — see prompt_template]",
+          "output": "## Valuation Memo — Cascade BioLogics, Inc.\n\nCascade BioLogics remains pre-commercial, with $6M in licensing revenue against $88M of opex driven primarily by a 31% YoY increase in R&D spend ahead of the CBL-104 Phase III readout expected Q2 FY2026. Net loss for the period was $76M, and management discloses an estimated 14-month cash runway.\n\nTwo disclosed risks dominate the valuation picture: Phase III / FDA approval uncertainty (severity 5, likelihood 3) and going-concern risk tied to financing needs within 18 months (severity 5, likelihood 3). A single contract manufacturer dependency adds moderate supply-chain risk.\n\nGiven the binary regulatory catalyst and near-term financing overhang, we recommend valuing Cascade option-like on the Phase III outcome rather than applying a peer EBITDA multiple, and layering a +400bps discount rate premium to reflect elevated cost of capital pre-catalyst.",
+          "tokens": {
+            "in": 185,
+            "out": 300
+          },
+          "latency_ms": 2740.8
+        },
+        {
+          "stage_id": "qa_consistency_check",
+          "input": {
+            "generate_narrative.output": "## Valuation Memo — Cascade BioLogics, Inc.\n\nCascade BioLogics remains pre-commercial, with $6M in licensing revenue against $88M of opex driven primarily by a 31% YoY increase in R&D spend ahead of the CBL-104 Phase III readout expected Q2 FY2026. Net loss for the period was $76M, and management discloses an estimated 14-month cash runway.\n\nTwo disclosed risks dominate the valuation picture: Phase III / FDA approval uncertainty (severity 5, likelihood 3) and going-concern risk tied to financing needs within 18 months (severity 5, likelihood 3). A single contract manufacturer dependency adds moderate supply-chain risk.\n\nGiven the binary regulatory catalyst and near-term financing overhang, we recommend valuing Cascade option-like on the Phase III outcome rather than applying a peer EBITDA multiple, and layering a +400bps discount rate premium to reflect elevated cost of capital pre-catalyst.",
+            "normalize_financials.output": "{\"revenue\": 6000000, \"cogs\": 1000000, \"opex\": 88000000, \"ebitda\": -83000000, \"net_income\": -76000000, \"total_assets\": 140000000, \"total_liabilities\": 45000000, \"operating_cash_flow\": -71000000, \"capex\": 4000000}"
+          },
+          "rendered_prompt": "[rendered prompt for qa_consistency_check — see prompt_template]",
+          "output": "No discrepancies found. Revenue, opex, net income, and cash-runway figures in the memo match the normalized financials and filing disclosures.",
+          "tokens": {
+            "in": 340,
+            "out": 55
+          },
+          "latency_ms": 1540.6
+        }
+      ]
+    }
+  ]
+}

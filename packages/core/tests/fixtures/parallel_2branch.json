@@ -1,0 +1,247 @@
+{
+  "schema_version": "1.0",
+  "pipeline": {
+    "id": "paper-triage-pipeline",
+    "name": "Research paper triage pipeline",
+    "stages": [
+      {
+        "id": "extract_text",
+        "name": "Extract clean text from PDF",
+        "depends_on": [],
+        "model": "gpt-4o-mini-2024-07-18",
+        "prompt_template": "Clean up this OCR'd paper text: fix line-break artifacts, remove running headers/footers, keep section structure.\n\n{{raw_text}}",
+        "params": {
+          "temperature": 0.0,
+          "max_tokens": 3000
+        }
+      },
+      {
+        "id": "summarize",
+        "name": "Summarize abstract & contribution",
+        "depends_on": [
+          "extract_text"
+        ],
+        "model": "claude-3-5-sonnet-20241022",
+        "prompt_template": "Summarize this paper's core contribution in 3 sentences, aimed at a researcher deciding whether to read further.\n\n{{extract_text.output}}",
+        "params": {
+          "temperature": 0.3,
+          "max_tokens": 300
+        }
+      },
+      {
+        "id": "extract_metadata",
+        "name": "Extract authors, venue, method, datasets",
+        "depends_on": [
+          "extract_text"
+        ],
+        "model": "gemini-1.5-flash",
+        "prompt_template": "From this paper text, extract JSON: {\"authors\": [...], \"venue\": \"...\", \"method\": \"...\", \"datasets\": [...]}\n\n{{extract_text.output}}",
+        "params": {
+          "temperature": 0.0,
+          "format_mode": "json",
+          "max_tokens": 400
+        }
+      },
+      {
+        "id": "compose_briefing",
+        "name": "Compose one-page briefing note",
+        "depends_on": [
+          "summarize",
+          "extract_metadata"
+        ],
+        "model": "gpt-4o-2024-08-06",
+        "prompt_template": "Write a one-paragraph briefing note combining this summary and metadata, for a research-lead's weekly reading digest.\n\nSummary: {{summarize.output}}\n\nMetadata: {{extract_metadata.output}}",
+        "params": {
+          "temperature": 0.4,
+          "max_tokens": 350,
+          "format_mode": "markdown"
+        }
+      }
+    ]
+  },
+  "traces": [
+    {
+      "trace_id": "trace-par-001",
+      "query": {
+        "raw_text": "Sca l ing La ws for Ne ural Re trie val Aug mented Ge neration\nJ. Alvarez, T. Nakamura, S. Okoro -- NeurIPS 2025\nAb stract: We stu dy how retrieval quality scales with cor pus size..."
+      },
+      "records": [
+        {
+          "stage_id": "extract_text",
+          "input": {
+            "raw_text": "Sca l ing La ws for Ne ural Re trie val Aug mented Ge neration\nJ. Alvarez, T. Nakamura, S. Okoro -- NeurIPS 2025\nAb stract: We stu dy how retrieval quality scales with cor pus size..."
+          },
+          "rendered_prompt": "[rendered prompt for extract_text — see prompt_template]",
+          "output": "Scaling Laws for Neural Retrieval Augmented Generation\nJ. Alvarez, T. Nakamura, S. Okoro -- NeurIPS 2025\n\nAbstract: We study how retrieval quality scales with corpus size across three retrieval architectures (dense dual-encoder, ColBERT-style late interaction, and hybrid BM25+dense), evaluating on 12 open-domain QA benchmarks and two internal enterprise document sets. We find a consistent log-linear relationship between corpus size and downstream answer accuracy up to 50M passages, after which returns diminish sharply for dense-only retrieval but continue for hybrid setups.",
+          "tokens": {
+            "in": 620,
+            "out": 180
+          },
+          "latency_ms": 980.4
+        },
+        {
+          "stage_id": "summarize",
+          "input": {
+            "extract_text.output": "Scaling Laws for Neural Retrieval Augmented Generation\nJ. Alvarez, T. Nakamura, S. Okoro -- NeurIPS 2025\n\nAbstract: We study how retrieval quality scales with corpus size across three retrieval architectures (dense dual-encoder, ColBERT-style late interaction, and hybrid BM25+dense), evaluating on 12 open-domain QA benchmarks and two internal enterprise document sets. We find a consistent log-linear relationship between corpus size and downstream answer accuracy up to 50M passages, after which returns diminish sharply for dense-only retrieval but continue for hybrid setups."
+          },
+          "rendered_prompt": "[rendered prompt for summarize — see prompt_template]",
+          "output": "This paper empirically measures how retrieval-augmented generation accuracy scales with corpus size across three retriever architectures and 12 QA benchmarks. The key finding is a log-linear accuracy gain up to ~50M passages, with hybrid BM25+dense retrieval continuing to improve past that point where dense-only retrieval plateaus. It's a useful reference for anyone sizing a production RAG corpus and deciding between retriever architectures.",
+          "tokens": {
+            "in": 245,
+            "out": 88
+          },
+          "latency_ms": 1240.8
+        },
+        {
+          "stage_id": "extract_metadata",
+          "input": {
+            "extract_text.output": "Scaling Laws for Neural Retrieval Augmented Generation\nJ. Alvarez, T. Nakamura, S. Okoro -- NeurIPS 2025\n\nAbstract: We study how retrieval quality scales with corpus size across three retrieval architectures (dense dual-encoder, ColBERT-style late interaction, and hybrid BM25+dense), evaluating on 12 open-domain QA benchmarks and two internal enterprise document sets. We find a consistent log-linear relationship between corpus size and downstream answer accuracy up to 50M passages, after which returns diminish sharply for dense-only retrieval but continue for hybrid setups."
+          },
+          "rendered_prompt": "[rendered prompt for extract_metadata — see prompt_template]",
+          "output": "{\"authors\": [\"J. Alvarez\", \"T. Nakamura\", \"S. Okoro\"], \"venue\": \"NeurIPS 2025\", \"method\": \"empirical scaling study across 3 retriever architectures\", \"datasets\": [\"12 open-domain QA benchmarks\", \"2 internal enterprise document sets\"]}",
+          "tokens": {
+            "in": 245,
+            "out": 62
+          },
+          "latency_ms": 560.2
+        },
+        {
+          "stage_id": "compose_briefing",
+          "input": {
+            "summarize.output": "This paper empirically measures how retrieval-augmented generation accuracy scales with corpus size across three retriever architectures and 12 QA benchmarks. The key finding is a log-linear accuracy gain up to ~50M passages, with hybrid BM25+dense retrieval continuing to improve past that point where dense-only retrieval plateaus. It's a useful reference for anyone sizing a production RAG corpus and deciding between retriever architectures.",
+            "extract_metadata.output": "{\"authors\": [\"J. Alvarez\", \"T. Nakamura\", \"S. Okoro\"], \"venue\": \"NeurIPS 2025\", \"method\": \"empirical scaling study across 3 retriever architectures\", \"datasets\": [\"12 open-domain QA benchmarks\", \"2 internal enterprise document sets\"]}"
+          },
+          "rendered_prompt": "[rendered prompt for compose_briefing — see prompt_template]",
+          "output": "**Scaling Laws for Neural RAG** (Alvarez, Nakamura & Okoro, NeurIPS 2025) measures how retrieval accuracy scales with corpus size across dense, ColBERT-style, and hybrid BM25+dense retrievers on 12 QA benchmarks plus 2 enterprise document sets. Accuracy gains are log-linear up to ~50M passages; past that, dense-only retrieval plateaus but hybrid retrieval keeps improving. Worth reading if you're sizing a production RAG corpus or choosing a retriever.",
+          "tokens": {
+            "in": 398,
+            "out": 112
+          },
+          "latency_ms": 1510.3
+        }
+      ]
+    },
+    {
+      "trace_id": "trace-par-002",
+      "query": {
+        "raw_text": "Ef fic ient Fine -Tuning of Vis ion-Lan guage Mo dels with L oRA Ada pters\nH. Kim, R. Petrov -- ICML 2025\nAb stract: We pro pose a light weight adapter sch eme..."
+      },
+      "records": [
+        {
+          "stage_id": "extract_text",
+          "input": {
+            "raw_text": "Ef fic ient Fine -Tuning of Vis ion-Lan guage Mo dels with L oRA Ada pters\nH. Kim, R. Petrov -- ICML 2025\nAb stract: We pro pose a light weight adapter sch eme..."
+          },
+          "rendered_prompt": "[rendered prompt for extract_text — see prompt_template]",
+          "output": "Efficient Fine-Tuning of Vision-Language Models with LoRA Adapters\nH. Kim, R. Petrov -- ICML 2025\n\nAbstract: We propose a lightweight adapter scheme for fine-tuning large vision-language models on domain-specific tasks using under 1% of full parameter count. Evaluated on 6 medical imaging and 4 satellite imagery datasets, our method matches full fine-tuning accuracy within 0.8 points while reducing GPU-hours by 9x and eliminating catastrophic forgetting on the base model's general capabilities.",
+          "tokens": {
+            "in": 540,
+            "out": 160
+          },
+          "latency_ms": 890.1
+        },
+        {
+          "stage_id": "summarize",
+          "input": {
+            "extract_text.output": "Efficient Fine-Tuning of Vision-Language Models with LoRA Adapters\nH. Kim, R. Petrov -- ICML 2025\n\nAbstract: We propose a lightweight adapter scheme for fine-tuning large vision-language models on domain-specific tasks using under 1% of full parameter count. Evaluated on 6 medical imaging and 4 satellite imagery datasets, our method matches full fine-tuning accuracy within 0.8 points while reducing GPU-hours by 9x and eliminating catastrophic forgetting on the base model's general capabilities."
+          },
+          "rendered_prompt": "[rendered prompt for summarize — see prompt_template]",
+          "output": "This paper introduces a LoRA-based adapter scheme for fine-tuning vision-language models on specialized domains (medical and satellite imagery) using under 1% of full parameter count. It matches full fine-tuning accuracy within 0.8 points while cutting GPU-hours by 9x and avoiding catastrophic forgetting of general capabilities. Relevant for teams fine-tuning VLMs on narrow domains under compute constraints.",
+          "tokens": {
+            "in": 228,
+            "out": 82
+          },
+          "latency_ms": 1180.5
+        },
+        {
+          "stage_id": "extract_metadata",
+          "input": {
+            "extract_text.output": "Efficient Fine-Tuning of Vision-Language Models with LoRA Adapters\nH. Kim, R. Petrov -- ICML 2025\n\nAbstract: We propose a lightweight adapter scheme for fine-tuning large vision-language models on domain-specific tasks using under 1% of full parameter count. Evaluated on 6 medical imaging and 4 satellite imagery datasets, our method matches full fine-tuning accuracy within 0.8 points while reducing GPU-hours by 9x and eliminating catastrophic forgetting on the base model's general capabilities."
+          },
+          "rendered_prompt": "[rendered prompt for extract_metadata — see prompt_template]",
+          "output": "{\"authors\": [\"H. Kim\", \"R. Petrov\"], \"venue\": \"ICML 2025\", \"method\": \"LoRA adapter fine-tuning for vision-language models\", \"datasets\": [\"6 medical imaging datasets\", \"4 satellite imagery datasets\"]}",
+          "tokens": {
+            "in": 228,
+            "out": 58
+          },
+          "latency_ms": 520.9
+        },
+        {
+          "stage_id": "compose_briefing",
+          "input": {
+            "summarize.output": "This paper introduces a LoRA-based adapter scheme for fine-tuning vision-language models on specialized domains (medical and satellite imagery) using under 1% of full parameter count. It matches full fine-tuning accuracy within 0.8 points while cutting GPU-hours by 9x and avoiding catastrophic forgetting of general capabilities. Relevant for teams fine-tuning VLMs on narrow domains under compute constraints.",
+            "extract_metadata.output": "{\"authors\": [\"H. Kim\", \"R. Petrov\"], \"venue\": \"ICML 2025\", \"method\": \"LoRA adapter fine-tuning for vision-language models\", \"datasets\": [\"6 medical imaging datasets\", \"4 satellite imagery datasets\"]}"
+          },
+          "rendered_prompt": "[rendered prompt for compose_briefing — see prompt_template]",
+          "output": "**Efficient Fine-Tuning of VLMs with LoRA Adapters** (Kim & Petrov, ICML 2025) proposes a sub-1%-parameter LoRA adapter scheme for fine-tuning vision-language models on medical and satellite imagery (6 + 4 datasets). It matches full fine-tuning accuracy within 0.8 points, cuts GPU-hours 9x, and avoids catastrophic forgetting. Relevant if we ever fine-tune a VLM on a narrow domain under tight compute budgets.",
+          "tokens": {
+            "in": 372,
+            "out": 108
+          },
+          "latency_ms": 1450.7
+        }
+      ]
+    },
+    {
+      "trace_id": "trace-par-003",
+      "query": {
+        "raw_text": "Bud get -Awa re Age nt Or che stration for Mul ti-Step Tool Use\nL. Fernandez, A. Mensah, Y. Chen -- ACL 2025\nAb stract: We intro duce a con troller that all ocates..."
+      },
+      "records": [
+        {
+          "stage_id": "extract_text",
+          "input": {
+            "raw_text": "Bud get -Awa re Age nt Or che stration for Mul ti-Step Tool Use\nL. Fernandez, A. Mensah, Y. Chen -- ACL 2025\nAb stract: We intro duce a con troller that all ocates..."
+          },
+          "rendered_prompt": "[rendered prompt for extract_text — see prompt_template]",
+          "output": "Budget-Aware Agent Orchestration for Multi-Step Tool Use\nL. Fernandez, A. Mensah, Y. Chen -- ACL 2025\n\nAbstract: We introduce a controller that allocates a fixed token/dollar budget across an agent's tool-calling steps, dynamically trading off exploration depth against task completion probability. Across 4 agentic benchmarks (web navigation, code repair, spreadsheet QA, and API orchestration), our controller improves task success rate by 14% at equal budget compared to fixed step-limit baselines.",
+          "tokens": {
+            "in": 580,
+            "out": 172
+          },
+          "latency_ms": 940.6
+        },
+        {
+          "stage_id": "summarize",
+          "input": {
+            "extract_text.output": "Budget-Aware Agent Orchestration for Multi-Step Tool Use\nL. Fernandez, A. Mensah, Y. Chen -- ACL 2025\n\nAbstract: We introduce a controller that allocates a fixed token/dollar budget across an agent's tool-calling steps, dynamically trading off exploration depth against task completion probability. Across 4 agentic benchmarks (web navigation, code repair, spreadsheet QA, and API orchestration), our controller improves task success rate by 14% at equal budget compared to fixed step-limit baselines."
+          },
+          "rendered_prompt": "[rendered prompt for summarize — see prompt_template]",
+          "output": "This paper presents a budget-aware controller that dynamically allocates a fixed token/dollar spend across an agent's tool-calling steps, rather than using a fixed step limit. Across 4 agentic benchmarks spanning web navigation, code repair, spreadsheet QA, and API orchestration, it improves task success by 14% at equal budget. Directly applicable to any system doing budget-capped multi-step agent orchestration.",
+          "tokens": {
+            "in": 238,
+            "out": 90
+          },
+          "latency_ms": 1290.2
+        },
+        {
+          "stage_id": "extract_metadata",
+          "input": {
+            "extract_text.output": "Budget-Aware Agent Orchestration for Multi-Step Tool Use\nL. Fernandez, A. Mensah, Y. Chen -- ACL 2025\n\nAbstract: We introduce a controller that allocates a fixed token/dollar budget across an agent's tool-calling steps, dynamically trading off exploration depth against task completion probability. Across 4 agentic benchmarks (web navigation, code repair, spreadsheet QA, and API orchestration), our controller improves task success rate by 14% at equal budget compared to fixed step-limit baselines."
+          },
+          "rendered_prompt": "[rendered prompt for extract_metadata — see prompt_template]",
+          "output": "{\"authors\": [\"L. Fernandez\", \"A. Mensah\", \"Y. Chen\"], \"venue\": \"ACL 2025\", \"method\": \"dynamic budget allocation controller for agentic tool use\", \"datasets\": [\"web navigation benchmark\", \"code repair benchmark\", \"spreadsheet QA benchmark\", \"API orchestration benchmark\"]}",
+          "tokens": {
+            "in": 238,
+            "out": 68
+          },
+          "latency_ms": 545.4
+        },
+        {
+          "stage_id": "compose_briefing",
+          "input": {
+            "summarize.output": "This paper presents a budget-aware controller that dynamically allocates a fixed token/dollar spend across an agent's tool-calling steps, rather than using a fixed step limit. Across 4 agentic benchmarks spanning web navigation, code repair, spreadsheet QA, and API orchestration, it improves task success by 14% at equal budget. Directly applicable to any system doing budget-capped multi-step agent orchestration.",
+            "extract_metadata.output": "{\"authors\": [\"L. Fernandez\", \"A. Mensah\", \"Y. Chen\"], \"venue\": \"ACL 2025\", \"method\": \"dynamic budget allocation controller for agentic tool use\", \"datasets\": [\"web navigation benchmark\", \"code repair benchmark\", \"spreadsheet QA benchmark\", \"API orchestration benchmark\"]}"
+          },
+          "rendered_prompt": "[rendered prompt for compose_briefing — see prompt_template]",
+          "output": "**Budget-Aware Agent Orchestration** (Fernandez, Mensah & Chen, ACL 2025) introduces a controller that dynamically allocates a fixed token/dollar budget across an agent's tool-calling steps instead of a fixed step limit. Tested on 4 agentic benchmarks (web nav, code repair, spreadsheet QA, API orchestration), it lifts task success 14% at equal budget. Directly relevant to our own budget-capped optimization loop design.",
+          "tokens": {
+            "in": 386,
+            "out": 118
+          },
+          "latency_ms": 1560.9
+        }
+      ]
+    }
+  ]
+}

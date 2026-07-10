@@ -1,0 +1,385 @@
+{
+  "schema_version": "1.0",
+  "pipeline": {
+    "id": "support-ticket-pipeline",
+    "name": "Support ticket response pipeline",
+    "stages": [
+      {
+        "id": "classify_ticket",
+        "name": "Classify ticket category",
+        "depends_on": [],
+        "model": "gpt-4o-mini-2024-07-18",
+        "prompt_template": "Classify this support ticket into exactly one category: billing, shipping, account_access, product_defect, or other.\n\nTicket:\n{{ticket_text}}\n\nRespond with JSON: {\"category\": \"...\", \"confidence\": 0.0-1.0}",
+        "params": {
+          "temperature": 0.0,
+          "format_mode": "json",
+          "max_tokens": 150
+        }
+      },
+      {
+        "id": "extract_entities",
+        "name": "Extract ticket entities",
+        "depends_on": [
+          "classify_ticket"
+        ],
+        "model": "gpt-4o-mini-2024-07-18",
+        "prompt_template": "Category: {{classify_ticket.output}}\n\nExtract structured entities from this ticket (order/invoice ids, product names, dates, amounts):\n\n{{ticket_text}}\n\nRespond with JSON.",
+        "params": {
+          "temperature": 0.0,
+          "format_mode": "json",
+          "max_tokens": 250
+        }
+      },
+      {
+        "id": "draft_response",
+        "name": "Draft agent response",
+        "depends_on": [
+          "extract_entities"
+        ],
+        "model": "gpt-4o-2024-08-06",
+        "prompt_template": "You are a support agent. Using the extracted facts below, draft a helpful, concise reply to the customer.\n\nEntities: {{extract_entities.output}}\n\nOriginal ticket:\n{{ticket_text}}",
+        "params": {
+          "temperature": 0.4,
+          "max_tokens": 400
+        }
+      },
+      {
+        "id": "tone_check",
+        "name": "Check tone and empathy",
+        "depends_on": [
+          "draft_response"
+        ],
+        "model": "claude-3-5-haiku-20241022",
+        "prompt_template": "Review this draft support reply for tone. It should be empathetic, professional, and not defensive. If it needs a tone fix, rewrite it; otherwise return it unchanged.\n\nDraft:\n{{draft_response.output}}",
+        "params": {
+          "temperature": 0.2,
+          "max_tokens": 400
+        }
+      },
+      {
+        "id": "finalize_response",
+        "name": "Finalize and format response",
+        "depends_on": [
+          "tone_check"
+        ],
+        "model": "gpt-4o-2024-08-06",
+        "prompt_template": "Format this reply for our helpdesk system: add a greeting using the customer's first name if known, and a standard sign-off.\n\nReply body:\n{{tone_check.output}}\n\nCustomer first name: {{customer_first_name}}",
+        "params": {
+          "temperature": 0.3,
+          "max_tokens": 450,
+          "format_mode": "plain"
+        }
+      }
+    ]
+  },
+  "traces": [
+    {
+      "trace_id": "trace-seq-001",
+      "query": {
+        "ticket_text": "Hi, I was charged twice on invoice #4471 for my Pro plan this month. Can you refund the duplicate charge?",
+        "customer_first_name": "Priya"
+      },
+      "records": [
+        {
+          "stage_id": "classify_ticket",
+          "input": {
+            "ticket_text": "Hi, I was charged twice on invoice #4471 for my Pro plan this month. Can you refund the duplicate charge?"
+          },
+          "rendered_prompt": "[rendered prompt for classify_ticket — see prompt_template]",
+          "output": "{\"category\": \"billing\", \"confidence\": 0.97}",
+          "tokens": {
+            "in": 38,
+            "out": 22
+          },
+          "latency_ms": 410.2
+        },
+        {
+          "stage_id": "extract_entities",
+          "input": {
+            "classify_ticket.output": "{\"category\": \"billing\", \"confidence\": 0.97}",
+            "ticket_text": "Hi, I was charged twice on invoice #4471 for my Pro plan this month. Can you refund the duplicate charge?"
+          },
+          "rendered_prompt": "[rendered prompt for extract_entities — see prompt_template]",
+          "output": "{\"invoice_id\": \"4471\", \"plan\": \"Pro\", \"issue\": \"duplicate_charge\", \"amount\": null}",
+          "tokens": {
+            "in": 61,
+            "out": 34
+          },
+          "latency_ms": 588.7
+        },
+        {
+          "stage_id": "draft_response",
+          "input": {
+            "extract_entities.output": "{\"invoice_id\": \"4471\", \"plan\": \"Pro\", \"issue\": \"duplicate_charge\", \"amount\": null}",
+            "ticket_text": "Hi, I was charged twice on invoice #4471 for my Pro plan this month. Can you refund the duplicate charge?"
+          },
+          "rendered_prompt": "[rendered prompt for draft_response — see prompt_template]",
+          "output": "Hi Priya, thanks for flagging this. I can see invoice #4471 shows two charges for your Pro plan this billing cycle, which shouldn't have happened. I've queued a refund for the duplicate charge -- it should land back on your original payment method within 3-5 business days. Sorry for the inconvenience!",
+          "tokens": {
+            "in": 94,
+            "out": 118
+          },
+          "latency_ms": 1920.4
+        },
+        {
+          "stage_id": "tone_check",
+          "input": {
+            "draft_response.output": "Hi Priya, thanks for flagging this. I can see invoice #4471 shows two charges for your Pro plan this billing cycle, which shouldn't have happened. I've queued a refund for the duplicate charge -- it should land back on your original payment method within 3-5 business days. Sorry for the inconvenience!"
+          },
+          "rendered_prompt": "[rendered prompt for tone_check — see prompt_template]",
+          "output": "Hi Priya, thank you for letting us know, and I'm sorry for the trouble this caused. I can confirm invoice #4471 was charged twice for your Pro plan, which is on us to fix. I've already queued a refund for the duplicate charge -- you should see it back on your original payment method within 3-5 business days. Thanks for your patience.",
+          "tokens": {
+            "in": 128,
+            "out": 122
+          },
+          "latency_ms": 1104.9
+        },
+        {
+          "stage_id": "finalize_response",
+          "input": {
+            "tone_check.output": "Hi Priya, thank you for letting us know, and I'm sorry for the trouble this caused. I can confirm invoice #4471 was charged twice for your Pro plan, which is on us to fix. I've already queued a refund for the duplicate charge -- you should see it back on your original payment method within 3-5 business days. Thanks for your patience.",
+            "customer_first_name": "Priya"
+          },
+          "rendered_prompt": "[rendered prompt for finalize_response — see prompt_template]",
+          "output": "Hi Priya,\n\nThank you for letting us know, and I'm sorry for the trouble this caused. I can confirm invoice #4471 was charged twice for your Pro plan, which is on us to fix. I've already queued a refund for the duplicate charge -- you should see it back on your original payment method within 3-5 business days. Thanks for your patience.\n\nBest,\nSupport Team",
+          "tokens": {
+            "in": 150,
+            "out": 148
+          },
+          "latency_ms": 1360.0
+        }
+      ]
+    },
+    {
+      "trace_id": "trace-seq-002",
+      "query": {
+        "ticket_text": "My package for order #88213 says delivered but I never received it. It's been 4 days.",
+        "customer_first_name": "Daniel"
+      },
+      "records": [
+        {
+          "stage_id": "classify_ticket",
+          "input": {
+            "ticket_text": "My package for order #88213 says delivered but I never received it. It's been 4 days."
+          },
+          "rendered_prompt": "[rendered prompt for classify_ticket — see prompt_template]",
+          "output": "{\"category\": \"shipping\", \"confidence\": 0.93}",
+          "tokens": {
+            "in": 35,
+            "out": 20
+          },
+          "latency_ms": 395.5
+        },
+        {
+          "stage_id": "extract_entities",
+          "input": {
+            "classify_ticket.output": "{\"category\": \"shipping\", \"confidence\": 0.93}",
+            "ticket_text": "My package for order #88213 says delivered but I never received it. It's been 4 days."
+          },
+          "rendered_prompt": "[rendered prompt for extract_entities — see prompt_template]",
+          "output": "{\"order_id\": \"88213\", \"issue\": \"not_received\", \"days_since_delivery\": 4}",
+          "tokens": {
+            "in": 58,
+            "out": 30
+          },
+          "latency_ms": 540.3
+        },
+        {
+          "stage_id": "draft_response",
+          "input": {
+            "extract_entities.output": "{\"order_id\": \"88213\", \"issue\": \"not_received\", \"days_since_delivery\": 4}",
+            "ticket_text": "My package for order #88213 says delivered but I never received it. It's been 4 days."
+          },
+          "rendered_prompt": "[rendered prompt for draft_response — see prompt_template]",
+          "output": "Hi Daniel, I'm sorry to hear order #88213 shows as delivered but hasn't reached you. I've opened a carrier trace on the package and will also process a replacement shipment if it isn't located within 48 hours. I'll update you as soon as I hear back.",
+          "tokens": {
+            "in": 90,
+            "out": 110
+          },
+          "latency_ms": 1780.1
+        },
+        {
+          "stage_id": "tone_check",
+          "input": {
+            "draft_response.output": "Hi Daniel, I'm sorry to hear order #88213 shows as delivered but hasn't reached you. I've opened a carrier trace on the package and will also process a replacement shipment if it isn't located within 48 hours. I'll update you as soon as I hear back."
+          },
+          "rendered_prompt": "[rendered prompt for tone_check — see prompt_template]",
+          "output": "Hi Daniel, that's frustrating, and I'm sorry for the stress it's causing. I've opened a carrier trace on order #88213 right away, and I'll proactively send a replacement shipment if it isn't located within the next 48 hours. I'll keep you posted every step of the way.",
+          "tokens": {
+            "in": 120,
+            "out": 116
+          },
+          "latency_ms": 1050.6
+        },
+        {
+          "stage_id": "finalize_response",
+          "input": {
+            "tone_check.output": "Hi Daniel, that's frustrating, and I'm sorry for the stress it's causing. I've opened a carrier trace on order #88213 right away, and I'll proactively send a replacement shipment if it isn't located within the next 48 hours. I'll keep you posted every step of the way.",
+            "customer_first_name": "Daniel"
+          },
+          "rendered_prompt": "[rendered prompt for finalize_response — see prompt_template]",
+          "output": "Hi Daniel,\n\nThat's frustrating, and I'm sorry for the stress it's causing. I've opened a carrier trace on order #88213 right away, and I'll proactively send a replacement shipment if it isn't located within the next 48 hours. I'll keep you posted every step of the way.\n\nBest,\nSupport Team",
+          "tokens": {
+            "in": 142,
+            "out": 140
+          },
+          "latency_ms": 1290.4
+        }
+      ]
+    },
+    {
+      "trace_id": "trace-seq-003",
+      "query": {
+        "ticket_text": "I can't log into my account, it says my email isn't recognized but I've used it for a year.",
+        "customer_first_name": "Aisha"
+      },
+      "records": [
+        {
+          "stage_id": "classify_ticket",
+          "input": {
+            "ticket_text": "I can't log into my account, it says my email isn't recognized but I've used it for a year."
+          },
+          "rendered_prompt": "[rendered prompt for classify_ticket — see prompt_template]",
+          "output": "{\"category\": \"account_access\", \"confidence\": 0.89}",
+          "tokens": {
+            "in": 40,
+            "out": 24
+          },
+          "latency_ms": 420.8
+        },
+        {
+          "stage_id": "extract_entities",
+          "input": {
+            "classify_ticket.output": "{\"category\": \"account_access\", \"confidence\": 0.89}",
+            "ticket_text": "I can't log into my account, it says my email isn't recognized but I've used it for a year."
+          },
+          "rendered_prompt": "[rendered prompt for extract_entities — see prompt_template]",
+          "output": "{\"issue\": \"login_failure\", \"error_message\": \"email not recognized\", \"account_age_reported\": \"1 year\"}",
+          "tokens": {
+            "in": 63,
+            "out": 38
+          },
+          "latency_ms": 601.2
+        },
+        {
+          "stage_id": "draft_response",
+          "input": {
+            "extract_entities.output": "{\"issue\": \"login_failure\", \"error_message\": \"email not recognized\", \"account_age_reported\": \"1 year\"}",
+            "ticket_text": "I can't log into my account, it says my email isn't recognized but I've used it for a year."
+          },
+          "rendered_prompt": "[rendered prompt for draft_response — see prompt_template]",
+          "output": "Hi Aisha, sorry you're locked out. This usually means the email on file doesn't match what's in our system, sometimes due to a typo or a prior email change. I've sent a password reset link to the address you contacted us from -- if that doesn't work, reply here and I'll manually verify your account.",
+          "tokens": {
+            "in": 98,
+            "out": 124
+          },
+          "latency_ms": 2010.7
+        },
+        {
+          "stage_id": "tone_check",
+          "input": {
+            "draft_response.output": "Hi Aisha, sorry you're locked out. This usually means the email on file doesn't match what's in our system, sometimes due to a typo or a prior email change. I've sent a password reset link to the address you contacted us from -- if that doesn't work, reply here and I'll manually verify your account."
+          },
+          "rendered_prompt": "[rendered prompt for tone_check — see prompt_template]",
+          "output": "Hi Aisha, I completely understand how frustrating it is to be locked out of an account you've used for a year. This usually happens when the email on file doesn't quite match what's stored in our system. I've sent a password reset link to the address you wrote in from -- if that doesn't resolve it, just reply here and I'll manually verify your account myself.",
+          "tokens": {
+            "in": 132,
+            "out": 128
+          },
+          "latency_ms": 1140.3
+        },
+        {
+          "stage_id": "finalize_response",
+          "input": {
+            "tone_check.output": "Hi Aisha, I completely understand how frustrating it is to be locked out of an account you've used for a year. This usually happens when the email on file doesn't quite match what's stored in our system. I've sent a password reset link to the address you wrote in from -- if that doesn't resolve it, just reply here and I'll manually verify your account myself.",
+            "customer_first_name": "Aisha"
+          },
+          "rendered_prompt": "[rendered prompt for finalize_response — see prompt_template]",
+          "output": "Hi Aisha,\n\nI completely understand how frustrating it is to be locked out of an account you've used for a year. This usually happens when the email on file doesn't quite match what's stored in our system. I've sent a password reset link to the address you wrote in from -- if that doesn't resolve it, just reply here and I'll manually verify your account myself.\n\nBest,\nSupport Team",
+          "tokens": {
+            "in": 156,
+            "out": 154
+          },
+          "latency_ms": 1402.9
+        }
+      ]
+    },
+    {
+      "trace_id": "trace-seq-004",
+      "query": {
+        "ticket_text": "The blender I bought (SKU BLD-200) arrived with a cracked jug. I'd like a replacement please.",
+        "customer_first_name": "Marco"
+      },
+      "records": [
+        {
+          "stage_id": "classify_ticket",
+          "input": {
+            "ticket_text": "The blender I bought (SKU BLD-200) arrived with a cracked jug. I'd like a replacement please."
+          },
+          "rendered_prompt": "[rendered prompt for classify_ticket — see prompt_template]",
+          "output": "{\"category\": \"product_defect\", \"confidence\": 0.95}",
+          "tokens": {
+            "in": 37,
+            "out": 21
+          },
+          "latency_ms": 401.0
+        },
+        {
+          "stage_id": "extract_entities",
+          "input": {
+            "classify_ticket.output": "{\"category\": \"product_defect\", \"confidence\": 0.95}",
+            "ticket_text": "The blender I bought (SKU BLD-200) arrived with a cracked jug. I'd like a replacement please."
+          },
+          "rendered_prompt": "[rendered prompt for extract_entities — see prompt_template]",
+          "output": "{\"sku\": \"BLD-200\", \"product\": \"blender\", \"defect\": \"cracked_jug\", \"requested_action\": \"replacement\"}",
+          "tokens": {
+            "in": 60,
+            "out": 32
+          },
+          "latency_ms": 555.9
+        },
+        {
+          "stage_id": "draft_response",
+          "input": {
+            "extract_entities.output": "{\"sku\": \"BLD-200\", \"product\": \"blender\", \"defect\": \"cracked_jug\", \"requested_action\": \"replacement\"}",
+            "ticket_text": "The blender I bought (SKU BLD-200) arrived with a cracked jug. I'd like a replacement please."
+          },
+          "rendered_prompt": "[rendered prompt for draft_response — see prompt_template]",
+          "output": "Hi Marco, so sorry to hear the BLD-200 arrived with a cracked jug -- that shouldn't have made it out of our warehouse. I've shipped a replacement jug (no need to return the damaged one) which should arrive within 3-5 business days.",
+          "tokens": {
+            "in": 92,
+            "out": 112
+          },
+          "latency_ms": 1850.6
+        },
+        {
+          "stage_id": "tone_check",
+          "input": {
+            "draft_response.output": "Hi Marco, so sorry to hear the BLD-200 arrived with a cracked jug -- that shouldn't have made it out of our warehouse. I've shipped a replacement jug (no need to return the damaged one) which should arrive within 3-5 business days."
+          },
+          "rendered_prompt": "[rendered prompt for tone_check — see prompt_template]",
+          "output": "Hi Marco, I'm really sorry the BLD-200 arrived with a cracked jug -- that's on us, and not the experience we want you to have. I've already shipped a replacement jug at no cost, and there's no need to return the damaged one. It should arrive within 3-5 business days.",
+          "tokens": {
+            "in": 122,
+            "out": 118
+          },
+          "latency_ms": 1080.2
+        },
+        {
+          "stage_id": "finalize_response",
+          "input": {
+            "tone_check.output": "Hi Marco, I'm really sorry the BLD-200 arrived with a cracked jug -- that's on us, and not the experience we want you to have. I've already shipped a replacement jug at no cost, and there's no need to return the damaged one. It should arrive within 3-5 business days.",
+            "customer_first_name": "Marco"
+          },
+          "rendered_prompt": "[rendered prompt for finalize_response — see prompt_template]",
+          "output": "Hi Marco,\n\nI'm really sorry the BLD-200 arrived with a cracked jug -- that's on us, and not the experience we want you to have. I've already shipped a replacement jug at no cost, and there's no need to return the damaged one. It should arrive within 3-5 business days.\n\nBest,\nSupport Team",
+          "tokens": {
+            "in": 146,
+            "out": 144
+          },
+          "latency_ms": 1330.7
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,281 @@
+"""SQLAlchemy 2.0 declarative models for Refract's core data model.
+
+Mirrors docs/refract-parity-engine-plan.md §2 exactly:
+
+    Pipeline
+     └── Stage[]            (depends_on[], model, prompt_template, params)
+    Pipeline has:
+     └── BenchmarkSet
+          └── Trace[]
+               └── StageRecord (input, rendered_prompt, output, tokens*, latency_ms)
+    Stage has:
+     └── Rubric (deterministic_checks, judge_criteria, downstream_contract)
+    Migration
+     └── target_model_config, budget, parity_threshold, status
+          └── Candidate[] per stage
+
+Design notes
+------------
+* ``Stage.depends_on`` — the plan describes it as "array of stage ids". A
+  Postgres ``ARRAY`` column would work in Postgres but has no native
+  equivalent in SQLite (this phase targets SQLite for fast local dev/tests
+  per the M1.3 brief) and can't carry a real foreign-key constraint anyway.
+  Instead this models it as a proper many-to-many self-referential
+  relationship via a ``stage_dependencies`` association table
+  (stage_id -> depends_on_stage_id). This is portable across SQLite/Postgres,
+  gives FK integrity, and is what the DAG builder in packages/core will want
+  to query (``stage.depends_on`` / ``stage.dependents``) rather than parsing
+  an array.
+* All "free-form" JSON fields (params, scores, target_model_config, rubric
+  checks/criteria/contract) use SQLAlchemy's generic ``JSON`` type, which
+  compiles to native ``JSON``/``JSONB``-ish storage on Postgres and to text
+  on SQLite — both round-trip Python dict/list structures transparently.
+* Timestamps use timezone-aware ``DateTime`` with a server-side default of
+  "now" so both dialects populate created_at/updated_at consistently.
+"""
+
+from __future__ import annotations
+
+import datetime
+
+from sqlalchemy import (
+    JSON,
+    Column,
+    DateTime,
+    Float,
+    ForeignKey,
+    Integer,
+    String,
+    Table,
+    Text,
+    UniqueConstraint,
+    func,
+)
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
+
+
+class Base(DeclarativeBase):
+    pass
+
+
+# ---------------------------------------------------------------------------
+# Pipeline
+# ---------------------------------------------------------------------------
+
+
+class Pipeline(Base):
+    __tablename__ = "pipelines"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+    stages: Mapped[list["Stage"]] = relationship(
+        back_populates="pipeline", cascade="all, delete-orphan"
+    )
+    benchmark_sets: Mapped[list["BenchmarkSet"]] = relationship(
+        back_populates="pipeline", cascade="all, delete-orphan"
+    )
+    migrations: Mapped[list["Migration"]] = relationship(
+        back_populates="pipeline", cascade="all, delete-orphan"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Stage + self-referential depends_on association table
+# ---------------------------------------------------------------------------
+
+stage_dependencies = Table(
+    "stage_dependencies",
+    Base.metadata,
+    Column(
+        "stage_id", ForeignKey("stages.id", ondelete="CASCADE"), primary_key=True
+    ),
+    Column(
+        "depends_on_stage_id",
+        ForeignKey("stages.id", ondelete="CASCADE"),
+        primary_key=True,
+    ),
+)
+
+
+class Stage(Base):
+    __tablename__ = "stages"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    pipeline_id: Mapped[int] = mapped_column(
+        ForeignKey("pipelines.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    model: Mapped[str] = mapped_column(String(255), nullable=False)
+    prompt_template: Mapped[str] = mapped_column(Text, nullable=False)
+    # temp / top_p / max_tokens / format_mode / ...
+    params: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+
+    pipeline: Mapped["Pipeline"] = relationship(back_populates="stages")
+
+    # Stages this stage depends on (upstream).
+    depends_on: Mapped[list["Stage"]] = relationship(
+        "Stage",
+        secondary=stage_dependencies,
+        primaryjoin=id == stage_dependencies.c.stage_id,
+        secondaryjoin=id == stage_dependencies.c.depends_on_stage_id,
+        back_populates="dependents",
+    )
+    # Stages that depend on this stage (downstream) — reverse of depends_on.
+    dependents: Mapped[list["Stage"]] = relationship(
+        "Stage",
+        secondary=stage_dependencies,
+        primaryjoin=id == stage_dependencies.c.depends_on_stage_id,
+        secondaryjoin=id == stage_dependencies.c.stage_id,
+        back_populates="depends_on",
+    )
+
+    stage_records: Mapped[list["StageRecord"]] = relationship(
+        back_populates="stage", cascade="all, delete-orphan"
+    )
+    rubric: Mapped["Rubric | None"] = relationship(
+        back_populates="stage", cascade="all, delete-orphan", uselist=False
+    )
+    candidates: Mapped[list["Candidate"]] = relationship(
+        back_populates="stage", cascade="all, delete-orphan"
+    )
+
+
+# ---------------------------------------------------------------------------
+# BenchmarkSet / Trace / StageRecord
+# ---------------------------------------------------------------------------
+
+
+class BenchmarkSet(Base):
+    __tablename__ = "benchmark_sets"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    pipeline_id: Mapped[int] = mapped_column(
+        ForeignKey("pipelines.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    pipeline: Mapped["Pipeline"] = relationship(back_populates="benchmark_sets")
+    traces: Mapped[list["Trace"]] = relationship(
+        back_populates="benchmark_set", cascade="all, delete-orphan"
+    )
+
+
+class Trace(Base):
+    __tablename__ = "traces"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    benchmark_set_id: Mapped[int] = mapped_column(
+        ForeignKey("benchmark_sets.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    query_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    is_holdout: Mapped[bool] = mapped_column(default=False, nullable=False)
+
+    benchmark_set: Mapped["BenchmarkSet"] = relationship(back_populates="traces")
+    stage_records: Mapped[list["StageRecord"]] = relationship(
+        back_populates="trace", cascade="all, delete-orphan"
+    )
+
+
+class StageRecord(Base):
+    __tablename__ = "stage_records"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    trace_id: Mapped[int] = mapped_column(
+        ForeignKey("traces.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    stage_id: Mapped[int] = mapped_column(
+        ForeignKey("stages.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    input: Mapped[dict] = mapped_column(JSON, nullable=False)
+    rendered_prompt: Mapped[str] = mapped_column(Text, nullable=False)
+    output: Mapped[dict] = mapped_column(JSON, nullable=False)
+    tokens_in: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    tokens_out: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    tokens_thinking: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    latency_ms: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+
+    trace: Mapped["Trace"] = relationship(back_populates="stage_records")
+    stage: Mapped["Stage"] = relationship(back_populates="stage_records")
+
+
+# ---------------------------------------------------------------------------
+# Rubric
+# ---------------------------------------------------------------------------
+
+
+class Rubric(Base):
+    __tablename__ = "rubrics"
+    __table_args__ = (UniqueConstraint("stage_id", name="uq_rubrics_stage_id"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    stage_id: Mapped[int] = mapped_column(
+        ForeignKey("stages.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    deterministic_checks: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    judge_criteria: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    downstream_contract: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+
+    stage: Mapped["Stage"] = relationship(back_populates="rubric")
+
+
+# ---------------------------------------------------------------------------
+# Migration / Candidate
+# ---------------------------------------------------------------------------
+
+
+class Migration(Base):
+    __tablename__ = "migrations"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    pipeline_id: Mapped[int] = mapped_column(
+        ForeignKey("pipelines.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    # per-stage or global target model config, e.g. {"default": "gpt-4o-mini",
+    # "stages": {"3": "gemini-flash-lite"}}
+    target_model_config: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    budget: Mapped[float] = mapped_column(Float, nullable=False)
+    parity_threshold: Mapped[float] = mapped_column(Float, nullable=False, default=0.95)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending")
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    pipeline: Mapped["Pipeline"] = relationship(back_populates="migrations")
+    candidates: Mapped[list["Candidate"]] = relationship(
+        back_populates="migration", cascade="all, delete-orphan"
+    )
+
+
+class Candidate(Base):
+    __tablename__ = "candidates"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    migration_id: Mapped[int] = mapped_column(
+        ForeignKey("migrations.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    stage_id: Mapped[int] = mapped_column(
+        ForeignKey("stages.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    prompt_variant: Mapped[str] = mapped_column(Text, nullable=False)
+    params: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    format: Mapped[str] = mapped_column(String(32), nullable=False)
+    # {"deterministic": 0.9, "judge": 0.85, "embedding_sim": 0.93}
+    scores: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    cost: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    latency: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+
+    migration: Mapped["Migration"] = relationship(back_populates="candidates")
+    stage: Mapped["Stage"] = relationship(back_populates="candidates")

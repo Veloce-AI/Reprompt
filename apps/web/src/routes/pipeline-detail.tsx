@@ -55,6 +55,9 @@ export default function PipelineDetail() {
             Pipeline canvas
           </h1>
         </div>
+        <Link to="/pipelines/$pipelineId/rubrics" params={{ pipelineId }}>
+          <Button variant="secondary">Review rubrics</Button>
+        </Link>
       </div>
 
       {isLoading && (

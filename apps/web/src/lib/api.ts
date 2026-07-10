@@ -65,8 +65,46 @@ export interface DagResponse {
   edges: DagEdge[];
 }
 
+export interface RubricOut {
+  id: number;
+  stage_id: number;
+  stage_name: string;
+  deterministic_checks: Record<string, unknown>[];
+  judge_criteria: Record<string, unknown>[];
+  downstream_contract: string[];
+  approved: boolean;
+}
+
+export interface RubricUpdate {
+  deterministic_checks?: Record<string, unknown>[];
+  judge_criteria?: Record<string, unknown>[];
+  downstream_contract?: string[];
+}
+
 export function listPipelines(): Promise<PipelineSummary[]> {
   return request<PipelineSummary[]>("/pipelines");
+}
+
+export function listRubrics(pipelineId: number): Promise<RubricOut[]> {
+  return request<RubricOut[]>(`/pipelines/${pipelineId}/rubrics`);
+}
+
+export function updateRubric(rubricId: number, update: RubricUpdate): Promise<RubricOut> {
+  return request<RubricOut>(`/rubrics/${rubricId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(update),
+  });
+}
+
+export function approveRubric(rubricId: number): Promise<RubricOut> {
+  return request<RubricOut>(`/rubrics/${rubricId}/approve`, { method: "POST" });
+}
+
+export function approveAllRubrics(pipelineId: number): Promise<RubricOut[]> {
+  return request<RubricOut[]>(`/pipelines/${pipelineId}/rubrics/approve-all`, {
+    method: "POST",
+  });
 }
 
 export function getPipelineDag(pipelineId: number): Promise<DagResponse> {

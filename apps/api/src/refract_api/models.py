@@ -40,6 +40,7 @@ import datetime
 
 from sqlalchemy import (
     JSON,
+    Boolean,
     Column,
     DateTime,
     Float,
@@ -251,6 +252,12 @@ class Rubric(Base):
     deterministic_checks: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     judge_criteria: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     downstream_contract: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    # Screen 4 (rubric review, M2): a human has looked at this stage's rubric
+    # and signed off on it. Gates the first migration per the plan's HITL
+    # requirement - not enforced yet at the migration-start layer (that lands
+    # with M3+), just tracked here so the UI can show per-stage/"approve all"
+    # state.
+    approved: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
     stage: Mapped["Stage"] = relationship(back_populates="rubric")
 

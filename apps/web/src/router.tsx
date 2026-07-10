@@ -3,6 +3,7 @@ import Home from "./routes/home";
 import DevKit from "./routes/dev-kit";
 import PipelinesImport from "./routes/pipelines-import";
 import PipelineDetail from "./routes/pipeline-detail";
+import RubricReview from "./routes/rubric-review";
 
 const rootRoute = createRootRoute({
   component: () => <Outlet />,
@@ -32,11 +33,18 @@ const pipelineDetailRoute = createRoute({
   component: PipelineDetail,
 });
 
+const rubricReviewRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/pipelines/$pipelineId/rubrics",
+  component: RubricReview,
+});
+
 const routeTree = rootRoute.addChildren([
   homeRoute,
   devKitRoute,
   pipelinesImportRoute,
   pipelineDetailRoute,
+  rubricReviewRoute,
 ]);
 
 const router = createRouter({ routeTree });

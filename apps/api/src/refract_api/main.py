@@ -2,6 +2,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from refract_api.db import engine
 from refract_api.models import Base
@@ -18,6 +19,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 
 app = FastAPI(title="Refract API", version="0.0.1", lifespan=lifespan)
+
+# Local dev only: Vite serves the web app from :5173, the API from :8000.
+# Tighten/replace this with real origin config before deploying anywhere.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 app.include_router(pipelines_router)
 
 

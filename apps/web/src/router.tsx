@@ -1,6 +1,8 @@
 import { createRouter, createRoute, createRootRoute, Outlet } from "@tanstack/react-router";
 import Home from "./routes/home";
 import DevKit from "./routes/dev-kit";
+import PipelinesImport from "./routes/pipelines-import";
+import PipelineDetail from "./routes/pipeline-detail";
 
 const rootRoute = createRootRoute({
   component: () => <Outlet />,
@@ -18,7 +20,24 @@ const devKitRoute = createRoute({
   component: DevKit,
 });
 
-const routeTree = rootRoute.addChildren([homeRoute, devKitRoute]);
+const pipelinesImportRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/pipelines/import",
+  component: PipelinesImport,
+});
+
+const pipelineDetailRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/pipelines/$pipelineId",
+  component: PipelineDetail,
+});
+
+const routeTree = rootRoute.addChildren([
+  homeRoute,
+  devKitRoute,
+  pipelinesImportRoute,
+  pipelineDetailRoute,
+]);
 
 const router = createRouter({ routeTree });
 

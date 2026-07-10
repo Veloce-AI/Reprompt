@@ -6,7 +6,7 @@ import json
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
 from refract_core import CycleError, TraceFileError, build_dag, parse_trace_file
@@ -37,10 +37,25 @@ class DagLayer(BaseModel):
     stage_ids: list[int]
 
 
+class StageInfo(BaseModel):
+    id: int
+    name: str
+    model: str
+    avg_tokens_in: float
+    avg_tokens_out: float
+    avg_latency_ms: float
+
+
+class DagEdge(BaseModel):
+    from_stage_id: int
+    to_stage_id: int
+
+
 class DagResponse(BaseModel):
     pipeline_id: int
     layers: list[DagLayer]
-    stages: dict[int, str]  # stage id -> name, for label rendering
+    stages: dict[int, StageInfo]  # stage id -> info, for canvas node rendering
+    edges: list[DagEdge]
 
 
 @router.post("/import", response_model=ImportResult, status_code=201)
@@ -153,5 +168,40 @@ def get_pipeline_dag(pipeline_id: int, db: Session = Depends(get_db)) -> DagResp
         DagLayer(stage_ids=[int(stage_id) for stage_id in layer])
         for layer in dag.layers
     ]
-    stage_names = {stage.id: stage.name for stage in pipeline.stages}
-    return DagResponse(pipeline_id=pipeline.id, layers=layers, stages=stage_names)
+
+    stage_ids = [stage.id for stage in pipeline.stages]
+    avg_rows = db.execute(
+        select(
+            models.StageRecord.stage_id,
+            func.avg(models.StageRecord.tokens_in),
+            func.avg(models.StageRecord.tokens_out),
+            func.avg(models.StageRecord.latency_ms),
+        )
+        .where(models.StageRecord.stage_id.in_(stage_ids))
+        .group_by(models.StageRecord.stage_id)
+    ).all()
+    averages = {
+        row[0]: (row[1] or 0.0, row[2] or 0.0, row[3] or 0.0) for row in avg_rows
+    }
+
+    stage_info = {
+        stage.id: StageInfo(
+            id=stage.id,
+            name=stage.name,
+            model=stage.model,
+            avg_tokens_in=averages.get(stage.id, (0.0, 0.0, 0.0))[0],
+            avg_tokens_out=averages.get(stage.id, (0.0, 0.0, 0.0))[1],
+            avg_latency_ms=averages.get(stage.id, (0.0, 0.0, 0.0))[2],
+        )
+        for stage in pipeline.stages
+    }
+
+    edges = [
+        DagEdge(from_stage_id=dep.id, to_stage_id=stage.id)
+        for stage in pipeline.stages
+        for dep in stage.depends_on
+    ]
+
+    return DagResponse(
+        pipeline_id=pipeline.id, layers=layers, stages=stage_info, edges=edges
+    )

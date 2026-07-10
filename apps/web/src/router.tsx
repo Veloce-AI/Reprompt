@@ -7,6 +7,7 @@ import RubricReview from "./routes/rubric-review";
 import NewMigration from "./routes/new-migration";
 import Login from "./routes/login";
 import AuthVerify from "./routes/auth-verify";
+import Settings from "./routes/settings";
 
 const rootRoute = createRootRoute({
   component: () => <Outlet />,
@@ -66,6 +67,12 @@ const authVerifyRoute = createRoute({
   component: AuthVerify,
 });
 
+const settingsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/settings",
+  component: Settings,
+});
+
 const routeTree = rootRoute.addChildren([
   homeRoute,
   devKitRoute,
@@ -75,6 +82,7 @@ const routeTree = rootRoute.addChildren([
   newMigrationRoute,
   loginRoute,
   authVerifyRoute,
+  settingsRoute,
 ]);
 
 const router = createRouter({ routeTree });

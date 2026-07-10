@@ -360,6 +360,9 @@ class Workspace(Base):
     )
 
     owner: Mapped["User"] = relationship(back_populates="workspace")
+    api_keys: Mapped[list["WorkspaceApiKey"]] = relationship(
+        back_populates="workspace", cascade="all, delete-orphan"
+    )
 
 
 class MagicLinkToken(Base):
@@ -385,3 +388,59 @@ class MagicLinkToken(Base):
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+
+
+# ---------------------------------------------------------------------------
+# Settings: WorkspaceApiKey (screen 9, M5)
+# ---------------------------------------------------------------------------
+#
+# Per the master build prompt §4 screen 9: "BYOK keys (per provider,
+# encrypted at rest, never displayed after save)" and working rule 6:
+# "Never hardcode API keys. All model access is BYOK via env/user-supplied
+# keys through LiteLLM."
+#
+# Provider design: free text, not an enum
+# ------------------------------------------
+# LiteLLM supports dozens of providers (openai, anthropic, gemini, groq,
+# together, bedrock, azure, ...) and the project's own model-registry design
+# goal is "any provider LiteLLM knows about," not a fixed shortlist. An enum
+# column would mean every new provider LiteLLM adds requires a DB migration
+# here just to let a user save a key for it - that directly contradicts
+# "any provider." So `provider` is free text (normalized to lowercase/
+# stripped in refract_api.settings before storage/lookup so "OpenAI" and
+# "openai" upsert the same row), with the UI offering a curated suggestion
+# list (openai/anthropic/gemini/other) purely as a convenience, not a
+# constraint - see apps/web/src/routes/settings.tsx.
+#
+# encrypted_key holds Fernet ciphertext (ASCII/base64 text - see
+# refract_api.crypto), never the raw secret. last_four is the ONLY
+# plaintext fragment of the key ever persisted, kept solely so a user can
+# tell their keys apart in the UI ("sk-...a1b2") without the full secret
+# ever being displayed again after save.
+class WorkspaceApiKey(Base):
+    __tablename__ = "workspace_api_keys"
+    __table_args__ = (
+        # Enables upsert-by-provider (see refract_api.settings.add_api_key's
+        # docstring for why replace-in-place was chosen over a separate
+        # delete-then-add flow) and stops a workspace from silently
+        # accumulating multiple "active" keys for the same provider.
+        UniqueConstraint(
+            "workspace_id", "provider", name="uq_workspace_api_keys_workspace_provider"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    workspace_id: Mapped[int] = mapped_column(
+        ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    provider: Mapped[str] = mapped_column(String(64), nullable=False)
+    # Fernet ciphertext, stored as text (it's already URL-safe base64/ASCII)
+    # rather than LargeBinary - round-trips identically on SQLite/Postgres
+    # and never needs binary-safe handling.
+    encrypted_key: Mapped[str] = mapped_column(Text, nullable=False)
+    last_four: Mapped[str] = mapped_column(String(4), nullable=False)
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    workspace: Mapped["Workspace"] = relationship(back_populates="api_keys")

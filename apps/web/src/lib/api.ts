@@ -247,3 +247,69 @@ export function getCurrentUser(): Promise<MeResult> {
     headers: token ? { Authorization: `Bearer ${token}` } : undefined,
   });
 }
+
+// ---------------------------------------------------------------------------
+// Settings (screen 9): workspace name + BYOK provider API keys
+// ---------------------------------------------------------------------------
+//
+// Every call here needs the Bearer session token - see
+// apps/api/src/refract_api/settings.py, mounted behind get_current_user.
+// authHeaders() mirrors the inline pattern getCurrentUser() already uses
+// above, pulled out since every settings function needs it.
+
+function authHeaders(): HeadersInit {
+  const token = getSessionToken();
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
+export interface WorkspaceSettings {
+  name: string;
+}
+
+export function getWorkspaceSettings(): Promise<WorkspaceSettings> {
+  return request<WorkspaceSettings>("/settings/workspace", { headers: authHeaders() });
+}
+
+export function updateWorkspaceSettings(name: string): Promise<WorkspaceSettings> {
+  return request<WorkspaceSettings>("/settings/workspace", {
+    method: "PATCH",
+    headers: { ...authHeaders(), "Content-Type": "application/json" },
+    body: JSON.stringify({ name }),
+  });
+}
+
+export interface ApiKeyOut {
+  id: number;
+  provider: string;
+  last_four: string;
+  created_at: string;
+}
+
+export function listApiKeys(): Promise<ApiKeyOut[]> {
+  return request<ApiKeyOut[]>("/settings/api-keys", { headers: authHeaders() });
+}
+
+export function addApiKey(provider: string, apiKey: string): Promise<ApiKeyOut> {
+  return request<ApiKeyOut>("/settings/api-keys", {
+    method: "POST",
+    headers: { ...authHeaders(), "Content-Type": "application/json" },
+    body: JSON.stringify({ provider, api_key: apiKey }),
+  });
+}
+
+export async function deleteApiKey(id: number): Promise<void> {
+  const response = await fetch(`${API_BASE_URL}/settings/api-keys/${id}`, {
+    method: "DELETE",
+    headers: authHeaders(),
+  });
+  if (!response.ok) {
+    let detail = response.statusText;
+    try {
+      const body = await response.json();
+      if (typeof body.detail === "string") detail = body.detail;
+    } catch {
+      // response body wasn't JSON (or was empty, as on a 204) - fall back
+    }
+    throw new ApiError(detail, response.status);
+  }
+}

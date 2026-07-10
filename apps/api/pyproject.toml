@@ -4,6 +4,7 @@ version = "0.0.1"
 requires-python = ">=3.12"
 dependencies = [
     "alembic>=1.18.5",
+    "cryptography>=42.0.0",
     "fastapi",
     "sqlalchemy>=2.0.51",
     "uvicorn[standard]",

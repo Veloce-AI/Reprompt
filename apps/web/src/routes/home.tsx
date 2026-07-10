@@ -39,11 +39,16 @@ export default function Home() {
             Import a pipeline's execution traces to start a migration.
           </p>
         </div>
-        {pipelines && pipelines.length > 0 && (
-          <Link to="/pipelines/import">
-            <Button variant="primary">Import pipeline</Button>
+        <div className="flex items-center gap-4">
+          <Link to="/settings" className="text-13 text-ink-soft hover:text-ink">
+            Settings
           </Link>
-        )}
+          {pipelines && pipelines.length > 0 && (
+            <Link to="/pipelines/import">
+              <Button variant="primary">Import pipeline</Button>
+            </Link>
+          )}
+        </div>
       </div>
 
       {isLoading && (

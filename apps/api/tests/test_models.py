@@ -46,12 +46,14 @@ def _build_object_graph(db: Session) -> int:
     pipeline = Pipeline(name="Valuation Pipeline")
 
     stage_extract = Stage(
+        source_id="extract_financials",
         name="extract_financials",
         model="claude-sonnet-4-5",
         prompt_template="Extract financial line items from: {input}",
         params={"temperature": 0.2, "top_p": 1.0, "max_tokens": 2048, "format_mode": "json"},
     )
     stage_summarize = Stage(
+        source_id="summarize_valuation",
         name="summarize_valuation",
         model="claude-sonnet-4-5",
         prompt_template="Summarize the valuation given: {input}",
@@ -63,7 +65,13 @@ def _build_object_graph(db: Session) -> int:
     pipeline.stages = [stage_extract, stage_summarize]
 
     benchmark_set = BenchmarkSet(name="optimize-set-v1", pipeline=pipeline)
-    trace = Trace(query_index=0, is_holdout=False, benchmark_set=benchmark_set)
+    trace = Trace(
+        source_trace_id="trace-0",
+        query={"raw_text": "Q3 revenue was $4.2M"},
+        query_index=0,
+        is_holdout=False,
+        benchmark_set=benchmark_set,
+    )
 
     record_extract = StageRecord(
         stage=stage_extract,

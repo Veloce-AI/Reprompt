@@ -37,6 +37,7 @@ def persist_trace_file(db: Session, trace_file: TraceFile) -> models.Pipeline:
     for stage in trace_file.pipeline.stages:
         db_stage = models.Stage(
             pipeline_id=pipeline.id,
+            source_id=stage.id,
             name=stage.name,
             model=stage.model,
             prompt_template=stage.prompt_template,
@@ -59,7 +60,10 @@ def persist_trace_file(db: Session, trace_file: TraceFile) -> models.Pipeline:
 
     for query_index, trace in enumerate(trace_file.traces):
         db_trace = models.Trace(
-            benchmark_set_id=benchmark_set.id, query_index=query_index
+            benchmark_set_id=benchmark_set.id,
+            source_trace_id=trace.trace_id,
+            query=trace.query,
+            query_index=query_index,
         )
         db.add(db_trace)
         db.flush()
@@ -76,6 +80,7 @@ def persist_trace_file(db: Session, trace_file: TraceFile) -> models.Pipeline:
                     tokens_out=record.tokens.output,
                     tokens_thinking=record.tokens.thinking or 0,
                     latency_ms=record.latency_ms,
+                    cost=record.cost,
                 )
             )
 

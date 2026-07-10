@@ -25,23 +25,27 @@ from refract_core import (
     TraceFile,
 )
 
+from refract_api import models
 from refract_api.db import get_db
 from refract_api.main import app
 from refract_api.models import Base
 
 
 @pytest.fixture()
-def client() -> Iterator[TestClient]:
+def session_factory() -> sessionmaker:
     engine = create_engine(
         "sqlite://",
         connect_args={"check_same_thread": False},
         poolclass=StaticPool,
     )
     Base.metadata.create_all(engine)
-    testing_session = sessionmaker(bind=engine)
+    return sessionmaker(bind=engine)
 
+
+@pytest.fixture()
+def client(session_factory: sessionmaker) -> Iterator[TestClient]:
     def override_get_db():
-        db = testing_session()
+        db = session_factory()
         try:
             yield db
         finally:
@@ -193,3 +197,32 @@ def test_get_dag_returns_correctly_layered_diamond(client: TestClient) -> None:
 def test_get_dag_for_unknown_pipeline_returns_404(client: TestClient) -> None:
     response = client.get("/pipelines/999999/dag")
     assert response.status_code == 404
+
+
+def test_import_preserves_source_ids_query_and_cost(
+    client: TestClient, session_factory: sessionmaker
+) -> None:
+    """Regression test for a real data-loss bug: ingest previously dropped
+    Trace.query, Trace.trace_id, and each Stage's source (user-facing) id
+    entirely - found by an independent review, confirmed against real
+    production trace data which needs exactly these fields preserved.
+    """
+    trace_file = _diamond_trace_file()
+    upload_response = _upload(client, trace_file)
+    assert upload_response.status_code == 201
+
+    with session_factory() as db:
+        stages = db.query(models.Stage).order_by(models.Stage.id).all()
+        source_ids = {s.source_id for s in stages}
+        assert source_ids == {"root", "a", "b", "join"}
+
+        traces = db.query(models.Trace).all()
+        assert len(traces) == 1
+        assert traces[0].source_trace_id == "t0"
+        assert traces[0].query == {"q": "hello"}
+
+        records = db.query(models.StageRecord).all()
+        assert len(records) == 4
+        # _diamond_trace_file's records don't set cost - should persist as
+        # None (unknown), not silently coerced to 0.
+        assert all(r.cost is None for r in records)

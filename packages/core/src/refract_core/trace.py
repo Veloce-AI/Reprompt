@@ -160,6 +160,12 @@ class StageRecord(BaseModel):
     output: str = Field(description="The raw model output/completion text for this stage.")
     tokens: TokenUsage
     latency_ms: float = Field(ge=0, description="Wall-clock latency of this stage's model call, in milliseconds.")
+    cost: float | None = Field(
+        default=None,
+        ge=0,
+        description="Actual $ cost of this stage's model call, if known. Central to the product's cost-reduction "
+        "pitch, but optional since not every trace source reports it (our own synthetic fixtures don't).",
+    )
 
 
 class Trace(BaseModel):

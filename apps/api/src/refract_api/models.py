@@ -109,11 +109,19 @@ stage_dependencies = Table(
 
 class Stage(Base):
     __tablename__ = "stages"
+    __table_args__ = (
+        UniqueConstraint("pipeline_id", "source_id", name="uq_stages_pipeline_source_id"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     pipeline_id: Mapped[int] = mapped_column(
         ForeignKey("pipelines.id", ondelete="CASCADE"), nullable=False, index=True
     )
+    # The stage id as it appeared in the source trace file (e.g. "extract_financials").
+    # Distinct from the DB primary key: M5's config export needs to write
+    # migrated prompts back out keyed by the user's own stage ids, and names
+    # alone aren't guaranteed unique. Unique per pipeline, not globally.
+    source_id: Mapped[str] = mapped_column(String(255), nullable=False)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     model: Mapped[str] = mapped_column(String(255), nullable=False)
     prompt_template: Mapped[str] = mapped_column(Text, nullable=False)
@@ -180,6 +188,15 @@ class Trace(Base):
     benchmark_set_id: Mapped[int] = mapped_column(
         ForeignKey("benchmark_sets.id", ondelete="CASCADE"), nullable=False, index=True
     )
+    # The trace/query id as it appeared in the source file (e.g. a UUID from
+    # a production query log). Was previously dropped entirely on ingest -
+    # M2's rubric generation and M4's holdout re-runs both need to trace a
+    # persisted row back to its original source record.
+    source_trace_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    # The original user query/input for this trace. Free-form JSON since
+    # different trace sources shape it differently (a plain string question,
+    # a structured multi-field input, etc.) - importers normalize into this.
+    query: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     query_index: Mapped[int] = mapped_column(Integer, nullable=False)
     is_holdout: Mapped[bool] = mapped_column(default=False, nullable=False)
 
@@ -201,11 +218,18 @@ class StageRecord(Base):
     )
     input: Mapped[dict] = mapped_column(JSON, nullable=False)
     rendered_prompt: Mapped[str] = mapped_column(Text, nullable=False)
-    output: Mapped[dict] = mapped_column(JSON, nullable=False)
+    # Model output text. JSON-typed column (not Text) even though the value
+    # is always a plain str today, matching packages/core's StageRecord.output
+    # - keeps the door open for structured output without another migration.
+    output: Mapped[str] = mapped_column(JSON, nullable=False)
     tokens_in: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     tokens_out: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     tokens_thinking: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     latency_ms: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    # $ cost of this call, if the source trace reported it. Nullable, not
+    # defaulted to 0 - "unknown" and "free" are different things, and this
+    # feeds directly into the product's cost-delta scorecard (M5).
+    cost: Mapped[float | None] = mapped_column(Float, nullable=True)
 
     trace: Mapped["Trace"] = relationship(back_populates="stage_records")
     stage: Mapped["Stage"] = relationship(back_populates="stage_records")

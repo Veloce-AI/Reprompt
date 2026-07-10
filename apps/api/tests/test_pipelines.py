@@ -186,7 +186,8 @@ def test_get_dag_returns_correctly_layered_diamond(client: TestClient) -> None:
     assert body["pipeline_id"] == pipeline_id
     assert len(body["layers"]) == 3  # root | {a, b} | join
     assert len(body["layers"][1]["stage_ids"]) == 2
-    assert set(body["stages"].values()) == {"Root", "Branch A", "Branch B", "Join"}
+    stage_names = {info["name"] for info in body["stages"].values()}
+    assert stage_names == {"Root", "Branch A", "Branch B", "Join"}
 
 
 def test_get_dag_for_unknown_pipeline_returns_404(client: TestClient) -> None:

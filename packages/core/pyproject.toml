@@ -1,9 +1,14 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
 [project]
 name = "refract-core"
 version = "0.0.1"
 requires-python = ">=3.12"
 dependencies = [
     "pydantic>=2.7",
+    "sentence-transformers>=3.0",
 ]
 
 [project.optional-dependencies]

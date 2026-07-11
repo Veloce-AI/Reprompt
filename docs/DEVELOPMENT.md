@@ -180,3 +180,28 @@ automated pass is not a substitute for actually looking at the screen:
   **Not started:** the rubric generator and the LLM judge — both need a
   real model API key (BYOK, per the project's own no-hardcoded-keys rule)
   that hasn't been configured yet.
+
+## Remaining plan (short version)
+
+Done: M0-M2 fully, screens 1-5, M3's non-LLM groundwork (model-card
+transforms, param sweep, budget tracker, selection rule), M5's
+auth/settings/BYOK wiring, universal trace format v1.1.
+
+Left, in order:
+1. **Rubric generation trigger in the UI** - a button on the canvas/rubric
+   screen calling the already-built `generate-rubric` endpoint per stage
+   (or all stages), so rubrics stop requiring manual seeding.
+2. **Model card picker integration** - surface `llm/model_card.py`'s
+   per-family transform info in the migration wizard's model picker.
+3. **M3 optimizer loop** - the actual thing: for each stage, run the
+   param/format sweep (already built) against the target model via
+   `complete_with_workspace_credentials`, score each candidate with the
+   composite scorer + judge (already built), record each attempt as a
+   `Candidate` row (prompt variant, params, score breakdown, cost - so
+   past iterations are always revisitable), select the best per
+   `selection.py`'s rule, respect the budget tracker's hard stop. Budget
+   should become optional (uncapped) rather than required.
+4. **M4** - wire the above into the full 3-pass migration run (teacher-
+   forced -> end-to-end -> holdout), SSE progress, screens 6-7.
+5. **M5 remainder** - scorecard screen, config export, once real
+   migration results exist to show.

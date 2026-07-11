@@ -40,6 +40,9 @@ export default function Home() {
           </p>
         </div>
         <div className="flex items-center gap-4">
+          <Link to="/schema" className="text-13 text-ink-soft hover:text-ink">
+            Trace format docs
+          </Link>
           <Link to="/settings" className="text-13 text-ink-soft hover:text-ink">
             Settings
           </Link>

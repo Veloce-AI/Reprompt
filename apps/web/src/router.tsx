@@ -8,6 +8,7 @@ import NewMigration from "./routes/new-migration";
 import Login from "./routes/login";
 import AuthVerify from "./routes/auth-verify";
 import Settings from "./routes/settings";
+import SchemaReference from "./routes/schema";
 
 const rootRoute = createRootRoute({
   component: () => <Outlet />,
@@ -73,6 +74,12 @@ const settingsRoute = createRoute({
   component: Settings,
 });
 
+const schemaRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/schema",
+  component: SchemaReference,
+});
+
 const routeTree = rootRoute.addChildren([
   homeRoute,
   devKitRoute,
@@ -83,6 +90,7 @@ const routeTree = rootRoute.addChildren([
   loginRoute,
   authVerifyRoute,
   settingsRoute,
+  schemaRoute,
 ]);
 
 const router = createRouter({ routeTree });

@@ -1,4 +1,4 @@
-const API_BASE_URL = import.meta.env.VITE_API_URL ?? "http://localhost:8000";
+export const API_BASE_URL = import.meta.env.VITE_API_URL ?? "http://localhost:8000";
 
 export class ApiError extends Error {
   constructor(
@@ -48,9 +48,9 @@ export interface StageInfo {
   id: number;
   name: string;
   model: string;
-  avg_tokens_in: number;
-  avg_tokens_out: number;
-  avg_latency_ms: number;
+  avg_tokens_in: number | null;
+  avg_tokens_out: number | null;
+  avg_latency_ms: number | null;
 }
 
 export interface DagEdge {
@@ -169,6 +169,19 @@ export async function importPipeline(file: File): Promise<ImportResult> {
     method: "POST",
     body: formData,
   });
+}
+
+// ---------------------------------------------------------------------------
+// Trace format reference (screen: /schema)
+// ---------------------------------------------------------------------------
+//
+// Public, unauthenticated - serves the raw JSON Schema document generated
+// from packages/core's Pydantic TraceFile model (see docs/trace-format.md).
+// Typed as unknown rather than a specific interface since it's a JSON Schema
+// document, not a Refract domain object - the schema page only needs to
+// stringify and download it, not read individual fields off it.
+export function getTraceFormatSchema(): Promise<unknown> {
+  return request<unknown>("/trace-format/schema");
 }
 
 // ---------------------------------------------------------------------------

@@ -1,6 +1,23 @@
+<div align="center">
+<img src="docs/logo.svg" width="80" height="80" alt="Refract logo" /><br/>
+
 # Refract
 
-### Change the AI model behind your product without breaking it — and prove it.
+**Change the AI model behind your product without breaking it — and prove it.**
+
+*by [Veloce AI](https://veloceai.in/)*
+
+![Status](https://img.shields.io/badge/status-in%20development-4C5FE8)
+![License](https://img.shields.io/badge/license-proprietary-8B5CF6)
+![Python](https://img.shields.io/badge/python-3.12-14B8A6)
+![Frontend](https://img.shields.io/badge/frontend-React%20%2B%20TypeScript-4C5FE8)
+
+Migrates multi-stage LLM pipelines to cheaper or on-prem models, and proves
+the outputs still match — no manual prompt rewriting, no guessing.
+
+[What it does](#what-refract-does) · [What's built](#whats-built-so-far) · [How to run it](#how-to-run-it--try-it-yourself)
+
+</div>
 
 ---
 
@@ -53,6 +70,25 @@ See `docs/DEVELOPMENT.md` for the exact list of what's left and in what order.
 - **First time setup + running it**: `docs/TESTING.md`
 - **Full technical plan**: `docs/DEVELOPMENT.md`
 - **The exact data format it expects**: `docs/trace-format.md`
+
+### Getting an AI model API key
+
+Refract needs at least one AI model API key to run rubric generation, the
+AI judge, and test migrations. It works with any provider (OpenAI, Anthropic,
+Gemini, NVIDIA NIM, or a local model) — this project currently develops
+against **NVIDIA NIM**, since it gives free access to strong open models
+like Nemotron:
+
+1. Go to [build.nvidia.com/nvidia/nemotron-3-ultra-550b-a55b](https://build.nvidia.com/nvidia/nemotron-3-ultra-550b-a55b)
+2. Sign in (or create a free NVIDIA account)
+3. Click **Get API Key** and copy it (starts with `nvapi-...`)
+4. Add it either:
+   - as an environment variable — `NVIDIA_NIM_API_KEY=nvapi-...` in a local
+     `.env` file (never committed — see `.gitignore`), or
+   - in the app itself, via **Settings → API Keys** once you're logged in
+     (stored encrypted per-workspace, never in plaintext or in git)
+
+Never commit a real key to git or paste it into a prompt/chat.
 
 ## What it's built with
 

@@ -1,0 +1,14 @@
+<svg viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="refract-logo-spectrum" x1="16" y1="6" x2="30" y2="26" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#8B5CF6" />
+      <stop offset="50%" stop-color="#4C5FE8" />
+      <stop offset="100%" stop-color="#14B8A6" />
+    </linearGradient>
+  </defs>
+  <path d="M2 16 H14" stroke="#10182B" stroke-width="2.5" stroke-linecap="round" />
+  <path d="M14 7 L22 16 L14 25 Z" fill="#FAFBFD" stroke="#10182B" stroke-width="1.5" stroke-linejoin="round" />
+  <path d="M20 10 L30 6" stroke="url(#refract-logo-spectrum)" stroke-width="2.5" stroke-linecap="round" />
+  <path d="M22 16 L30 16" stroke="url(#refract-logo-spectrum)" stroke-width="2.5" stroke-linecap="round" />
+  <path d="M20 22 L30 26" stroke="url(#refract-logo-spectrum)" stroke-width="2.5" stroke-linecap="round" />
+</svg>

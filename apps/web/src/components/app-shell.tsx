@@ -1,6 +1,7 @@
 import { Link, useRouterState } from "@tanstack/react-router";
 import { Workflow, Settings as SettingsIcon, FileText } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { Logo } from "@/components/logo";
 
 interface NavItem {
   to: string;
@@ -33,8 +34,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       >
         <Link
           to="/"
-          className="mb-8 px-6 font-display text-20 font-semibold leading-display text-ink"
+          className="mb-8 flex flex-col items-center gap-2 px-6 font-display text-20 font-semibold leading-display text-ink"
         >
+          <Logo className="h-8 w-8" />
           Refract
         </Link>
         <div className="flex flex-col gap-1 px-3">

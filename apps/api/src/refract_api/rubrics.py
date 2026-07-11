@@ -32,9 +32,14 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from refract_core.deterministic import parse_deterministic_checks
+from refract_core.llm.client import PermanentLLMError, RefractLLMError, TransientLLMError
+from refract_core.rubric_generator import RubricGenerationError, StageOutputSample, generate_rubric
 
 from refract_api import models
+from refract_api.auth import get_current_user
+from refract_api.crypto import EncryptionNotConfigured
 from refract_api.db import get_db
+from refract_api.llm_context import ProviderKeyNotConfigured, complete_with_workspace_credentials
 
 router = APIRouter(tags=["rubrics"])
 
@@ -193,3 +198,152 @@ def approve_all_rubrics(pipeline_id: int, db: Session = Depends(get_db)) -> list
     db.commit()
 
     return [_to_out(rubric, stage_name) for rubric, stage_name in rows]
+
+
+# ---------------------------------------------------------------------------
+# Rubric generation (M2 rubric engine — the LLM-powered generator)
+# ---------------------------------------------------------------------------
+#
+# Per refract-parity-engine-plan.md §3 ("RUBRIC ENGINE (LLM-powered, runs
+# once per stage): Analyzes benchmark outputs across all traces -> emits
+# deterministic checks + judge criteria + downstream contract"), this is the
+# one-call-per-stage unit — a bulk "generate for every stage" endpoint would
+# just loop this per stage, and isn't built here to keep the API surface
+# matching the plan's own unit of work; the UI can call this once per stage
+# shown in screen 4, or loop client-side across a pipeline's stages.
+#
+# Behind get_current_user (like test-prompt in pipelines.py) because it
+# spends a workspace's own BYOK credential. Fetches the stage's real
+# StageRecords, calls refract_core.rubric_generator.generate_rubric via
+# complete_with_workspace_credentials (never complete() directly — this
+# must work with whatever provider a workspace has configured, per the task
+# brief), and upserts the Rubric row: create if none exists yet, or replace
+# the content of an existing one. Regenerating an already-approved rubric
+# resets `approved` to False — new content has not been reviewed yet, and
+# silently keeping a stale "approved" flag on content nobody has actually
+# looked at would defeat the HITL gate the plan calls for. This mirrors
+# `update_rubric` NOT doing that (an edit isn't a full regeneration) while a
+# fresh LLM-generated rubric always starts unapproved, same as a brand-new
+# rubric would.
+
+
+class GenerateRubricIn(BaseModel):
+    model: str = Field(
+        min_length=1,
+        max_length=255,
+        description="LiteLLM model string for the 'strong model' doing the rubric analysis, e.g. 'claude-sonnet-4-5'.",
+    )
+
+
+def _get_workspace_or_500(db: Session, user: models.User) -> models.Workspace:
+    """Every authenticated User has exactly one Workspace — see
+    refract_api.pipelines._get_workspace_or_500 (this is a small local copy
+    of the same helper; that one is module-private, and this is the only
+    place in this module that needs a workspace at all).
+    """
+    workspace = db.scalar(select(models.Workspace).where(models.Workspace.owner_user_id == user.id))
+    if workspace is None:
+        raise HTTPException(
+            status_code=500,
+            detail="No workspace found for this account. This shouldn't happen.",
+        )
+    return workspace
+
+
+def _get_stage_or_404(db: Session, pipeline_id: int, stage_id: int) -> models.Stage:
+    stage = db.scalar(
+        select(models.Stage).where(models.Stage.id == stage_id, models.Stage.pipeline_id == pipeline_id)
+    )
+    if stage is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Stage {stage_id} not found in pipeline {pipeline_id}",
+        )
+    return stage
+
+
+@router.post("/pipelines/{pipeline_id}/stages/{stage_id}/generate-rubric", response_model=RubricOut)
+def generate_rubric_for_stage(
+    pipeline_id: int,
+    stage_id: int,
+    body: GenerateRubricIn,
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> RubricOut:
+    """Generate (or regenerate) `stage_id`'s rubric from its real benchmark
+    outputs across all traces, using the current user's workspace's saved
+    BYOK key for `body.model`'s provider.
+
+    Error mapping mirrors `refract_api.pipelines.test_prompt` exactly (same
+    underlying mechanism, same failure modes): no workspace key configured
+    for the required provider -> 422 pointing at /settings;
+    encryption misconfigured -> 500; a transient provider error (rate
+    limit/timeout) -> 502; any other permanent LLM error, or the generator's
+    own RubricGenerationError (model's output was unusable even after one
+    corrective retry — see refract_core.rubric_generator) -> 422.
+    """
+    stage = _get_stage_or_404(db, pipeline_id, stage_id)
+
+    records = db.scalars(select(models.StageRecord).where(models.StageRecord.stage_id == stage_id)).all()
+    if not records:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"Stage {stage_id} has no benchmark trace records yet — import a pipeline with "
+                "traces for this stage before generating a rubric."
+            ),
+        )
+    samples = [StageOutputSample(input=record.input, output=record.output) for record in records]
+
+    workspace = _get_workspace_or_500(db, current_user)
+
+    def _call(model: str, messages, **kwargs):
+        return complete_with_workspace_credentials(db, workspace, model, messages, **kwargs)
+
+    try:
+        result = generate_rubric(
+            stage.name,
+            stage.model,
+            stage.prompt_template,
+            samples,
+            call=_call,
+            generator_model=body.model,
+        )
+    except ProviderKeyNotConfigured as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"No API key configured for provider '{exc.provider}' in this "
+                "workspace. Add one at /settings before generating a rubric with this model."
+            ),
+        ) from exc
+    except EncryptionNotConfigured as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    except TransientLLMError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    except RubricGenerationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except (PermanentLLMError, RefractLLMError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    existing = db.scalar(select(models.Rubric).where(models.Rubric.stage_id == stage_id))
+    if existing is None:
+        rubric = models.Rubric(
+            stage_id=stage_id,
+            deterministic_checks=result.deterministic_checks,
+            judge_criteria=result.judge_criteria,
+            downstream_contract=result.downstream_contract,
+            approved=False,
+        )
+        db.add(rubric)
+    else:
+        existing.deterministic_checks = result.deterministic_checks
+        existing.judge_criteria = result.judge_criteria
+        existing.downstream_contract = result.downstream_contract
+        # Regenerated content needs re-review — see block docstring above.
+        existing.approved = False
+        rubric = existing
+
+    db.commit()
+    db.refresh(rubric)
+    return _to_out(rubric, stage.name)

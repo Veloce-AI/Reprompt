@@ -1,12 +1,15 @@
 """Dev/test-only seed helper for Rubric rows.
 
 M2's rubric GENERATOR (an LLM call that analyzes a stage's benchmark outputs
-across all traces and emits a rubric) is not built yet - it needs a real
-provider API key that doesn't exist in this environment. This module is NOT
-that generator. It's just enough hand-authored, realistic rubric data -
+across all traces and emits a rubric) now exists — see
+``refract_core.rubric_generator.generate_rubric`` and
+``POST /pipelines/{id}/stages/{id}/generate-rubric`` in this package's
+``rubrics`` module. This module is NOT that generator, and is still useful
+alongside it: it's just enough hand-authored, realistic rubric data -
 shaped exactly like ``refract_core.deterministic``'s check types - to build
-and exercise screen 4 (rubric review) end-to-end: pytest fixtures, and the
-Playwright e2e run against a live server.
+and exercise screen 4 (rubric review) end-to-end without an LLM call in the
+loop: pytest fixtures, and the Playwright e2e run against a live server,
+neither of which want a slow/paid/rate-limited real model call on every run.
 
 Usage as a library (e.g. from a pytest fixture, after importing a pipeline):
 

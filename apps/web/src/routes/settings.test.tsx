@@ -108,7 +108,9 @@ describe("Settings", () => {
     renderSettings();
 
     expect(await screen.findByDisplayValue("Acme workspace")).toBeInTheDocument();
-    expect(await screen.findByText("openai")).toBeInTheDocument();
+    // "openai" also appears as a <select> suggestion option, so scope to the
+    // table cell (native <table> gives <td> an implicit "cell" role).
+    expect(await screen.findByRole("cell", { name: "openai" })).toBeInTheDocument();
     expect(screen.getByText("sk-…a1b2")).toBeInTheDocument();
     // The full key is never shown, only the last four.
     expect(screen.queryByText(/sk-[a-zA-Z0-9]{5,}/)).not.toBeInTheDocument();
@@ -171,7 +173,7 @@ describe("Settings", () => {
     });
 
     // The newly added key shows up with only its last four visible.
-    expect(await screen.findByText("anthropic")).toBeInTheDocument();
+    expect(await screen.findByRole("cell", { name: "anthropic" })).toBeInTheDocument();
     expect(screen.getByText("sk-…z9y8")).toBeInTheDocument();
   });
 
@@ -206,7 +208,7 @@ describe("Settings", () => {
 
     renderSettings();
 
-    await screen.findByText("openai");
+    await screen.findByRole("cell", { name: "openai" });
     fireEvent.click(screen.getByRole("button", { name: "Delete openai key" }));
 
     await waitFor(() => {

@@ -20,14 +20,28 @@ layer this module leans on for JSON-mode support and credential checks.
 
 Keys are never accepted as function arguments
 -----------------------------------------------
-There is deliberately no ``api_key=`` parameter on :func:`complete`. LiteLLM
-already reads the standard per-provider env var (``OPENAI_API_KEY``,
-``ANTHROPIC_API_KEY``, ``GEMINI_API_KEY``, ``AWS_ACCESS_KEY_ID``, ...)
-automatically — this wrapper does not reinvent that mapping, and refuses to
-add a code path where a key could flow through a function call (and, from
-there, a log line or stack trace). Local/self-hosted models
-(``ollama/...``, ``vllm/...``) need no key at all and are handled
-gracefully — see :func:`refract_core.llm.registry.missing_credential_env_vars`.
+There is deliberately no public ``api_key=`` parameter on :func:`complete`.
+LiteLLM already reads the standard per-provider env var
+(``OPENAI_API_KEY``, ``ANTHROPIC_API_KEY``, ``GEMINI_API_KEY``,
+``AWS_ACCESS_KEY_ID``, ...) automatically — this wrapper does not reinvent
+that mapping, and refuses to add a code path where a key could flow
+through a *public* function argument (and, from there, a log line or
+stack trace some request-logging middleware writes by dumping kwargs).
+Local/self-hosted models (``ollama/...``, ``vllm/...``) need no key at all
+and are handled gracefully — see
+:func:`refract_core.llm.registry.missing_credential_env_vars`.
+
+The one narrow exception is ``_scoped_api_key`` (leading underscore,
+keyword-only, absent from every example/doc above): an internal escape
+hatch for ``apps/api``'s per-request BYOK credential scoping
+(``refract_api.llm_context``), which resolves a *workspace's* encrypted,
+DB-stored key and must hand it to LiteLLM for exactly one call without
+ever touching the process environment (see that module's docstring for
+the full concurrency reasoning — env-var injection is not safe across
+concurrent requests for different workspaces in this multi-tenant
+service). It is intentionally named and documented to be unmistakably
+different from a public ``api_key=`` a caller might reach for out of
+habit and have logged. Nothing in ``packages/core`` itself ever sets it.
 
 Error categories
 -----------------
@@ -255,6 +269,7 @@ def complete(
     max_tokens: int | None = None,
     response_format: type[BaseModel] | dict[str, Any] | None = None,
     timeout: float | None = None,
+    _scoped_api_key: str | None = None,
     **extra_params: Any,
 ) -> LLMResponse:
     """Make a single provider-agnostic completion call via LiteLLM.
@@ -281,6 +296,13 @@ def complete(
         that and not pass ``response_format`` on retry.
     timeout:
         Per-call timeout in seconds, passed through to LiteLLM.
+    _scoped_api_key:
+        Internal use only — see the module docstring's "Keys are never
+        accepted as function arguments" section. When given, this exact
+        call uses this credential (passed straight to LiteLLM as its own
+        ``api_key`` kwarg) instead of consulting the environment at all,
+        and the environment-credential pre-flight check below is skipped
+        entirely for this call.
     **extra_params:
         Any other LiteLLM ``completion()`` keyword argument (``top_p``,
         ``stop``, ``tools``, ``seed``, ...) — passed through unmodified.
@@ -292,8 +314,9 @@ def complete(
     Raises
     ------
     :class:`MissingAPIKeyError`
-        No credential found in the environment for this model's provider.
-        Never reaches the network — see the module docstring.
+        No credential found in the environment for this model's provider
+        (only checked when ``_scoped_api_key`` is not given). Never
+        reaches the network — see the module docstring.
     :class:`UnsupportedFeatureError`
         ``response_format`` was requested but this model doesn't support it.
     :class:`AuthenticationLLMError`
@@ -309,9 +332,16 @@ def complete(
         An error LiteLLM raised that this module doesn't have a mapping
         for.
     """
-    missing = missing_credential_env_vars(model)
-    if missing:
-        raise MissingAPIKeyError(_provider_name(model), missing)
+    if _scoped_api_key is None:
+        missing = missing_credential_env_vars(model)
+        if missing:
+            raise MissingAPIKeyError(_provider_name(model), missing)
+    # else: a credential was supplied directly for this one call (see
+    # `_scoped_api_key`'s docstring above) — the environment-based
+    # pre-flight check would incorrectly report "missing" for a workspace
+    # key that was never written to `os.environ` in the first place, so it
+    # is skipped. LiteLLM itself will still raise a real authentication
+    # error below if this credential turns out to be invalid.
 
     if response_format is not None and not supports_json_mode(model):
         raise UnsupportedFeatureError(
@@ -330,6 +360,14 @@ def complete(
         params["response_format"] = response_format
     if timeout is not None:
         params["timeout"] = timeout
+    if _scoped_api_key is not None:
+        # LiteLLM's own `completion()` accepts `api_key` as a plain
+        # per-call keyword argument, independent of the env-var
+        # convention — this never touches `os.environ`, so it carries no
+        # cross-request/cross-workspace leakage risk (see
+        # refract_api.llm_context for the full reasoning on the caller
+        # side). Set last so nothing above can silently override it.
+        params["api_key"] = _scoped_api_key
 
     start = time.monotonic()
     try:

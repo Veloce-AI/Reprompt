@@ -11,6 +11,7 @@ from refract_api.models import Base
 from refract_api.pipelines import router as pipelines_router
 from refract_api.rubrics import router as rubrics_router
 from refract_api.settings import router as settings_router
+from refract_api.trace_format import router as trace_format_router
 
 
 @asynccontextmanager
@@ -38,6 +39,7 @@ app.include_router(rubrics_router)
 app.include_router(migrations_router)
 app.include_router(auth_router)
 app.include_router(settings_router)
+app.include_router(trace_format_router)
 
 
 @app.get("/health")

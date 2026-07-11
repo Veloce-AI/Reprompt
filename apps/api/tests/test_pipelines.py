@@ -199,6 +199,44 @@ def test_get_dag_for_unknown_pipeline_returns_404(client: TestClient) -> None:
     assert response.status_code == 404
 
 
+def test_import_minimal_stage_record_persists_null_tokens_and_latency(
+    client: TestClient, session_factory: sessionmaker
+) -> None:
+    """Regression coverage for the ingest path added alongside schema_version
+    1.1 (docs/trace-format.md): a StageRecord with no tokens/latency/cost/
+    documents must import without crashing, and persist tokens_in/out/
+    thinking and latency_ms as NULL - not coerced to 0 - since those columns
+    are now nullable (apps/api/src/refract_api/models.py).
+    """
+    stages = [
+        CoreStage(id="only", name="Only Stage", model="gpt-4o", prompt_template="{{q}}")
+    ]
+    pipeline = CorePipeline(id="minimal", name="Minimal Pipeline", stages=stages)
+    trace = CoreTrace(
+        trace_id="t0",
+        query={"q": "hello"},
+        records=[
+            CoreStageRecord(stage_id="only", rendered_prompt="prompt", output="output")
+        ],
+    )
+    trace_file = TraceFile(pipeline=pipeline, traces=[trace])
+
+    response = _upload(client, trace_file)
+    assert response.status_code == 201, response.text
+
+    with session_factory() as db:
+        records = db.query(models.StageRecord).all()
+        assert len(records) == 1
+        record = records[0]
+        assert record.tokens_in is None
+        assert record.tokens_out is None
+        assert record.tokens_thinking is None
+        assert record.latency_ms is None
+        assert record.cost is None
+        assert record.documents == []
+        assert record.meta == {}
+
+
 def test_import_preserves_source_ids_query_and_cost(
     client: TestClient, session_factory: sessionmaker
 ) -> None:

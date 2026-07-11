@@ -1,0 +1,364 @@
+{
+  "$defs": {
+    "Pipeline": {
+      "additionalProperties": false,
+      "description": "A named DAG of stages.",
+      "properties": {
+        "id": {
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "name": {
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "stages": {
+          "items": {
+            "$ref": "#/$defs/Stage"
+          },
+          "minItems": 1,
+          "title": "Stages",
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "stages"
+      ],
+      "title": "Pipeline",
+      "type": "object"
+    },
+    "Stage": {
+      "additionalProperties": false,
+      "description": "One node in a pipeline DAG.",
+      "properties": {
+        "depends_on": {
+          "description": "Ids of stages that must complete before this one runs. Empty for root stages.",
+          "items": {
+            "type": "string"
+          },
+          "title": "Depends On",
+          "type": "array"
+        },
+        "id": {
+          "description": "Unique (within the pipeline) stage id, e.g. 'extract_entities'.",
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "metadata": {
+          "additionalProperties": true,
+          "description": "Free-form, product-specific extras. Not validated beyond being a JSON object \u2014 see docs/trace-format.md for the recommended 'category' key convention.",
+          "title": "Metadata",
+          "type": "object"
+        },
+        "model": {
+          "description": "LiteLLM-style model identifier for the benchmark run, e.g. 'gpt-4o-2024-08-06'.",
+          "minLength": 1,
+          "title": "Model",
+          "type": "string"
+        },
+        "name": {
+          "description": "Human-readable stage name.",
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/$defs/StageParams"
+        },
+        "prompt_template": {
+          "description": "Prompt template with {{variable}} placeholders resolved from upstream stage outputs.",
+          "minLength": 1,
+          "title": "Prompt Template",
+          "type": "string"
+        },
+        "system_prompt": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional system prompt for this stage, kept separate from prompt_template (which is the user/task prompt). Null if the stage's source didn't capture one.",
+          "title": "System Prompt"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "model",
+        "prompt_template"
+      ],
+      "title": "Stage",
+      "type": "object"
+    },
+    "StageParams": {
+      "additionalProperties": true,
+      "description": "Model call parameters for a stage.\n\nAll fields are optional \u2014 a stage need not pin every knob, and the\noptimizer (a later phase) is exactly the thing that searches this space.\n``extra=\"allow\"`` because target models sometimes expose provider-specific\nknobs (e.g. ``top_k``, ``reasoning_effort``) that we want to pass through\nwithout widening this schema for every provider.",
+      "properties": {
+        "format_mode": {
+          "anyOf": [
+            {
+              "enum": [
+                "json",
+                "xml",
+                "markdown",
+                "plain"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Preferred output format/wrapping for this stage's prompt.",
+          "title": "Format Mode"
+        },
+        "max_tokens": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Tokens"
+        },
+        "temperature": {
+          "anyOf": [
+            {
+              "maximum": 2,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Temperature"
+        },
+        "top_p": {
+          "anyOf": [
+            {
+              "maximum": 1,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Top P"
+        }
+      },
+      "title": "StageParams",
+      "type": "object"
+    },
+    "StageRecord": {
+      "additionalProperties": false,
+      "description": "One stage's execution within one trace.",
+      "properties": {
+        "cost": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Actual $ cost of this stage's model call, if known. Central to the product's cost-reduction pitch, but optional since not every trace source reports it (our own synthetic fixtures don't).",
+          "title": "Cost"
+        },
+        "documents": {
+          "description": "Plain-text supporting documents for this stage call (e.g. retrieved passages), unstructured \u2014 no per-document metadata/scoring, just the raw text.",
+          "items": {
+            "type": "string"
+          },
+          "title": "Documents",
+          "type": "array"
+        },
+        "input": {
+          "additionalProperties": true,
+          "description": "Resolved input variables fed into this stage's prompt template.",
+          "title": "Input",
+          "type": "object"
+        },
+        "latency_ms": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Wall-clock latency of this stage's model call, in milliseconds, if known. Optional as of schema_version 1.1 \u2014 not every trace source reports it.",
+          "title": "Latency Ms"
+        },
+        "metadata": {
+          "additionalProperties": true,
+          "description": "Free-form, product-specific extras. Not validated beyond being a JSON object \u2014 see docs/trace-format.md for the recommended 'category' key convention.",
+          "title": "Metadata",
+          "type": "object"
+        },
+        "output": {
+          "description": "The raw model output/completion text for this stage.",
+          "title": "Output",
+          "type": "string"
+        },
+        "rendered_prompt": {
+          "description": "The exact prompt text sent to the model.",
+          "minLength": 1,
+          "title": "Rendered Prompt",
+          "type": "string"
+        },
+        "stage_id": {
+          "description": "Must match a Stage.id in the pipeline this trace belongs to.",
+          "minLength": 1,
+          "title": "Stage Id",
+          "type": "string"
+        },
+        "tokens": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TokenUsage"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Token accounting for this call, if the trace source captured it. Optional as of schema_version 1.1 \u2014 not every trace source reports per-call token usage."
+        }
+      },
+      "required": [
+        "stage_id",
+        "rendered_prompt",
+        "output"
+      ],
+      "title": "StageRecord",
+      "type": "object"
+    },
+    "TokenUsage": {
+      "additionalProperties": false,
+      "description": "Token accounting for a single stage call.\n\nField names use the ``in``/``out``/``thinking`` JSON keys from the plan\n(``tokens{in, out, thinking}``) via aliases, since ``in`` is a reserved\nword in Python. ``populate_by_name=True`` means either the alias or the\nPython attribute name works when constructing from Python.",
+      "properties": {
+        "in": {
+          "description": "Input/prompt tokens consumed by this stage call.",
+          "minimum": 0,
+          "title": "In",
+          "type": "integer"
+        },
+        "out": {
+          "description": "Output/completion tokens produced by this stage call.",
+          "minimum": 0,
+          "title": "Out",
+          "type": "integer"
+        },
+        "thinking": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Reasoning/thinking tokens, if the model exposes them. Omit or null otherwise.",
+          "title": "Thinking"
+        }
+      },
+      "required": [
+        "in",
+        "out"
+      ],
+      "title": "TokenUsage",
+      "type": "object"
+    },
+    "Trace": {
+      "additionalProperties": false,
+      "description": "One full DAG execution \u2014 all stage records for a single benchmark query.",
+      "properties": {
+        "metadata": {
+          "additionalProperties": true,
+          "description": "Free-form, product-specific extras. Not validated beyond being a JSON object \u2014 see docs/trace-format.md for the recommended 'category' key convention.",
+          "title": "Metadata",
+          "type": "object"
+        },
+        "query": {
+          "additionalProperties": true,
+          "description": "The original input to the pipeline for this benchmark query.",
+          "title": "Query",
+          "type": "object"
+        },
+        "records": {
+          "items": {
+            "$ref": "#/$defs/StageRecord"
+          },
+          "minItems": 1,
+          "title": "Records",
+          "type": "array"
+        },
+        "trace_id": {
+          "minLength": 1,
+          "title": "Trace Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "trace_id",
+        "query",
+        "records"
+      ],
+      "title": "Trace",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Top-level ingest document: a pipeline definition plus its benchmark traces.",
+  "properties": {
+    "pipeline": {
+      "$ref": "#/$defs/Pipeline"
+    },
+    "schema_version": {
+      "default": "1.1",
+      "description": "Trace-format schema version. \"1.0\" files still validate \u2014 1.1 only adds/relaxes fields (tokens/latency_ms optional, plus documents/metadata/system_prompt).",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "traces": {
+      "items": {
+        "$ref": "#/$defs/Trace"
+      },
+      "minItems": 1,
+      "title": "Traces",
+      "type": "array"
+    }
+  },
+  "required": [
+    "pipeline",
+    "traces"
+  ],
+  "title": "TraceFile",
+  "type": "object"
+}

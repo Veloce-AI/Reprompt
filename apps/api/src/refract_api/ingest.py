@@ -41,7 +41,9 @@ def persist_trace_file(db: Session, trace_file: TraceFile) -> models.Pipeline:
             name=stage.name,
             model=stage.model,
             prompt_template=stage.prompt_template,
+            system_prompt=stage.system_prompt,
             params=stage.params.model_dump(exclude_none=True),
+            meta=stage.metadata,
         )
         db.add(db_stage)
         stage_by_source_id[stage.id] = db_stage
@@ -64,11 +66,18 @@ def persist_trace_file(db: Session, trace_file: TraceFile) -> models.Pipeline:
             source_trace_id=trace.trace_id,
             query=trace.query,
             query_index=query_index,
+            meta=trace.metadata,
         )
         db.add(db_trace)
         db.flush()
         for record in trace.records:
             db_stage = stage_by_source_id[record.stage_id]
+            # tokens is optional as of schema_version 1.1 (see
+            # docs/trace-format.md) - a trace source that doesn't report
+            # per-call token accounting leaves all three columns NULL rather
+            # than coercing to 0, same "unknown != zero" reasoning already
+            # applied to cost and (now) latency_ms.
+            tokens = record.tokens
             db.add(
                 models.StageRecord(
                     trace_id=db_trace.id,
@@ -76,11 +85,13 @@ def persist_trace_file(db: Session, trace_file: TraceFile) -> models.Pipeline:
                     input=record.input,
                     rendered_prompt=record.rendered_prompt,
                     output=record.output,
-                    tokens_in=record.tokens.input,
-                    tokens_out=record.tokens.output,
-                    tokens_thinking=record.tokens.thinking or 0,
+                    tokens_in=tokens.input if tokens is not None else None,
+                    tokens_out=tokens.output if tokens is not None else None,
+                    tokens_thinking=(tokens.thinking if tokens is not None else None),
                     latency_ms=record.latency_ms,
                     cost=record.cost,
+                    documents=record.documents,
+                    meta=record.metadata,
                 )
             )
 

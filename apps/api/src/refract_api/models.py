@@ -2,12 +2,14 @@
 
 Mirrors docs/refract-parity-engine-plan.md §2 exactly:
 
-    Pipeline
-     └── Stage[]            (depends_on[], model, prompt_template, params)
+    Pipeline (category)
+     └── Stage[]            (depends_on[], model, prompt_template,
+                              system_prompt, params, meta)
     Pipeline has:
      └── BenchmarkSet
-          └── Trace[]
-               └── StageRecord (input, rendered_prompt, output, tokens*, latency_ms)
+          └── Trace[]       (query, meta)
+               └── StageRecord (input, rendered_prompt, output, tokens*?,
+                                 latency_ms?, documents, meta)
     Stage has:
      └── Rubric (deterministic_checks, judge_criteria, downstream_contract)
     Migration
@@ -32,6 +34,16 @@ Design notes
   on SQLite — both round-trip Python dict/list structures transparently.
 * Timestamps use timezone-aware ``DateTime`` with a server-side default of
   "now" so both dialects populate created_at/updated_at consistently.
+* **The ``metadata`` reserved-word collision**: ``Stage``, ``Trace``, and
+  ``StageRecord`` each mirror packages/core's ``metadata: dict[str, Any]``
+  field (schema_version 1.1 — see docs/trace-format.md). SQLAlchemy's
+  ``DeclarativeBase`` already defines a class-level ``metadata`` attribute
+  (the ``MetaData`` schema-tracking object every model needs — ``Base.metadata``),
+  so a mapped attribute literally named ``metadata`` is rejected at class-body
+  evaluation time. Each model instead exposes the Python attribute ``meta``,
+  explicitly mapped to the DB column named ``"metadata"`` (matching
+  packages/core's JSON key and keeping the wire/DB shape aligned even though
+  the ORM-side attribute name differs): ``meta: Mapped[dict] = mapped_column("metadata", JSON, ...)``.
 """
 
 from __future__ import annotations
@@ -69,6 +81,10 @@ class Pipeline(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
+    # Set later, from confirmed import groups (not populated at ingest time) -
+    # nullable text, not an enum, since the set of categories is
+    # product-defined and not fixed at the schema layer.
+    category: Mapped[str | None] = mapped_column(String(255), nullable=True)
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -126,8 +142,16 @@ class Stage(Base):
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     model: Mapped[str] = mapped_column(String(255), nullable=False)
     prompt_template: Mapped[str] = mapped_column(Text, nullable=False)
+    # Separate from prompt_template (the user/task prompt) - mirrors
+    # packages/core's Stage.system_prompt (schema_version 1.1). Nullable:
+    # not every trace source captures one.
+    system_prompt: Mapped[str | None] = mapped_column(Text, nullable=True)
     # temp / top_p / max_tokens / format_mode / ...
     params: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    # Free-form product-specific extras, mirrors packages/core's
+    # Stage.metadata - see the "metadata reserved-word collision" module
+    # docstring note for why the Python attribute is `meta`, not `metadata`.
+    meta: Mapped[dict] = mapped_column("metadata", JSON, nullable=False, default=dict)
 
     pipeline: Mapped["Pipeline"] = relationship(back_populates="stages")
 
@@ -200,6 +224,10 @@ class Trace(Base):
     query: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     query_index: Mapped[int] = mapped_column(Integer, nullable=False)
     is_holdout: Mapped[bool] = mapped_column(default=False, nullable=False)
+    # Free-form product-specific extras, mirrors packages/core's
+    # Trace.metadata - see Stage.meta / the module docstring note for why
+    # the Python attribute is `meta`, not `metadata`.
+    meta: Mapped[dict] = mapped_column("metadata", JSON, nullable=False, default=dict)
 
     benchmark_set: Mapped["BenchmarkSet"] = relationship(back_populates="traces")
     stage_records: Mapped[list["StageRecord"]] = relationship(
@@ -223,14 +251,26 @@ class StageRecord(Base):
     # is always a plain str today, matching packages/core's StageRecord.output
     # - keeps the door open for structured output without another migration.
     output: Mapped[str] = mapped_column(JSON, nullable=False)
-    tokens_in: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    tokens_out: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    tokens_thinking: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    latency_ms: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    # Nullable (no default=0) as of schema_version 1.1: not every trace
+    # source reports per-call token/latency accounting, and "unknown" and
+    # "zero" are different things - same reasoning as `cost` below, which
+    # was already nullable.
+    tokens_in: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    tokens_out: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    tokens_thinking: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    latency_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
     # $ cost of this call, if the source trace reported it. Nullable, not
     # defaulted to 0 - "unknown" and "free" are different things, and this
     # feeds directly into the product's cost-delta scorecard (M5).
     cost: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # Plain-text supporting documents (e.g. retrieved passages), mirrors
+    # packages/core's StageRecord.documents - unstructured, no per-document
+    # metadata/scoring.
+    documents: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    # Free-form product-specific extras, mirrors packages/core's
+    # StageRecord.metadata - see Stage.meta / the module docstring note for
+    # why the Python attribute is `meta`, not `metadata`.
+    meta: Mapped[dict] = mapped_column("metadata", JSON, nullable=False, default=dict)
 
     trace: Mapped["Trace"] = relationship(back_populates="stage_records")
     stage: Mapped["Stage"] = relationship(back_populates="stage_records")

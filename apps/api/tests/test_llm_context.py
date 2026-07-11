@@ -20,6 +20,7 @@ from __future__ import annotations
 import os
 import threading
 from collections.abc import Iterator
+from pathlib import Path
 
 import pytest
 from cryptography.fernet import Fernet
@@ -244,7 +245,7 @@ def test_scoped_credential_not_leaked_to_a_subsequent_unrelated_call(
 
 
 def test_two_workspaces_scoped_calls_never_see_each_others_key(
-    db: Session, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Drives two calls for two different workspaces with genuinely
     overlapping `litellm.completion()` invocations (forced via a
@@ -255,11 +256,30 @@ def test_two_workspaces_scoped_calls_never_see_each_others_key(
     any object shared between calls — see refract_api.llm_context's
     module docstring), this holds regardless of thread interleaving; this
     test demonstrates that rather than merely asserting it.
+
+    Deliberately does NOT use the module's `db` fixture here: that fixture
+    is an in-memory SQLite engine on `StaticPool` — a single shared
+    connection object. Two threads issuing genuinely concurrent queries
+    against one shared SQLite connection (even via two separate ORM
+    Sessions) is a real race at the driver level, not just an ORM
+    concern, and was flaky in practice (intermittent IndexError /
+    UnknownLLMError from a corrupted cursor state, not a credential
+    leak). A file-backed SQLite DB gives each thread's own engine/session
+    a genuinely independent connection, so this test's flakiness comes
+    only from what it's actually trying to test, not from shared test
+    plumbing underneath it.
     """
-    workspace_a = _make_workspace(db, "Workspace A")
-    workspace_b = _make_workspace(db, "Workspace B")
-    _save_key(db, workspace_a, "openai", "sk-workspaceAkey1111")
-    _save_key(db, workspace_b, "openai", "sk-workspaceBkey2222")
+    engine = create_engine(f"sqlite:///{tmp_path / 'concurrency-test.db'}")
+    Base.metadata.create_all(engine)
+    setup_session = sessionmaker(bind=engine)()
+    try:
+        workspace_a = _make_workspace(setup_session, "Workspace A")
+        workspace_b = _make_workspace(setup_session, "Workspace B")
+        _save_key(setup_session, workspace_a, "openai", "sk-workspaceAkey1111")
+        _save_key(setup_session, workspace_b, "openai", "sk-workspaceBkey2222")
+        workspace_a_id, workspace_b_id = workspace_a.id, workspace_b.id
+    finally:
+        setup_session.close()
 
     barrier = threading.Barrier(2, timeout=5)
     lock = threading.Lock()
@@ -275,15 +295,15 @@ def test_two_workspaces_scoped_calls_never_see_each_others_key(
 
     errors: list[BaseException] = []
 
-    def call(workspace: models.Workspace, tag: str) -> None:
+    def call(workspace_id: int, tag: str) -> None:
         try:
-            # Each thread needs its own DB session — SQLite/SQLAlchemy
-            # sessions aren't safe to share across threads, and a real
-            # multi-request server wouldn't share one either (see
-            # refract_api.db.get_db — one session per request).
-            thread_engine = db.get_bind()
+            # Each thread gets its own engine, not just its own session -
+            # a real multi-request server wouldn't share a connection
+            # across requests either (see refract_api.db.get_db).
+            thread_engine = create_engine(f"sqlite:///{tmp_path / 'concurrency-test.db'}")
             thread_session = sessionmaker(bind=thread_engine)()
             try:
+                workspace = thread_session.get(models.Workspace, workspace_id)
                 complete_with_workspace_credentials(
                     thread_session,
                     workspace,
@@ -292,11 +312,16 @@ def test_two_workspaces_scoped_calls_never_see_each_others_key(
                 )
             finally:
                 thread_session.close()
+                thread_engine.dispose()
         except BaseException as exc:  # noqa: BLE001 - surfaced via `errors` below
             errors.append(exc)
 
-    thread_a = threading.Thread(target=call, args=(workspace_a, "prompt-from-workspace-a"))
-    thread_b = threading.Thread(target=call, args=(workspace_b, "prompt-from-workspace-b"))
+    thread_a = threading.Thread(
+        target=call, args=(workspace_a_id, "prompt-from-workspace-a")
+    )
+    thread_b = threading.Thread(
+        target=call, args=(workspace_b_id, "prompt-from-workspace-b")
+    )
     thread_a.start()
     thread_b.start()
     thread_a.join(timeout=10)

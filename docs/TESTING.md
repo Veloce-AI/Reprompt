@@ -6,7 +6,97 @@ environment setup, see `DEVELOPMENT.md`; for what broke and why, see
 `LESSONS.md`. This file is a **living document** — see "Maintaining this
 doc" at the bottom for the rule on keeping it current.
 
-## 1. How to start
+## 1. First-time setup (do this once per machine)
+
+Everything below assumes nothing is installed yet except the base tools:
+**Node 22+, pnpm, Python 3.12+, uv**. If you don't have those, install them
+first (nvm/Node installer, `npm install -g pnpm`, python.org or your OS
+package manager, `pip install uv` or the uv installer script) — not covered
+here, it's a one-time machine setup, not a repo setup.
+
+### 1.1 Get into the repo
+
+```bash
+cd C:/VeloceAI/Refract          # or wherever you cloned/copied it
+```
+
+Everything from here on is relative to this folder. Open two more terminal
+tabs/windows now — you'll want three total (one per Python package, plus
+the frontend), though in practice you mostly just need two running at once
+later (API + web).
+
+### 1.2 `packages/core` — the engine (trace schema, DAG, evaluators)
+
+This is a **separate Python venv** from `apps/api` — not a shared
+workspace. Do this in its own terminal:
+
+```bash
+cd packages/core
+uv sync --all-extras
+uv pip install -e . --no-deps
+```
+
+Why both commands: `uv sync` installs dependencies (pydantic, pytest,
+sentence-transformers, litellm, optuna, etc.) into `.venv`, but doesn't
+install the package itself in editable mode in every case — the second
+command guarantees `import refract_core` actually resolves. If you ever
+see `ModuleNotFoundError: No module named 'refract_core'` later, re-run
+just that second line.
+
+Verify it worked:
+
+```bash
+uv run pytest -q
+# should end with something like "240 passed, 1 skipped"
+```
+
+(The 1 skipped test needs a local Ollama server — that's expected and
+fine, not a failure.)
+
+### 1.3 `apps/api` — the backend
+
+Also its own separate venv:
+
+```bash
+cd ../../apps/api        # from packages/core, or `cd apps/api` from repo root
+uv sync --all-extras
+uv pip install -e . --no-deps
+```
+
+`apps/api` depends on `packages/core` as a local editable path dependency
+(declared in its `pyproject.toml`), so it needs step 1.2 done first — if
+you skipped it, go back and do it.
+
+Verify it worked:
+
+```bash
+uv run pytest -q
+# should end with something like "88 passed"
+```
+
+### 1.4 `apps/web` — the frontend
+
+```bash
+cd ../../apps/web         # from apps/api, or `cd apps/web` from repo root
+pnpm install
+```
+
+Verify it worked:
+
+```bash
+npx tsc --noEmit          # should print nothing (clean)
+pnpm test                 # should end with something like "52 passed"
+```
+
+### 1.5 First-time setup is done. Now go to §2 to actually run the app.
+
+If anything above failed, check `DEVELOPMENT.md` §"Known environment
+gotchas" before assuming it's a real bug — several of the failure modes
+you'd hit on first setup (venv install ordering, a missing
+`[build-system]` table, Windows-specific process issues) are already
+documented there with the fix.
+
+## 2. How to start (every time after first-time setup)
 
 Two terminals, both from repo root:
 
@@ -22,14 +112,10 @@ pnpm dev
 # → http://localhost:5173
 ```
 
-First time only: run the setup steps in `DEVELOPMENT.md` §"First-time
-setup" first (each Python package needs `uv sync --all-extras` +
-`uv pip install -e . --no-deps` in its own venv).
-
 Fresh database: delete `apps/api/test.db` before starting the API if you
 want a clean slate (empty pipelines list, no users).
 
-## 2. How to navigate — the full screen map
+## 3. How to navigate — the full screen map
 
 ```
 /                                      Pipelines home
@@ -57,7 +143,7 @@ above requires being logged in yet (see `LESSONS.md`/commit history: auth
 exists but isn't retrofitted onto the pipeline/rubric/migration endpoints
 by design, that's a deliberate future decision, not an oversight).
 
-## 3. How to check — manual walkthrough
+## 4. How to check — manual walkthrough
 
 Run this after any change touching import, the canvas, rubrics, or
 migrations. An automated pass is not a substitute for actually looking at
@@ -138,7 +224,7 @@ regression, see `LESSONS.md`), ParityBeam (all 6 states, draw-in
 animation actually animates the beam not the marker — also a past
 regression).
 
-## 4. Automated tests
+## 5. Automated tests
 
 Full commands and gotchas (E2E needing a manually-started API server,
 Windows process-killing quirks, etc.) are in `DEVELOPMENT.md` §Testing.
@@ -151,7 +237,7 @@ cd apps/web && npx tsc --noEmit && pnpm test   # typecheck + Vitest
 cd apps/web && npx playwright test     # needs the API running separately first, see DEVELOPMENT.md
 ```
 
-## 5. What's not built yet (don't go looking for it)
+## 6. What's not built yet (don't go looking for it)
 
 - No route guards on any pipeline/rubric/migration screen — auth exists
   but nothing requires being logged in yet, by design.
@@ -163,7 +249,7 @@ cd apps/web && npx playwright test     # needs the API running separately first,
 - Docker/Postgres path exists but is untested in this environment by
   choice (SQLite only so far).
 
-## 6. Maintaining this doc
+## 7. Maintaining this doc
 
 **Whenever a new screen, route, or user-facing flow ships, update this
 file in the same commit (or the very next one) that ships it:**

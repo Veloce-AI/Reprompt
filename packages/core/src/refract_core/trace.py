@@ -7,14 +7,25 @@ module only depends on the standard library and Pydantic v2.
 
 Object graph (mirrors refract-parity-engine-plan.md §2):
 
-    TraceFile
+    TraceFile                            (schema_version, default "1.1")
      ├── pipeline: Pipeline
      │    └── stages: list[Stage]        (id, name, depends_on[], model,
-     │                                     prompt_template, params)
-     └── traces: list[Trace]             (one per benchmark query)
+     │                                     prompt_template, system_prompt?,
+     │                                     params, metadata)
+     └── traces: list[Trace]             (one per benchmark query, metadata)
           └── records: list[StageRecord] (one per stage execution:
                                            input, rendered_prompt, output,
-                                           tokens{in,out,thinking}, latency_ms)
+                                           tokens{in,out,thinking}? (optional),
+                                           latency_ms? (optional), documents[],
+                                           metadata)
+
+``tokens`` and ``latency_ms`` are optional as of schema_version "1.1" — not
+every trace source captures per-call accounting, and requiring it turned out
+to exclude real-world traces we still want to ingest. ``metadata`` is a
+free-form ``dict[str, Any]`` escape hatch present on ``Stage``, ``Trace``,
+and ``StageRecord`` for product-specific extras (see docs/trace-format.md
+for the recommended ``metadata.category`` grouping convention) — it exists
+so callers don't need to widen this schema for every per-product field.
 
 Use :func:`load_trace_file` / :func:`parse_trace_file` rather than calling
 ``TraceFile.model_validate`` directly when you want validation failures
@@ -87,7 +98,17 @@ class Stage(BaseModel):
         min_length=1,
         description="Prompt template with {{variable}} placeholders resolved from upstream stage outputs.",
     )
+    system_prompt: str | None = Field(
+        default=None,
+        description="Optional system prompt for this stage, kept separate from prompt_template "
+        "(which is the user/task prompt). Null if the stage's source didn't capture one.",
+    )
     params: StageParams = Field(default_factory=StageParams)
+    metadata: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Free-form, product-specific extras. Not validated beyond being a JSON object — "
+        "see docs/trace-format.md for the recommended 'category' key convention.",
+    )
 
 
 class Pipeline(BaseModel):
@@ -158,13 +179,32 @@ class StageRecord(BaseModel):
     )
     rendered_prompt: str = Field(min_length=1, description="The exact prompt text sent to the model.")
     output: str = Field(description="The raw model output/completion text for this stage.")
-    tokens: TokenUsage
-    latency_ms: float = Field(ge=0, description="Wall-clock latency of this stage's model call, in milliseconds.")
+    tokens: TokenUsage | None = Field(
+        default=None,
+        description="Token accounting for this call, if the trace source captured it. Optional as of "
+        "schema_version 1.1 — not every trace source reports per-call token usage.",
+    )
+    latency_ms: float | None = Field(
+        default=None,
+        ge=0,
+        description="Wall-clock latency of this stage's model call, in milliseconds, if known. Optional "
+        "as of schema_version 1.1 — not every trace source reports it.",
+    )
     cost: float | None = Field(
         default=None,
         ge=0,
         description="Actual $ cost of this stage's model call, if known. Central to the product's cost-reduction "
         "pitch, but optional since not every trace source reports it (our own synthetic fixtures don't).",
+    )
+    documents: list[str] = Field(
+        default_factory=list,
+        description="Plain-text supporting documents for this stage call (e.g. retrieved passages), "
+        "unstructured — no per-document metadata/scoring, just the raw text.",
+    )
+    metadata: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Free-form, product-specific extras. Not validated beyond being a JSON object — "
+        "see docs/trace-format.md for the recommended 'category' key convention.",
     )
 
 
@@ -176,6 +216,11 @@ class Trace(BaseModel):
     trace_id: str = Field(min_length=1)
     query: dict[str, Any] = Field(description="The original input to the pipeline for this benchmark query.")
     records: list[StageRecord] = Field(min_length=1)
+    metadata: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Free-form, product-specific extras. Not validated beyond being a JSON object — "
+        "see docs/trace-format.md for the recommended 'category' key convention.",
+    )
 
     @model_validator(mode="after")
     def _validate_unique_stage_records(self) -> "Trace":
@@ -195,7 +240,11 @@ class TraceFile(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: str = Field(default="1.0", description="Trace-format schema version.")
+    schema_version: str = Field(
+        default="1.1",
+        description="Trace-format schema version. \"1.0\" files still validate — 1.1 only adds/relaxes "
+        "fields (tokens/latency_ms optional, plus documents/metadata/system_prompt).",
+    )
     pipeline: Pipeline
     traces: list[Trace] = Field(min_length=1)
 

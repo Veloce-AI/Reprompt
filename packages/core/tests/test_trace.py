@@ -111,6 +111,55 @@ def test_malformed_json_gives_a_clear_error(tmp_path: Path) -> None:
     assert "not valid JSON" in str(exc_info.value)
 
 
+def test_bare_minimum_stage_record_validates_cleanly() -> None:
+    """schema_version 1.1: tokens, latency_ms, cost, and documents are all
+    optional on a StageRecord — a trace source that doesn't capture per-call
+    accounting must still validate cleanly, with sane empty/None defaults.
+    """
+    data = {
+        "pipeline": {
+            "id": "minimal-pipeline",
+            "name": "Minimal Pipeline",
+            "stages": [
+                {
+                    "id": "only_stage",
+                    "name": "Only Stage",
+                    "model": "gpt-4o-mini",
+                    "prompt_template": "Say hello to {{name}}.",
+                }
+            ],
+        },
+        "traces": [
+            {
+                "trace_id": "trace-0",
+                "query": {"name": "world"},
+                "records": [
+                    {
+                        "stage_id": "only_stage",
+                        "rendered_prompt": "Say hello to world.",
+                        "output": "Hello, world!",
+                    }
+                ],
+            }
+        ],
+    }
+
+    trace_file = parse_trace_file(data)
+
+    assert trace_file.schema_version == "1.1"
+    record = trace_file.traces[0].records[0]
+    assert record.tokens is None
+    assert record.latency_ms is None
+    assert record.cost is None
+    assert record.documents == []
+    assert record.metadata == {}
+
+    stage = trace_file.pipeline.stages[0]
+    assert stage.system_prompt is None
+    assert stage.metadata == {}
+    assert trace_file.traces[0].metadata == {}
+
+
 def test_format_pydantic_error_never_raised_directly() -> None:
     # parse_trace_file must always wrap Pydantic's ValidationError, never
     # let it escape raw - that's the whole point of TraceFileError.

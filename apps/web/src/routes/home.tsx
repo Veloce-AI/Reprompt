@@ -1,9 +1,11 @@
 import { Link, useNavigate } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 import { listPipelines } from "@/lib/api";
+import { AppShell } from "@/components/app-shell";
 import { Dropzone } from "@/components/dropzone";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Card, CardContent } from "@/components/ui/card";
 import {
   Table,
   TableBody,
@@ -29,65 +31,63 @@ export default function Home() {
   }
 
   return (
-    <div className="mx-auto max-w-[1440px] p-8">
-      <div className="mb-8 flex items-center justify-between">
-        <div>
-          <h1 className="font-display text-40 font-semibold leading-display text-ink">
-            Pipelines
-          </h1>
-          <p className="mt-1 text-14 text-ink-soft">
-            Import a pipeline's execution traces to start a migration.
-          </p>
-        </div>
-        <div className="flex items-center gap-4">
-          <Link to="/schema" className="text-13 text-ink-soft hover:text-ink">
-            Trace format docs
-          </Link>
-          <Link to="/settings" className="text-13 text-ink-soft hover:text-ink">
-            Settings
-          </Link>
+    <AppShell>
+      <div className="p-8">
+        <div className="mb-8 flex items-center justify-between">
+          <div>
+            <h1 className="font-display text-40 font-semibold leading-display text-ink">
+              Pipelines
+            </h1>
+            <p className="mt-1 text-14 text-ink-soft">
+              Import a pipeline's execution traces to start a migration.
+            </p>
+          </div>
           {pipelines && pipelines.length > 0 && (
             <Link to="/pipelines/import">
               <Button variant="primary">Import pipeline</Button>
             </Link>
           )}
         </div>
-      </div>
 
-      {isLoading && (
-        <p className="text-14 text-ink-soft" role="status">
-          Loading pipelines…
-        </p>
-      )}
+        {isLoading && (
+          <p className="text-14 text-ink-soft" role="status">
+            Loading pipelines…
+          </p>
+        )}
 
-      {isError && (
-        <p className="text-14 text-parity-fail" role="alert">
-          Couldn't load pipelines: {error instanceof Error ? error.message : "unknown error"}
-        </p>
-      )}
+        {isError && (
+          <p className="text-14 text-parity-fail" role="alert">
+            Couldn't load pipelines: {error instanceof Error ? error.message : "unknown error"}
+          </p>
+        )}
 
-      {pipelines && pipelines.length === 0 && (
-        <div className="flex flex-col items-center gap-6 py-16">
-          <div className="text-center">
-            <h2 className="font-display text-28 font-semibold leading-display text-ink">
-              Import your first pipeline
-            </h2>
-            <p className="mt-2 text-14 text-ink-soft">
-              Upload a trace file to see its stages, models, and benchmark
-              queries. See <code className="font-mono text-13">docs/trace-format.md</code> in
-              the repo for the file format.
-            </p>
-          </div>
-          <Dropzone
-            onFileSelected={startImportWith}
-            label="Drop your trace file here, or click to browse"
-            className="w-full max-w-xl"
-          />
-        </div>
-      )}
+        {pipelines && pipelines.length === 0 && (
+          <Card className="border-dashed">
+            <CardContent className="flex flex-col items-center gap-6 p-16">
+              <div className="text-center">
+                <h2 className="font-display text-28 font-semibold leading-display text-ink">
+                  Import your first pipeline
+                </h2>
+                <p className="mt-2 text-14 text-ink-soft">
+                  Upload a trace file to see its stages, models, and benchmark
+                  queries. See the{" "}
+                  <Link to="/schema" className="text-beam underline underline-offset-2">
+                    trace format docs
+                  </Link>{" "}
+                  for the file shape.
+                </p>
+              </div>
+              <Dropzone
+                onFileSelected={startImportWith}
+                label="Drop your trace file here, or click to browse"
+                className="w-full max-w-xl"
+              />
+            </CardContent>
+          </Card>
+        )}
 
-      {pipelines && pipelines.length > 0 && (
-        <Table>
+        {pipelines && pipelines.length > 0 && (
+          <Table>
           <TableHeader>
             <TableRow>
               <TableHead>Name</TableHead>
@@ -137,7 +137,8 @@ export default function Home() {
             ))}
           </TableBody>
         </Table>
-      )}
-    </div>
+        )}
+      </div>
+    </AppShell>
   );
 }

@@ -17,6 +17,7 @@ import {
   type DeterministicCheckLike,
   type JudgeCriterionLike,
 } from "@/lib/rubric-format";
+import { AppShell } from "@/components/app-shell";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -45,7 +46,8 @@ export default function RubricReview() {
   const allApproved = (rubrics ?? []).length > 0 && (rubrics ?? []).every((r) => r.approved);
 
   return (
-    <div className="mx-auto max-w-[1440px] p-8">
+    <AppShell>
+    <div className="p-8">
       <div className="mb-6 flex items-start justify-between">
         <div>
           <Link
@@ -112,6 +114,7 @@ export default function RubricReview() {
         ))}
       </div>
     </div>
+    </AppShell>
   );
 }
 

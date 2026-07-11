@@ -2,6 +2,7 @@ import { useMutation } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { Download } from "lucide-react";
 import { ApiError, getTraceFormatSchema } from "@/lib/api";
+import { AppShell } from "@/components/app-shell";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -132,6 +133,7 @@ export default function SchemaReference() {
   });
 
   return (
+    <AppShell>
     <div className="mx-auto max-w-[960px] p-8">
       <Link to="/" className="text-13 text-ink-soft hover:text-ink">
         ← Pipelines
@@ -275,5 +277,6 @@ Trace[]                     the benchmark set - one entry per query
         </Card>
       </div>
     </div>
+    </AppShell>
   );
 }

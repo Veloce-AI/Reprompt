@@ -4,6 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 import { ReactFlow, Background, Controls, type Edge } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { getPipelineDag } from "@/lib/api";
+import { AppShell } from "@/components/app-shell";
 import { StageNode, type StageFlowNode } from "@/components/stage-node";
 import { Button } from "@/components/ui/button";
 
@@ -42,7 +43,8 @@ export default function PipelineDetail() {
   }, [data]);
 
   return (
-    <div className="flex h-screen flex-col">
+    <AppShell>
+    <div className="flex h-full min-h-[calc(100vh-1px)] flex-col">
       <div className="flex items-center justify-between border-b border-line px-8 py-4">
         <div>
           <Link
@@ -97,5 +99,6 @@ export default function PipelineDetail() {
         </div>
       )}
     </div>
+    </AppShell>
   );
 }

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ApiError, getPipelineDag, importPipeline, type ImportResult } from "@/lib/api";
+import { AppShell } from "@/components/app-shell";
 import { Dropzone } from "@/components/dropzone";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -77,7 +78,8 @@ export default function PipelinesImport() {
   }
 
   return (
-    <div className="mx-auto max-w-[1440px] p-8">
+    <AppShell>
+    <div className="p-8">
       <h1 className="font-display text-40 font-semibold leading-display text-ink">
         Import pipeline
       </h1>
@@ -211,5 +213,6 @@ export default function PipelinesImport() {
         </Card>
       )}
     </div>
+    </AppShell>
   );
 }

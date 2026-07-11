@@ -9,6 +9,7 @@ import {
   type ModelOption,
   type StageInfo,
 } from "@/lib/api";
+import { AppShell } from "@/components/app-shell";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -114,7 +115,8 @@ export default function NewMigration() {
   if (migrationMutation.isSuccess) {
     const migration = migrationMutation.data;
     return (
-      <div className="mx-auto max-w-[1440px] p-8">
+      <AppShell>
+      <div className="p-8">
         <h1 className="font-display text-28 font-semibold leading-display text-ink">
           New migration
         </h1>
@@ -142,11 +144,13 @@ export default function NewMigration() {
           </CardContent>
         </Card>
       </div>
+      </AppShell>
     );
   }
 
   return (
-    <div className="mx-auto max-w-[1440px] p-8">
+    <AppShell>
+    <div className="p-8">
       <Link
         to="/pipelines/$pipelineId"
         params={{ pipelineId }}
@@ -442,6 +446,7 @@ export default function NewMigration() {
         </Card>
       )}
     </div>
+      </AppShell>
   );
 }
 

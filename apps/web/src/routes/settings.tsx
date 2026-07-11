@@ -11,6 +11,7 @@ import {
   listApiKeys,
   updateWorkspaceSettings,
 } from "@/lib/api";
+import { AppShell } from "@/components/app-shell";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -55,10 +56,8 @@ export default function Settings() {
   }
 
   return (
-    <div className="mx-auto max-w-[1440px] p-8">
-      <Link to="/" className="text-13 text-ink-soft hover:text-ink">
-        ← Pipelines
-      </Link>
+    <AppShell>
+    <div className="p-8">
       <h1 className="font-display text-28 font-semibold leading-display text-ink">Settings</h1>
       <p className="mt-1 text-14 text-ink-soft">
         Workspace name and BYOK provider API keys. Keys are encrypted at rest and never shown
@@ -70,6 +69,7 @@ export default function Settings() {
         <ApiKeysCard />
       </div>
     </div>
+    </AppShell>
   );
 }
 

@@ -1,66 +1,79 @@
 # Refract
 
-**Migrate multi-stage LLM pipelines to cheaper or on-prem models — with proof they still work.**
+### Change the AI model behind your product without breaking it — and prove it.
 
-## What and why
+---
 
-Companies run pipelines of 5–50 chained LLM calls (mixed models, sequential
-+ parallel). Swapping any model to save cost breaks output quality, because
-prompts are tuned per-model. Manually re-tuning a 30-stage pipeline takes
-weeks. Refract automates it: import your pipeline's real traces, it learns
-what "good" looks like per stage, then searches for prompts/settings on your
-target model until outputs match your original — proven on held-out data,
-not just claimed.
+## The problem, in plain words
 
-**Output:** a migrated config + a scorecard (parity %, cost delta, latency
-delta) you can hand to a buyer or a CFO.
+Say your product asks 20 different questions to an AI model, one after
+another, to answer one user query (classify → search → summarize →
+write the answer, etc). That costs money — every one of those 20 calls
+is a paid API call.
 
-## How it works, in short
+You want to switch to a cheaper AI model to save money. But if you just
+swap the model, the answers often get worse, because every one of those
+20 prompts was written and tuned for the *old* model.
+
+Fixing this by hand — rewriting 20 prompts, testing them, checking nothing
+broke — takes a team weeks per product.
+
+## What Refract does
+
+You give Refract real examples of your pipeline running (what went in,
+what came out, at every step). Refract:
+
+1. **Learns what "a good answer" looks like** for each step, from your own examples.
+2. **Tries the cheaper model** with different prompts/settings until it matches.
+3. **Checks the match three ways**: rule-based checks (free, fast), an AI
+   judge comparing old vs. new answers, and a similarity score.
+4. **Proves it** on examples it never used while searching — no cheating.
+5. **Hands you back**: the new working prompts + a scorecard (accuracy kept,
+   cost saved, speed change) you can show anyone.
+
+You never touch a prompt by hand. You pick the model, Refract does the rest.
+
+## What's built so far
+
+| Piece | Status |
+|---|---|
+| Import your pipeline's data | ✅ Working |
+| Understand the pipeline structure (steps, order, parallel steps) | ✅ Working |
+| Learn "what good looks like" per step | ✅ Working |
+| Score an answer 3 ways (rules / AI judge / similarity) | ✅ Working |
+| Review screens (see your pipeline, review what Refract learned) | ✅ Working |
+| Log in, save your API keys securely | ✅ Working |
+| **The actual "try the cheaper model until it matches" search** | 🚧 Not built yet |
+| Final report screen | 🚧 Waiting on the above |
+
+See `docs/DEVELOPMENT.md` for the exact list of what's left and in what order.
+
+## How to run it / try it yourself
+
+- **First time setup + running it**: `docs/TESTING.md`
+- **Full technical plan**: `docs/DEVELOPMENT.md`
+- **The exact data format it expects**: `docs/trace-format.md`
+
+## What it's built with
+
+| Part | Tech |
+|---|---|
+| Backend | Python, FastAPI, SQLAlchemy |
+| Frontend | React, TypeScript, Vite |
+| Talking to AI models | LiteLLM — one interface, works with OpenAI, Anthropic, Gemini, or a model running on your own servers |
+| "Does this answer make sense" scoring | A local similarity model (no API key needed) + an AI judge |
+| Database | SQLite for now, works with Postgres too |
+
+## Folder structure
 
 ```
-Import traces → generate a rubric per stage (what "good" means)
-             → search for a matching prompt/config on the new model
-             → score candidates (rule checks + AI judge + similarity)
-             → pick the best one within budget
-             → prove it on data never used during search
-             → export the migrated config + scorecard
+apps/api/       The backend server
+apps/web/       The website / product UI
+packages/core/  The actual "brain" - the logic above lives here, kept
+                separate so it can run on its own, not tied to the web app
+docs/           Everything else - how to run it, the data format, the plan
 ```
 
-## Structure
+## License
 
-```
-apps/api/       Backend (Python, FastAPI) — imports, evaluates, serves the UI's data
-apps/web/       Frontend (React) — the actual product screens
-packages/core/  The engine — schema, evaluation, optimization logic.
-                No web framework code; runs standalone/headless too.
-docs/           How to run it, the trace format spec, what's built vs. not
-```
-
-## Core modules (`packages/core`)
-
-- **trace** — the canonical format any pipeline's data gets converted into
-- **dag** — figures out which stages run in what order / in parallel
-- **importers** — converts a real product's export into the canonical format
-- **deterministic** — free, rule-based output checks (required fields, format, etc.)
-- **embedding** — local similarity scoring between two outputs (no API key)
-- **judge** — AI-judged comparison between original and candidate output
-- **scoring** — combines all three checks above into one score
-- **rubric_generator** — asks a model to write the "what good looks like" checklist per stage
-- **llm** — talks to any model provider (OpenAI/Anthropic/Gemini/local) through one interface
-- **sweep / budget / selection** — the search: try variations, track spend, pick a winner
-
-## Tech
-
-- **Backend:** Python, FastAPI, SQLAlchemy, Alembic, LiteLLM (any model provider)
-- **Frontend:** React, Vite, TypeScript, TanStack Query/Router, React Flow
-- **Data:** SQLite (dev), Postgres-ready
-- **Evaluation:** local embeddings (bge-m3), LLM-as-judge, Optuna for search
-
-See `docs/DEVELOPMENT.md` to run it, `docs/TESTING.md` to click through it,
-`docs/trace-format.md` for the data format.
-
-## Status
-
-Import, evaluation engine, and the review/config screens are built and
-tested. The actual optimization search loop (the core "try it and prove
-it" step) is the next piece — see `docs/DEVELOPMENT.md` for the exact plan.
+Proprietary — Veloce AI. All rights reserved. See `LICENSE`.

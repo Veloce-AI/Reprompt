@@ -185,7 +185,8 @@ automated pass is not a substitute for actually looking at the screen:
 
 Done: M0-M2 fully, screens 1-5, M3's non-LLM groundwork (model-card
 transforms, param sweep, budget tracker, selection rule), M5's
-auth/settings/BYOK wiring, universal trace format v1.1.
+auth/settings/BYOK wiring, universal trace format v1.1, self-hosted BYOK
+(`WorkspaceApiKey.base_url`) and `Migration` progress-tracking columns.
 
 Left, in order:
 1. **Rubric generation trigger in the UI** - a button on the canvas/rubric
@@ -193,15 +194,16 @@ Left, in order:
    (or all stages), so rubrics stop requiring manual seeding.
 2. **Model card picker integration** - surface `llm/model_card.py`'s
    per-family transform info in the migration wizard's model picker.
-3. **M3 optimizer loop** - the actual thing: for each stage, run the
-   param/format sweep (already built) against the target model via
-   `complete_with_workspace_credentials`, score each candidate with the
-   composite scorer + judge (already built), record each attempt as a
-   `Candidate` row (prompt variant, params, score breakdown, cost - so
-   past iterations are always revisitable), select the best per
-   `selection.py`'s rule, respect the budget tracker's hard stop. Budget
-   should become optional (uncapped) rather than required.
-4. **M4** - wire the above into the full 3-pass migration run (teacher-
+3. **M3 optimizer loop** - in active development. Full phase-by-phase
+   breakdown, current status, and exact files/functions to pick up at:
+   **`DEV_TRACKER.md`** (repo root) - keep that file, not this section, as
+   the source of truth for M3 status; update it in the same commit as any
+   M3 change rather than duplicating status here.
+4. Budget should become optional (uncapped) rather than required - a
+   separate, not-yet-started item; `DEV_TRACKER.md` explicitly notes the
+   current code has no uncapped mode, don't assume otherwise while working
+   on M3 above.
+5. **M4** - wire the above into the full 3-pass migration run (teacher-
    forced -> end-to-end -> holdout), SSE progress, screens 6-7.
-5. **M5 remainder** - scorecard screen, config export, once real
+6. **M5 remainder** - scorecard screen, config export, once real
    migration results exist to show.

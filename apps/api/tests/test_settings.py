@@ -285,7 +285,7 @@ def test_list_api_keys_returns_multiple_providers_sorted(client: TestClient) -> 
     providers = [row["provider"] for row in response.json()]
     assert providers == ["anthropic", "openai"]  # alphabetical
     for row in response.json():
-        assert set(row.keys()) == {"id", "provider", "last_four", "created_at"}
+        assert set(row.keys()) == {"id", "provider", "last_four", "base_url", "created_at"}
 
 
 def test_delete_api_key_removes_it(client: TestClient, session_factory: sessionmaker) -> None:

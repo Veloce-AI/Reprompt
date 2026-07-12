@@ -14,10 +14,13 @@ proves the outputs still match. Full plain-language explanation: `README.md`.
 1. `README.md` — what it is, what's built, tech stack
 2. `docs/DEVELOPMENT.md` — how to set up and run it, **and the exact
    remaining build plan** (see "Remaining plan" section at the bottom)
-3. `docs/TESTING.md` — full screen map, click-path, manual test checklist
+3. `DEV_TRACKER.md` — detailed, actively-updated phase-by-phase status of
+   the optimizer (M3) work specifically — check this before touching
+   anything under `packages/core/src/refract_core/optimizer/`
+4. `docs/TESTING.md` — full screen map, click-path, manual test checklist
    (keep this updated whenever a screen/feature changes — it says how)
-4. `docs/trace-format.md` — the data format the whole system is built on
-5. `docs/LESSONS.md` — real bugs found and why, worth reading before
+5. `docs/trace-format.md` — the data format the whole system is built on
+6. `docs/LESSONS.md` — real bugs found and why, worth reading before
    touching auth, React Query mutations, or Windows dev-server processes
 
 ## Current state (see docs/DEVELOPMENT.md for full detail)
@@ -32,11 +35,13 @@ BYOK key storage + live model calls, screens 1–5, auth, settings.
    the migration wizard's model picker — logic exists (`llm/model_card.py`),
    not connected to that screen
 3. Budget should become optional (currently required) in the migration wizard
-4. **The actual optimizer loop (M3)** — the core "try it, score it, keep
-   the best" search. Every piece it needs already exists (sweep generator,
-   budget tracker, judge, scorer, selection rule) — nothing wires them
-   into a real loop yet. Each attempt should be saved as a `Candidate` row
-   (prompt tried, score, cost) so past attempts are always reviewable.
+4. **The actual optimizer loop (M3)** — in active development, see
+   `DEV_TRACKER.md` for the exact phase-by-phase status and where to pick
+   up. Two strategies: "simple" (one-shot mutation + sweep) and "Prism"
+   (multi-round mutate → critique → refine, plus optional few-shot
+   selection), both in-house, both provider-agnostic. Each attempt is
+   saved as a `Candidate` row (prompt tried, score, cost) so past attempts
+   are always reviewable.
 5. M4 — full migration run using the M3 loop, progress screen
 6. M5 remainder — scorecard screen, config export (need real M3/M4 output first)
 

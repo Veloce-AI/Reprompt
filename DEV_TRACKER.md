@@ -40,6 +40,38 @@ parent-score "baseline" tracked at refinement time instead. Worth reading
 if you're touching `_optimize_stage_prism` again — the same mistake is
 easy to reintroduce if the lineage-tracking reasoning isn't kept in mind.
 
+## Working in parallel (more than one developer/AI at once)
+
+- **Check "Current state" above before claiming a phase.** It says what's
+  actually done vs. not — if two people start Phase 4 without checking
+  here first, that's wasted work for one of them. If you start a phase,
+  say so in this paragraph (e.g. "Phase 4 — in progress, started by
+  <name/session>, currently on the `optimizer_runner.py` query plan") so
+  a second person opening this file sees it's claimed, not just "not
+  started."
+- **The phases have a real dependency order** — Phase 4b needs Phase 4's
+  actual functions to exist (it tests them), Phase 6 needs 4+4b done. But
+  **Phase 5 (docs) has no code dependency** and can be picked up by a
+  second person in parallel with someone else doing Phase 4/4b — they
+  don't touch the same files.
+- **This file is a merge-conflict hotspot precisely because everyone is
+  told to update it.** If two people finish work around the same time,
+  expect a conflict in the "Current state" paragraph and whichever phase
+  headers both touched. Resolve by keeping *both* people's `[x]`/`[DONE]`
+  marks (they're additive — nothing here should ever get un-marked done
+  by a merge) and hand-merging the "Current state" prose into one
+  accurate paragraph, not by picking one side and discarding the other's
+  update.
+- **Work on separate branches per phase where possible**, merge
+  sequentially, and re-verify both test suites after each merge (a clean
+  merge of code doesn't guarantee the combined behavior is still
+  correct — this project's own standing rule, not unique to parallel
+  work).
+- **Never push directly to `master` without the human's go-ahead** — this
+  applies per-session/per-AI-instance the same way it applies to a single
+  developer; two AI sessions both assuming "someone else will ask
+  permission" is how an unreviewed push happens.
+
 ## Why two strategies, and why the name "Prism"
 
 **Prism** is our own implementation of PromptWizard's published technique

@@ -333,3 +333,181 @@ def test_list_migrations_does_not_include_other_pipelines(client: TestClient) ->
 
     listing_b = client.get(f"/pipelines/{pipeline_b}/migrations").json()
     assert listing_b == []
+
+
+# ---------------------------------------------------------------------------
+# Helpers shared by start / status tests
+# ---------------------------------------------------------------------------
+
+
+def _create_migration(client: TestClient, pipeline_id: int) -> int:
+    response = client.post(
+        f"/pipelines/{pipeline_id}/migrations",
+        json={"target_model_config": {"default": "gpt-4o-mini"}, "budget": 10.0},
+    )
+    assert response.status_code == 201, response.text
+    return response.json()["id"]
+
+
+def _seed_rubric(
+    session_factory: sessionmaker,
+    stage_id: int,
+    *,
+    approved: bool = True,
+) -> None:
+    """Insert a Rubric row directly — generate-rubric requires a real BYOK
+    key, so tests seed rubrics via the DB layer instead."""
+    with session_factory() as db:
+        rubric = models.Rubric(
+            stage_id=stage_id,
+            deterministic_checks=[],
+            judge_criteria=[],
+            downstream_contract=[],
+            approved=approved,
+        )
+        db.add(rubric)
+        db.commit()
+
+
+# ---------------------------------------------------------------------------
+# POST /pipelines/{id}/migrations/{id}/start
+# ---------------------------------------------------------------------------
+
+
+def test_start_blocked_when_rubric_not_approved(
+    client: TestClient, session_factory: sessionmaker
+) -> None:
+    pipeline_id = _upload(client, _diamond_trace_file())
+    migration_id = _create_migration(client, pipeline_id)
+    stage_ids = _stage_ids(session_factory, pipeline_id)
+
+    # Approve three stages but deliberately leave "root" unapproved.
+    _seed_rubric(session_factory, stage_ids["root"], approved=False)
+    for src in ("a", "b", "join"):
+        _seed_rubric(session_factory, stage_ids[src], approved=True)
+
+    response = client.post(f"/pipelines/{pipeline_id}/migrations/{migration_id}/start")
+    assert response.status_code == 422
+    # Error must name the stage by name (human-readable), not just its DB id.
+    assert "Root" in response.json()["detail"]
+
+
+def test_start_blocked_when_rubric_missing_entirely(
+    client: TestClient, session_factory: sessionmaker
+) -> None:
+    pipeline_id = _upload(client, _diamond_trace_file())
+    migration_id = _create_migration(client, pipeline_id)
+    # No rubrics seeded — all 4 stages must appear in the 422.
+
+    response = client.post(f"/pipelines/{pipeline_id}/migrations/{migration_id}/start")
+    assert response.status_code == 422
+    detail = response.json()["detail"]
+    for name in ("Root", "Branch A", "Branch B", "Join"):
+        assert name in detail, f"Expected stage name '{name}' in error detail: {detail}"
+
+
+def test_start_happy_path_sets_running_and_schedules_task(
+    client: TestClient, session_factory: sessionmaker
+) -> None:
+    from unittest.mock import MagicMock, patch
+
+    pipeline_id = _upload(client, _diamond_trace_file())
+    migration_id = _create_migration(client, pipeline_id)
+    stage_ids = _stage_ids(session_factory, pipeline_id)
+
+    for stage_id in stage_ids.values():
+        _seed_rubric(session_factory, stage_id, approved=True)
+
+    mock_runner = MagicMock()
+    with patch("refract_api.migrations.run_optimizer_for_migration", mock_runner):
+        response = client.post(f"/pipelines/{pipeline_id}/migrations/{migration_id}/start")
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    # Status must be "running" in the response — set before add_task so a
+    # poll immediately after /start never sees a stale "pending".
+    assert body["status"] == "running"
+    assert body["id"] == migration_id
+    # TestClient runs BackgroundTasks synchronously before returning, so the
+    # mock is already called by the time we check it here.
+    mock_runner.assert_called_once_with(migration_id)
+
+
+def test_start_unknown_migration_returns_404(client: TestClient) -> None:
+    pipeline_id = _upload(client, _diamond_trace_file())
+    response = client.post(f"/pipelines/{pipeline_id}/migrations/999999/start")
+    assert response.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# GET /pipelines/{id}/migrations/{id}/status
+# ---------------------------------------------------------------------------
+
+
+def test_status_reflects_progress_fields(
+    client: TestClient, session_factory: sessionmaker
+) -> None:
+    pipeline_id = _upload(client, _diamond_trace_file())
+    migration_id = _create_migration(client, pipeline_id)
+
+    # Simulate what the background task writes mid-run.
+    with session_factory() as db:
+        migration = db.get(models.Migration, migration_id)
+        migration.status = "running"
+        migration.progress_stage_name = "Branch A"
+        migration.progress_current = 1
+        migration.progress_total = 4
+        db.commit()
+
+    response = client.get(f"/pipelines/{pipeline_id}/migrations/{migration_id}/status")
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["status"] == "running"
+    assert body["progress_stage_name"] == "Branch A"
+    assert body["progress_current"] == 1
+    assert body["progress_total"] == 4
+
+
+def test_status_reflects_terminal_states(
+    client: TestClient, session_factory: sessionmaker
+) -> None:
+    import datetime
+
+    pipeline_id = _upload(client, _diamond_trace_file())
+    completed_at = datetime.datetime(2026, 7, 12, 10, 0, 0, tzinfo=datetime.timezone.utc)
+
+    # --- completed ---
+    migration_id = _create_migration(client, pipeline_id)
+    with session_factory() as db:
+        m = db.get(models.Migration, migration_id)
+        m.status = "completed"
+        m.total_cost_usd = 1.23
+        m.stopped_early = False
+        m.completed_at = completed_at
+        db.commit()
+
+    body = client.get(f"/pipelines/{pipeline_id}/migrations/{migration_id}/status").json()
+    assert body["status"] == "completed"
+    assert abs(body["total_cost_usd"] - 1.23) < 1e-6
+    assert body["stopped_early"] is False
+    assert body["completed_at"] is not None
+
+    # --- failed ---
+    migration_id_2 = _create_migration(client, pipeline_id)
+    with session_factory() as db:
+        m = db.get(models.Migration, migration_id_2)
+        m.status = "failed"
+        m.stop_reason = "No workspace found"
+        m.completed_at = completed_at
+        db.commit()
+
+    body = client.get(f"/pipelines/{pipeline_id}/migrations/{migration_id_2}/status").json()
+    assert body["status"] == "failed"
+    assert body["stop_reason"] == "No workspace found"
+    assert body["completed_at"] is not None
+
+
+def test_status_unknown_migration_returns_404(client: TestClient) -> None:
+    pipeline_id = _upload(client, _diamond_trace_file())
+    response = client.get(f"/pipelines/{pipeline_id}/migrations/999999/status")
+    assert response.status_code == 404

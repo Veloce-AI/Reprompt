@@ -10,3 +10,8 @@ test-results
 
 # Real production/customer data - never committed, local reference only
 /Sample Queries/
+
+# Local-only working files (PR review notes, etc.) - never committed,
+# persists across sessions unlike a temp scratchpad. See PR_REVIEW.md's
+# own "keep this local" instruction for why.
+/.local/

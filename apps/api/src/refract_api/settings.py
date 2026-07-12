@@ -87,6 +87,7 @@ class ApiKeyOut(BaseModel):
     id: int
     provider: str
     last_four: str
+    base_url: str | None
     created_at: datetime.datetime
 
 
@@ -98,6 +99,10 @@ class ApiKeyCreate(BaseModel):
     # about any particular provider's exact key format (free text, per the
     # provider-field design note above).
     api_key: str = Field(min_length=4, max_length=4096)
+    # Customer self-hosted endpoint (Ollama/vLLM/LM Studio/etc). Optional -
+    # hosted providers never set this. Forwarded to LiteLLM as api_base by
+    # refract_api.llm_context.complete_with_workspace_credentials.
+    base_url: str | None = Field(default=None, max_length=512)
 
     @field_validator("provider")
     @classmethod
@@ -113,6 +118,14 @@ class ApiKeyCreate(BaseModel):
         if not value.strip():
             raise ValueError("API key can't be blank.")
         return value
+
+    @field_validator("base_url")
+    @classmethod
+    def _blank_base_url_is_none(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        stripped = value.strip()
+        return stripped or None
 
 
 # ---------------------------------------------------------------------------
@@ -144,7 +157,11 @@ def _encrypt_or_500(raw_key: str) -> str:
 
 def _to_api_key_out(row: models.WorkspaceApiKey) -> ApiKeyOut:
     return ApiKeyOut(
-        id=row.id, provider=row.provider, last_four=row.last_four, created_at=row.created_at
+        id=row.id,
+        provider=row.provider,
+        last_four=row.last_four,
+        base_url=row.base_url,
+        created_at=row.created_at,
     )
 
 
@@ -220,6 +237,7 @@ def add_api_key(
     if existing is not None:
         existing.encrypted_key = encrypted
         existing.last_four = last_four
+        existing.base_url = body.base_url
         existing.created_at = datetime.datetime.now(datetime.timezone.utc)
         row = existing
     else:
@@ -228,6 +246,7 @@ def add_api_key(
             provider=body.provider,
             encrypted_key=encrypted,
             last_four=last_four,
+            base_url=body.base_url,
         )
         db.add(row)
 

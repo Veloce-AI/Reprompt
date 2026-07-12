@@ -116,6 +116,25 @@ def _provider_for_model(model: str) -> str | None:
         return None
 
 
+def _resolve_workspace_key_row(
+    db: Session, workspace: models.Workspace, model: str
+) -> models.WorkspaceApiKey:
+    provider = _provider_for_model(model)
+    if provider is None:
+        raise ProviderKeyNotConfigured(model)
+
+    row = db.scalar(
+        select(models.WorkspaceApiKey).where(
+            models.WorkspaceApiKey.workspace_id == workspace.id,
+            models.WorkspaceApiKey.provider == provider,
+        )
+    )
+    if row is None:
+        raise ProviderKeyNotConfigured(provider)
+
+    return row
+
+
 def resolve_workspace_credential(db: Session, workspace: models.Workspace, model: str) -> str:
     """Decrypt and return the plaintext BYOK key ``workspace`` has saved
     for the provider ``model`` routes to.
@@ -133,19 +152,7 @@ def resolve_workspace_credential(db: Session, workspace: models.Workspace, model
     integrity problem) unchanged; callers should treat both as 500s, not
     as "this workspace needs to add a key."
     """
-    provider = _provider_for_model(model)
-    if provider is None:
-        raise ProviderKeyNotConfigured(model)
-
-    row = db.scalar(
-        select(models.WorkspaceApiKey).where(
-            models.WorkspaceApiKey.workspace_id == workspace.id,
-            models.WorkspaceApiKey.provider == provider,
-        )
-    )
-    if row is None:
-        raise ProviderKeyNotConfigured(provider)
-
+    row = _resolve_workspace_key_row(db, workspace, model)
     return decrypt(row.encrypted_key)
 
 
@@ -165,11 +172,21 @@ def complete_with_workspace_credentials(
     that is what makes this safe under concurrent requests for different
     workspaces without any locking.
 
+    If the workspace's saved key also has a ``base_url`` (customer
+    self-hosted endpoint — Ollama/vLLM/LM Studio/etc), it's forwarded as
+    ``api_base`` the same way: a local value on this call's own stack,
+    never an env var, never shared with any other request. A caller that
+    already passed its own ``api_base`` in ``**kwargs`` wins (rare —
+    workspace-level config is the normal path).
+
     Raises :class:`ProviderKeyNotConfigured` (not
     :class:`~refract_core.llm.client.MissingAPIKeyError`) if ``workspace``
     has no saved key for the required provider — callers should catch
     this specifically to build a "configure it in Settings" error
     response, not ``refract_core.llm.client``'s env-var-flavored one.
     """
-    scoped_key = resolve_workspace_credential(db, workspace, model)
+    row = _resolve_workspace_key_row(db, workspace, model)
+    scoped_key = decrypt(row.encrypted_key)
+    if row.base_url:
+        kwargs.setdefault("api_base", row.base_url)
     return complete(model, messages, _scoped_api_key=scoped_key, **kwargs)

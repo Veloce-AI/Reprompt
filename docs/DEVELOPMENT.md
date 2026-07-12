@@ -24,30 +24,57 @@ Sample Queries/ Real production trace data. Gitignored — never commit it.
 
 ## First-time setup
 
-Each Python package (`packages/core`, `apps/api`) has its **own separate
-venv** — this is not a unified uv workspace. Run these in each:
+Run `bash scripts/setup.sh` from the repo root — it does everything below
+in order and is safe to re-run. No Postgres/Docker needed; SQLite is the
+default (see "Running against Postgres instead of SQLite" below if you
+specifically want Postgres).
 
-```bash
-cd packages/core
-uv sync --all-extras
-uv pip install -e . --no-deps   # see gotcha below on why this second step matters
+What it does, if you want to run the steps by hand instead:
 
-cd ../../apps/api
-uv sync --all-extras
-uv pip install -e . --no-deps
-```
+1. **Install each Python package.** `packages/core` and `apps/api` each
+   have their **own separate venv** — this is not a unified uv workspace:
+   ```bash
+   cd packages/core
+   uv sync --all-extras
+   uv pip install -e . --no-deps   # see gotcha below on why this second step matters
 
-Frontend:
-
-```bash
-cd apps/web
-pnpm install
-```
+   cd ../../apps/api
+   uv sync --all-extras
+   uv pip install -e . --no-deps
+   ```
+2. **Generate a BYOK encryption key.** Settings/API-key storage needs
+   `REFRACT_SETTINGS_ENCRYPTION_KEY` set to a real Fernet key or every
+   `/settings/api-keys` call 500s. Create `apps/api/.env` (gitignored):
+   ```bash
+   cd apps/api
+   uv run python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+   # paste the output as REFRACT_SETTINGS_ENCRYPTION_KEY=<value> into apps/api/.env
+   ```
+3. **Create the database via Alembic, not the app's own auto-create.**
+   ```bash
+   cd apps/api
+   set -a && source .env && set +a
+   uv run alembic upgrade head
+   ```
+   Don't just start the API and let `main.py`'s `Base.metadata.create_all`
+   build the DB for you as your *first* setup step — that path creates
+   tables matching the current models but never stamps `alembic_version`,
+   so a later `alembic upgrade head` against that file fails with
+   "table already exists". Running the real migrations against an
+   empty/nonexistent file avoids this entirely (confirmed by actually
+   hitting and fixing this during development — see `DEV_TRACKER.md`).
+4. **Frontend:**
+   ```bash
+   cd apps/web
+   pnpm install
+   ```
 
 ## Running the app
 
-**API** (defaults to SQLite at `apps/api/test.db`, auto-creates tables on
-startup for dev convenience):
+**API** (reads `apps/api/.env` if you `source` it first — see step 2/3
+above; defaults to SQLite at `apps/api/test.db`; also auto-creates tables
+on startup as a dev convenience, but see the note above on why you should
+still create the DB via Alembic first rather than relying on this alone):
 
 ```bash
 cd apps/api
@@ -185,7 +212,8 @@ automated pass is not a substitute for actually looking at the screen:
 
 Done: M0-M2 fully, screens 1-5, M3's non-LLM groundwork (model-card
 transforms, param sweep, budget tracker, selection rule), M5's
-auth/settings/BYOK wiring, universal trace format v1.1.
+auth/settings/BYOK wiring, universal trace format v1.1, self-hosted BYOK
+(`WorkspaceApiKey.base_url`) and `Migration` progress-tracking columns.
 
 Left, in order:
 1. **Rubric generation trigger in the UI** - a button on the canvas/rubric
@@ -193,15 +221,16 @@ Left, in order:
    (or all stages), so rubrics stop requiring manual seeding.
 2. **Model card picker integration** - surface `llm/model_card.py`'s
    per-family transform info in the migration wizard's model picker.
-3. **M3 optimizer loop** - the actual thing: for each stage, run the
-   param/format sweep (already built) against the target model via
-   `complete_with_workspace_credentials`, score each candidate with the
-   composite scorer + judge (already built), record each attempt as a
-   `Candidate` row (prompt variant, params, score breakdown, cost - so
-   past iterations are always revisitable), select the best per
-   `selection.py`'s rule, respect the budget tracker's hard stop. Budget
-   should become optional (uncapped) rather than required.
-4. **M4** - wire the above into the full 3-pass migration run (teacher-
+3. **M3 optimizer loop** - in active development. Full phase-by-phase
+   breakdown, current status, and exact files/functions to pick up at:
+   **`DEV_TRACKER.md`** (repo root) - keep that file, not this section, as
+   the source of truth for M3 status; update it in the same commit as any
+   M3 change rather than duplicating status here.
+4. Budget should become optional (uncapped) rather than required - a
+   separate, not-yet-started item; `DEV_TRACKER.md` explicitly notes the
+   current code has no uncapped mode, don't assume otherwise while working
+   on M3 above.
+5. **M4** - wire the above into the full 3-pass migration run (teacher-
    forced -> end-to-end -> holdout), SSE progress, screens 6-7.
-5. **M5 remainder** - scorecard screen, config export, once real
+6. **M5 remainder** - scorecard screen, config export, once real
    migration results exist to show.

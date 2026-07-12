@@ -25,6 +25,11 @@ tabs/windows now — you'll want three total (one per Python package, plus
 the frontend), though in practice you mostly just need two running at once
 later (API + web).
 
+**Fast path**: `bash scripts/setup.sh` from the repo root does everything
+in §1.2-1.4 below for you (both Python installs, the BYOK encryption key,
+the database, and the frontend install), and is safe to re-run. The
+step-by-step below is for understanding what it does or doing it by hand.
+
 ### 1.2 `packages/core` — the engine (trace schema, DAG, evaluators)
 
 This is a **separate Python venv** from `apps/api` — not a shared
@@ -74,6 +79,30 @@ uv run pytest -q
 # should end with something like "88 passed"
 ```
 
+Two more one-time steps before you can actually *run* the app (not needed
+just to run the test suite above — `uv run pytest` doesn't touch either):
+
+**Encryption key** — Settings/BYOK API-key storage needs
+`REFRACT_SETTINGS_ENCRYPTION_KEY` set or it 500s. Generate one and put it
+in `apps/api/.env` (gitignored):
+
+```bash
+uv run python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+# echo "REFRACT_SETTINGS_ENCRYPTION_KEY=<paste the output>" > .env
+```
+
+**Database** — create it via Alembic, not by just starting the API and
+letting it auto-create tables. `main.py`'s dev-convenience auto-create
+builds tables matching the current models but never stamps
+`alembic_version`, so a later `alembic upgrade head` against that same
+file fails with "table already exists" — a real gotcha hit and fixed
+during this project's own development (see `DEV_TRACKER.md`):
+
+```bash
+set -a && source .env && set +a
+uv run alembic upgrade head
+```
+
 ### 1.4 `apps/web` — the frontend
 
 ```bash
@@ -103,6 +132,7 @@ Two terminals, both from repo root:
 ```bash
 # Terminal 1 — API
 cd apps/api
+set -a && source .env && set +a
 uv run uvicorn refract_api.main:app --reload
 # → http://localhost:8000 (docs at /docs)
 
@@ -112,8 +142,10 @@ pnpm dev
 # → http://localhost:5173
 ```
 
-Fresh database: delete `apps/api/test.db` before starting the API if you
-want a clean slate (empty pipelines list, no users).
+Fresh database: delete `apps/api/test.db`, then run `uv run alembic
+upgrade head` again (not just `rm` + start the API — see the "Database"
+step in §1.3 for why letting the API's own auto-create rebuild it instead
+causes a later `alembic upgrade head` to fail).
 
 ## 3. How to navigate — the full screen map
 

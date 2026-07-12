@@ -319,9 +319,22 @@ class Migration(Base):
     target_model_config: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     budget: Mapped[float] = mapped_column(Float, nullable=False)
     parity_threshold: Mapped[float] = mapped_column(Float, nullable=False, default=0.95)
+    # status values: pending | running | completed | stopped_early | failed
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending")
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    # Populated once the run starts/finishes - null before then. Set by
+    # apps/api/optimizer_runner.py, never by packages/core (core stays
+    # headless and knows nothing about this table).
+    total_cost_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
+    stopped_early: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    stop_reason: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    progress_stage_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    progress_current: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    progress_total: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    completed_at: Mapped[datetime.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
     )
 
     pipeline: Mapped["Pipeline"] = relationship(back_populates="migrations")
@@ -479,6 +492,9 @@ class WorkspaceApiKey(Base):
     # and never needs binary-safe handling.
     encrypted_key: Mapped[str] = mapped_column(Text, nullable=False)
     last_four: Mapped[str] = mapped_column(String(4), nullable=False)
+    # Customer self-hosted endpoint (Ollama/vLLM/LM Studio/etc), passed to
+    # LiteLLM as api_base. Null for hosted providers - key alone is enough.
+    base_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

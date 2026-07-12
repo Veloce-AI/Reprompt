@@ -93,7 +93,7 @@ See `DEV_TRACKER.md` for the full reasoning and technical detail.
 | Score an answer 3 ways (rules / AI judge / similarity) | ✅ Working |
 | Review screens (see your pipeline, review what Refract learned) | ✅ Working |
 | Log in, save your API keys securely | ✅ Working |
-| **The actual "try the cheaper model until it matches" search** | 🚧 Not built yet |
+| **The actual "try the cheaper model until it matches" search** | ⚙️ Engine built + tested, not wired into the app yet — see below |
 | Final report screen | 🚧 Waiting on the above |
 
 See `docs/DEVELOPMENT.md` for the exact list of what's left and in what

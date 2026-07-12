@@ -525,6 +525,50 @@ during actual implementation; the coverage they describe is all present).
 
 ## Phase 4 — `apps/api` wiring [NOT STARTED]
 
+### Before you start (if you're picking this up cold)
+
+1. Verify the environment is healthy first, before writing anything:
+   ```bash
+   cd packages/core && uv run pytest -q   # expect: 273 passed, 2 skipped
+   cd ../../apps/api && uv run pytest -q  # expect: 99 passed
+   ```
+   If either doesn't match, something changed since this was written —
+   figure out why before adding Phase 4 on top of an unknown state.
+2. Read `packages/core/src/refract_core/optimizer/loop.py`'s module
+   docstring and `run_optimizer()`'s docstring in full — Phase 4 is purely
+   about *calling* this function correctly with real data; it does not
+   change anything inside `packages/core`. If you find yourself wanting to
+   edit `loop.py` or `mutator.py` to make Phase 4 easier, stop — that's a
+   sign the calling convention wasn't understood yet, not that the engine
+   needs to change.
+3. Scope call for this phase: **only wire up `strategy` selection.** Don't
+   expose `mutator_model`, `max_refine_rounds`, `max_sweep_candidates_per_prompt`,
+   or `include_few_shot` as new API/UI controls yet — call `run_optimizer()`
+   with their defaults (`mutator_model=None`, `max_refine_rounds=1`,
+   `include_few_shot=False`) for now. Turning these into real per-migration
+   settings is a reasonable *future* enhancement, not part of "make the
+   engine reachable at all" — don't gold-plate this phase.
+
+### Definition of done for Phase 4
+
+Not done until all of these are true, in this order:
+- [ ] `optimizer_runner.py` exists, `run_optimizer_for_migration()` runs
+      the real engine against real DB data (verified against at least one
+      seeded pipeline+migration, not just imagined).
+- [ ] `POST .../start` and `GET .../status` both exist, both tested
+      (Phase 4b).
+- [ ] A migration with an unapproved rubric is provably blocked (`422`,
+      not a silent no-op or a 500).
+- [ ] A migration that completes writes real `Candidate` rows with real
+      `scores`/`cost` — checked by actually querying the table after a
+      run, not just by reading the code and assuming it's right.
+- [ ] `cd packages/core && uv run pytest -q` and
+      `cd apps/api && uv run pytest -q` both still pass in full.
+- [ ] This section's `[NOT STARTED]` marker (and Phase 4b's, and the
+      "Current state" paragraph near the top of this file) updated to
+      reflect reality — don't leave the tracker stale once the work is
+      actually done, same discipline as every phase before this one.
+
 ### `apps/api/src/refract_api/optimizer_runner.py` (new)
 
 Reads `OPTIMIZER_STRATEGY` env var (`os.environ.get("OPTIMIZER_STRATEGY", "simple")`).
@@ -624,8 +668,16 @@ in a legible state for the UI to show something sane.
     feature; a client polls this on an interval, e.g. every 2s, from the
     migration detail screen).
 
-`.env.example` — add `OPTIMIZER_STRATEGY=simple` with a one-line comment
-pointing at `DEV_TRACKER.md` for what the alternative (`prism`) does.
+**`apps/api/.env.example`** (new — doesn't exist yet; the repo-root
+`.env.example` is only for the optional Postgres/Langfuse docker-compose
+stack, a different thing). Create one covering every env var `apps/api`
+actually reads, so a new developer doesn't have to grep the source to
+discover them — at minimum: `DATABASE_URL` (commented out, showing the
+default), `REFRACT_SETTINGS_ENCRYPTION_KEY` (placeholder value + a
+comment saying `scripts/setup.sh` generates a real one), `REFRACT_DEV_MAGIC_LINKS`
+(default `true`, from `auth.py`), and the new `OPTIMIZER_STRATEGY=simple`
+with a one-line comment pointing at this file's "Why two strategies"
+section for what `prism` does.
 
 ## Phase 4b — `apps/api` tests [NOT STARTED]
 

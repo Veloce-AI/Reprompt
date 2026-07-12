@@ -24,30 +24,57 @@ Sample Queries/ Real production trace data. Gitignored — never commit it.
 
 ## First-time setup
 
-Each Python package (`packages/core`, `apps/api`) has its **own separate
-venv** — this is not a unified uv workspace. Run these in each:
+Run `bash scripts/setup.sh` from the repo root — it does everything below
+in order and is safe to re-run. No Postgres/Docker needed; SQLite is the
+default (see "Running against Postgres instead of SQLite" below if you
+specifically want Postgres).
 
-```bash
-cd packages/core
-uv sync --all-extras
-uv pip install -e . --no-deps   # see gotcha below on why this second step matters
+What it does, if you want to run the steps by hand instead:
 
-cd ../../apps/api
-uv sync --all-extras
-uv pip install -e . --no-deps
-```
+1. **Install each Python package.** `packages/core` and `apps/api` each
+   have their **own separate venv** — this is not a unified uv workspace:
+   ```bash
+   cd packages/core
+   uv sync --all-extras
+   uv pip install -e . --no-deps   # see gotcha below on why this second step matters
 
-Frontend:
-
-```bash
-cd apps/web
-pnpm install
-```
+   cd ../../apps/api
+   uv sync --all-extras
+   uv pip install -e . --no-deps
+   ```
+2. **Generate a BYOK encryption key.** Settings/API-key storage needs
+   `REFRACT_SETTINGS_ENCRYPTION_KEY` set to a real Fernet key or every
+   `/settings/api-keys` call 500s. Create `apps/api/.env` (gitignored):
+   ```bash
+   cd apps/api
+   uv run python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+   # paste the output as REFRACT_SETTINGS_ENCRYPTION_KEY=<value> into apps/api/.env
+   ```
+3. **Create the database via Alembic, not the app's own auto-create.**
+   ```bash
+   cd apps/api
+   set -a && source .env && set +a
+   uv run alembic upgrade head
+   ```
+   Don't just start the API and let `main.py`'s `Base.metadata.create_all`
+   build the DB for you as your *first* setup step — that path creates
+   tables matching the current models but never stamps `alembic_version`,
+   so a later `alembic upgrade head` against that file fails with
+   "table already exists". Running the real migrations against an
+   empty/nonexistent file avoids this entirely (confirmed by actually
+   hitting and fixing this during development — see `DEV_TRACKER.md`).
+4. **Frontend:**
+   ```bash
+   cd apps/web
+   pnpm install
+   ```
 
 ## Running the app
 
-**API** (defaults to SQLite at `apps/api/test.db`, auto-creates tables on
-startup for dev convenience):
+**API** (reads `apps/api/.env` if you `source` it first — see step 2/3
+above; defaults to SQLite at `apps/api/test.db`; also auto-creates tables
+on startup as a dev convenience, but see the note above on why you should
+still create the DB via Alembic first rather than relying on this alone):
 
 ```bash
 cd apps/api

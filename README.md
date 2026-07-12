@@ -102,7 +102,13 @@ phase-by-phase status of the optimizer (M3) work specifically.
 
 ## How to run it / try it yourself
 
-- **First time setup + running it**: `docs/TESTING.md`
+First time, from the repo root: `bash scripts/setup.sh` — installs
+everything, creates a local database, and generates a key for encrypted
+API-key storage. **No Postgres/Docker needed** — SQLite is the default
+and all you need for local dev; Postgres is optional (see
+`docs/DEVELOPMENT.md` if you specifically want it). Then:
+
+- **First time setup + running it, step by step**: `docs/TESTING.md`
 - **Full technical plan**: `docs/DEVELOPMENT.md`
 - **Detailed, current build status of the optimizer**: `DEV_TRACKER.md`
 - **The exact data format it expects**: `docs/trace-format.md`

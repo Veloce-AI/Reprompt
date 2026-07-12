@@ -1,0 +1,4 @@
+# Shell scripts must stay LF - a CRLF shebang line breaks bash execution.
+# Needed on this Windows dev machine where git's autocrlf otherwise
+# converts line endings on checkout.
+*.sh text eol=lf

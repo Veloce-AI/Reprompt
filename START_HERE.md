@@ -61,9 +61,53 @@ rubric review, and migration wizard screens.
 Automated tests: `cd packages/core && uv run pytest`, `cd apps/api && uv run pytest`,
 `cd apps/web && npx tsc --noEmit && pnpm test` — all documented in `docs/DEVELOPMENT.md`.
 
-## If you're an AI continuing this work
+## If you're an AI (or a developer) continuing this work
 
-Don't re-derive decisions already made — check `docs/DEVELOPMENT.md` and
-`docs/LESSONS.md` first, they record *why*, not just *what*. Update
-`docs/TESTING.md` in the same commit as any new screen/feature (it says
-how, at its own bottom section).
+**Point whoever/whatever is picking this up at this file first.** It's
+the map; `DEV_TRACKER.md` is the detailed status for whatever's actively
+in progress (currently M3/the optimizer — check its "Current state"
+paragraph at the top for the real, current phase).
+
+**Before writing any code:**
+1. Read `DEV_TRACKER.md`'s "Current state" paragraph and the phase list —
+   don't assume this file's "Not built yet" list above is precise down to
+   the sub-step; `DEV_TRACKER.md` is the source of truth for anything it
+   covers, this file is the map to *find* that truth, not a substitute
+   for reading it.
+2. Don't re-derive decisions already made — check `docs/DEVELOPMENT.md`
+   and `docs/LESSONS.md` first, they record *why*, not just *what*.
+   Re-litigating a settled decision wastes a full research pass for
+   nothing new.
+3. Run the existing test suites (`docs/DEVELOPMENT.md`'s Testing section)
+   *before* changing anything, so you know what "still passing" means
+   against a clean baseline, not a state you're not sure was already
+   broken.
+
+**Before you commit/push — this is not optional, do all of it every time:**
+1. Update `DEV_TRACKER.md`: mark any phase/checklist item you completed
+   `[x]`/`[DONE]`, rewrite its "Current state" paragraph to match reality
+   (not what was planned — what's actually true right now), and if you
+   found a real bug or made a design decision worth remembering, write it
+   down there (see that file's own several examples of this — a plateau
+   logic bug, the PromptWizard vendoring reversal — each with why, not
+   just what changed).
+2. If you added/changed a screen or feature, update `docs/TESTING.md` in
+   the *same commit* (it says how, at its own bottom section) — don't
+   defer this, it goes stale fast otherwise.
+3. If this file's own "Current state" section above (Built/Not built)
+   drifted out of sync with reality because of what you just did, fix it
+   too — this file is read *first*, so it drifting stale is worse than
+   any other doc drifting stale.
+4. Run the full test suites again and confirm they're still green before
+   considering anything "done" — a passing test suite is a claim you
+   verified, not one you assumed.
+5. **Leave a clear "where I left off."** If you're stopping mid-phase,
+   say so explicitly in `DEV_TRACKER.md`'s "Current state" paragraph —
+   which specific function/file/test was in progress, and what the very
+   next step is. The goal: the next session (yours or someone else's)
+   should never have to re-read your diffs to figure out what you were
+   about to do next.
+6. Never push to git yourself unless explicitly told to for that specific
+   push — give the exact `git add`/`commit`/`push` commands and let the
+   human run them. (This is a standing rule for this project, not a
+   suggestion.)

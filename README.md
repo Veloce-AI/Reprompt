@@ -15,7 +15,7 @@
 Migrates multi-stage LLM pipelines to cheaper or on-prem models, and proves
 the outputs still match — no manual prompt rewriting, no guessing.
 
-[What it does](#what-refract-does) · [What's built](#whats-built-so-far) · [How to run it](#how-to-run-it--try-it-yourself)
+[What it does](#what-refract-does) · [How the search works](#how-the-try-it-until-it-matches-step-actually-works) · [What's built](#whats-built-so-far) · [How to run it](#how-to-run-it--try-it-yourself)
 
 </div>
 
@@ -53,35 +53,46 @@ You never touch a prompt by hand. You pick the model, Refract does the rest.
 ## How the "try it until it matches" step actually works
 
 Step 2 above ("tries the cheaper model with different prompts/settings")
-is the interesting part. In plain words:
+is the interesting part — here's what's actually happening under it.
 
-- **Two ways to search for a better prompt**, picked by a setting, not
-  hardcoded: **simple** just asks an AI to rewrite the prompt once, then
-  tries a handful of settings (temperature, output format) around it.
-  **Prism** is smarter: it rewrites the prompt, tries it, looks at
-  *exactly why* the weak attempts fell short (which checks failed, how
-  different it was from your original answer), and asks the AI to fix
-  those specific problems — then tries again. A couple of rounds of
-  "try, look at what went wrong, fix it" beats guessing blindly, and
-  costs a lot less than trying hundreds of random variations.
-- **It knows when to stop.** Refract tracks real spend as it goes and
-  has a hard dollar ceiling per migration — it never keeps trying once
-  that's hit. Prism also stops refining a specific attempt early if a
-  round didn't actually improve it, instead of wasting money chasing a
-  dead end.
-- **Every AI call is double-checked before it's trusted.** Refract never
-  just believes what a model says back — every response is checked
-  against a strict, validated shape, and if it comes back malformed, it
-  gets one automatic retry with a note about what went wrong before
-  giving up. This applies everywhere Refract asks an AI to do something,
-  not just prompt rewriting.
+### Two search methods, picked by a setting
 
-We built this ourselves rather than adopting an existing framework —
-studied how similar published approaches work (mainly Microsoft's
-PromptWizard, for the "look at what went wrong and fix it" idea), then
-built our own version that works with any AI provider (including
-running entirely on your own servers) instead of being locked to one.
-See `DEV_TRACKER.md` for the full reasoning and technical detail.
+| Method | What it does | Good for |
+|---|---|---|
+| **Simple** | Asks an AI to rewrite the prompt once, then tries a handful of settings (temperature, output format) around it. | Fast, cheap, the default. |
+| **Prism** | Rewrites the prompt, tries it, looks at *exactly why* the weak attempts fell short (which checks failed, how different the answer was), asks the AI to fix those specific problems, then tries again. | Harder migrations where a single rewrite isn't enough — a couple of rounds of "try → see what's wrong → fix it" beats guessing blindly, for far less cost than trying hundreds of random variations. |
+
+Both are 100% our own code, calling any AI provider the same way — see
+["What it's built with"](#what-its-built-with) below.
+
+### How it knows when to stop (loop engineering)
+
+> Refract never runs longer or costs more than it has to.
+
+- **Hard dollar ceiling.** Every migration has a real budget; once real
+  spend hits it, Refract stops trying — no surprise bills.
+- **Plateau detection.** Prism also stops refining one specific attempt
+  early the moment a round stops actually improving it, instead of
+  burning budget chasing a dead end that's already plateaued.
+
+### How it stays reliable (harness engineering)
+
+> Refract never just believes what an AI model says back.
+
+Every AI response — not just prompt rewriting, everywhere Refract asks a
+model to do something — is checked against a strict, validated shape
+before it's trusted. A malformed response gets exactly one automatic
+retry with a note about what went wrong, then a clear failure instead of
+silently corrupting the next step.
+
+### Why we built our own instead of using an existing framework
+
+We studied how similar published approaches work (mainly Microsoft's
+PromptWizard, for the "look at what went wrong and fix it" idea) and
+built our own version on top of it — one that works with **any** AI
+provider, including running entirely on your own servers, instead of
+being locked to one the way the original is. Full reasoning and
+technical detail: `DEV_TRACKER.md`.
 
 ## What's built so far
 

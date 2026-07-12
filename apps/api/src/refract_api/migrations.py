@@ -42,7 +42,9 @@ contract — the picker should show fewer facts, not break.
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException
+import datetime
+
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -51,6 +53,7 @@ from refract_core.llm.registry import get_model_capabilities
 
 from refract_api import models
 from refract_api.db import get_db
+from refract_api.optimizer_runner import run_optimizer_for_migration
 
 router = APIRouter(prefix="/pipelines", tags=["migrations"])
 
@@ -102,6 +105,13 @@ class MigrationOut(BaseModel):
     budget: float
     parity_threshold: float
     status: str
+    total_cost_usd: float | None = None
+    stopped_early: bool = False
+    stop_reason: str | None = None
+    progress_stage_name: str | None = None
+    progress_current: int | None = None
+    progress_total: int | None = None
+    completed_at: datetime.datetime | None = None
 
 
 def _get_pipeline_or_404(db: Session, pipeline_id: int) -> models.Pipeline:
@@ -140,7 +150,29 @@ def _to_out(migration: models.Migration) -> MigrationOut:
         budget=migration.budget,
         parity_threshold=migration.parity_threshold,
         status=migration.status,
+        total_cost_usd=migration.total_cost_usd,
+        stopped_early=migration.stopped_early,
+        stop_reason=migration.stop_reason,
+        progress_stage_name=migration.progress_stage_name,
+        progress_current=migration.progress_current,
+        progress_total=migration.progress_total,
+        completed_at=migration.completed_at,
     )
+
+
+def _get_migration_or_404(db: Session, pipeline_id: int, migration_id: int) -> models.Migration:
+    migration = db.scalar(
+        select(models.Migration).where(
+            models.Migration.id == migration_id,
+            models.Migration.pipeline_id == pipeline_id,
+        )
+    )
+    if migration is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Migration {migration_id} not found for pipeline {pipeline_id}",
+        )
+    return migration
 
 
 @router.get("/{pipeline_id}/models", response_model=list[ModelOption])
@@ -206,3 +238,70 @@ def list_migrations(pipeline_id: int, db: Session = Depends(get_db)) -> list[Mig
         .order_by(models.Migration.id)
     ).all()
     return [_to_out(migration) for migration in migrations]
+
+
+@router.post("/{pipeline_id}/migrations/{migration_id}/start", response_model=MigrationOut)
+def start_migration(
+    pipeline_id: int,
+    migration_id: int,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+) -> MigrationOut:
+    """Gate on approved rubrics, set status to running, then fire the
+    optimizer as a background task.
+
+    Status is written to the DB *before* the background task is scheduled
+    so a client polling /status immediately after this call always sees
+    ``"running"``, never a stale ``"pending"`` from a race with the task
+    actually starting.
+    """
+    _get_pipeline_or_404(db, pipeline_id)
+    migration = _get_migration_or_404(db, pipeline_id, migration_id)
+
+    # Rubric approval gate: every stage must have a rubric row with approved=True.
+    # Human sign-off on what "a good answer" looks like is a hard requirement
+    # before the optimizer is allowed to spend real money searching.
+    stages = db.scalars(
+        select(models.Stage).where(models.Stage.pipeline_id == pipeline_id)
+    ).all()
+
+    unapproved: list[str] = []
+    for stage in stages:
+        rubric = db.scalar(
+            select(models.Rubric).where(models.Rubric.stage_id == stage.id)
+        )
+        if rubric is None or not rubric.approved:
+            unapproved.append(stage.name)
+
+    if unapproved:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"All stage rubrics must be approved before starting a migration. "
+                f"Unapproved: {', '.join(unapproved)}"
+            ),
+        )
+
+    migration.status = "running"
+    db.commit()
+    db.refresh(migration)
+
+    background_tasks.add_task(run_optimizer_for_migration, migration.id)
+    return _to_out(migration)
+
+
+@router.get("/{pipeline_id}/migrations/{migration_id}/status", response_model=MigrationOut)
+def get_migration_status(
+    pipeline_id: int,
+    migration_id: int,
+    db: Session = Depends(get_db),
+) -> MigrationOut:
+    """Plain read of the migration's current status and progress fields.
+
+    No computation — just what ``optimizer_runner.py``'s background task
+    last wrote.  Clients poll this on an interval (e.g. every 2 s) from
+    the migration detail screen.
+    """
+    _get_pipeline_or_404(db, pipeline_id)
+    migration = _get_migration_or_404(db, pipeline_id, migration_id)
+    return _to_out(migration)

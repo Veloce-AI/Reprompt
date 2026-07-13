@@ -4,6 +4,8 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   approveAllRubrics,
   approveRubric,
+  generateRubric,
+  getPipelineDag,
   listRubrics,
   updateRubric,
   type RubricOut,
@@ -28,6 +30,10 @@ export default function RubricReview() {
   const pid = Number(pipelineId);
   const queryClient = useQueryClient();
 
+  const [model, setModel] = useState("");
+  const [generatingAll, setGeneratingAll] = useState(false);
+  const [generateError, setGenerateError] = useState<string | null>(null);
+
   const {
     data: rubrics,
     isLoading,
@@ -38,17 +44,45 @@ export default function RubricReview() {
     queryFn: () => listRubrics(pid),
   });
 
+  const { data: dag } = useQuery({
+    queryKey: ["dag", pid],
+    queryFn: () => getPipelineDag(pid),
+  });
+
   const approveAllMutation = useMutation({
     mutationFn: () => approveAllRubrics(pid),
     onSuccess: (updated) => queryClient.setQueryData(["rubrics", pid], updated),
   });
 
+  const allStages = dag ? Object.values(dag.stages) : [];
   const allApproved = (rubrics ?? []).length > 0 && (rubrics ?? []).every((r) => r.approved);
+
+  async function handleGenerateAll() {
+    const trimmedModel = model.trim();
+    if (!trimmedModel) {
+      setGenerateError("Enter a model name first (e.g. openai/gpt-4o).");
+      return;
+    }
+    setGenerateError(null);
+    setGeneratingAll(true);
+    try {
+      const results: RubricOut[] = [];
+      for (const stage of allStages) {
+        const rubric = await generateRubric(pid, stage.id, trimmedModel);
+        results.push(rubric);
+      }
+      queryClient.setQueryData(["rubrics", pid], results);
+    } catch (err) {
+      setGenerateError(err instanceof Error ? err.message : "Failed to generate rubrics.");
+    } finally {
+      setGeneratingAll(false);
+    }
+  }
 
   return (
     <AppShell>
     <div className="p-8">
-      <div className="mb-6 flex items-start justify-between">
+      <div className="mb-2 flex items-start justify-between">
         <div>
           <Link
             to="/pipelines/$pipelineId"
@@ -65,25 +99,48 @@ export default function RubricReview() {
           </p>
         </div>
 
-        {/* "Approve all" is always available, not gated on a per-stage
-            "viewed" flag: the rubrics are all rendered on this one page (not
-            paginated or hidden behind a click-to-expand), so a reviewer who
-            scans the page has already seen everything there is to see. A
-            "viewed" flag would need its own persisted state and would only
-            protect against a reviewer who scrolls past without reading -
-            which "Approve all" doesn't uniquely enable anyway (per-stage
-            "Approve" has the exact same risk). Simpler to keep one clear
-            rule than a second, weaker safety net. */}
-        {rubrics && rubrics.length > 0 && (
+        <div className="flex items-center gap-3">
+          <Input
+            placeholder="Model (e.g. openai/gpt-4o)"
+            value={model}
+            onChange={(e) => setModel(e.target.value)}
+            className="w-56"
+            aria-label="Model for rubric generation"
+          />
           <Button
-            variant="primary"
-            onClick={() => approveAllMutation.mutate()}
-            disabled={allApproved || approveAllMutation.isPending}
+            variant="secondary"
+            onClick={handleGenerateAll}
+            disabled={generatingAll || allStages.length === 0}
           >
-            {allApproved ? "All stages approved" : "Approve all"}
+            {generatingAll ? "Generating…" : "Generate all rubrics"}
           </Button>
-        )}
+
+          {/* "Approve all" is always available, not gated on a per-stage
+              "viewed" flag: the rubrics are all rendered on this one page (not
+              paginated or hidden behind a click-to-expand), so a reviewer who
+              scans the page has already seen everything there is to see. A
+              "viewed" flag would need its own persisted state and would only
+              protect against a reviewer who scrolls past without reading -
+              which "Approve all" doesn't uniquely enable anyway (per-stage
+              "Approve" has the exact same risk). Simpler to keep one clear
+              rule than a second, weaker safety net. */}
+          {rubrics && rubrics.length > 0 && (
+            <Button
+              variant="primary"
+              onClick={() => approveAllMutation.mutate()}
+              disabled={allApproved || approveAllMutation.isPending}
+            >
+              {allApproved ? "All stages approved" : "Approve all"}
+            </Button>
+          )}
+        </div>
       </div>
+
+      {generateError && (
+        <p className="mb-4 text-13 text-parity-fail" role="alert">
+          {generateError}
+        </p>
+      )}
 
       {isLoading && (
         <p className="text-14 text-ink-soft" role="status">
@@ -102,15 +159,16 @@ export default function RubricReview() {
           <CardContent className="p-8 text-center">
             <p className="font-display text-20 font-semibold text-ink">No rubrics yet</p>
             <p className="mt-2 text-14 text-ink-soft">
-              This pipeline doesn&apos;t have any generated rubrics to review yet.
+              Enter a model name above and click &ldquo;Generate all rubrics&rdquo; to generate rubrics for
+              every stage automatically.
             </p>
           </CardContent>
         </Card>
       )}
 
-      <div className="space-y-6">
+      <div className="space-y-6 mt-6">
         {rubrics?.map((rubric) => (
-          <StageRubricCard key={rubric.id} rubric={rubric} pipelineId={pid} />
+          <StageRubricCard key={rubric.id} rubric={rubric} pipelineId={pid} model={model} />
         ))}
       </div>
     </div>
@@ -118,7 +176,15 @@ export default function RubricReview() {
   );
 }
 
-function StageRubricCard({ rubric, pipelineId }: { rubric: RubricOut; pipelineId: number }) {
+function StageRubricCard({
+  rubric,
+  pipelineId,
+  model,
+}: {
+  rubric: RubricOut;
+  pipelineId: number;
+  model: string;
+}) {
   const queryClient = useQueryClient();
 
   function replaceInCache(updated: RubricOut) {
@@ -137,6 +203,11 @@ function StageRubricCard({ rubric, pipelineId }: { rubric: RubricOut; pipelineId
     onSuccess: replaceInCache,
   });
 
+  const regenerateMutation = useMutation({
+    mutationFn: () => generateRubric(pipelineId, rubric.stage_id, model.trim()),
+    onSuccess: replaceInCache,
+  });
+
   return (
     <Card>
       <CardHeader className="flex flex-row items-center justify-between space-y-0">
@@ -145,6 +216,22 @@ function StageRubricCard({ rubric, pipelineId }: { rubric: RubricOut; pipelineId
           <CardDescription>Stage id {rubric.stage_id}</CardDescription>
         </div>
         <div className="flex items-center gap-3">
+          {regenerateMutation.isError && (
+            <p className="text-12 text-parity-fail">
+              {regenerateMutation.error instanceof Error
+                ? regenerateMutation.error.message
+                : "Regeneration failed"}
+            </p>
+          )}
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => regenerateMutation.mutate()}
+            disabled={regenerateMutation.isPending || !model.trim()}
+            title={!model.trim() ? "Enter a model name at the top of the page first" : undefined}
+          >
+            {regenerateMutation.isPending ? "Generating…" : "Regenerate"}
+          </Button>
           <Badge variant={rubric.approved ? "pass" : "outline"}>
             {rubric.approved ? "Approved" : "Needs review"}
           </Badge>

@@ -107,6 +107,14 @@ export function approveAllRubrics(pipelineId: number): Promise<RubricOut[]> {
   });
 }
 
+export function generateRubric(pipelineId: number, stageId: number, model: string): Promise<RubricOut> {
+  return request<RubricOut>(`/pipelines/${pipelineId}/stages/${stageId}/generate-rubric`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...authHeaders() },
+    body: JSON.stringify({ model }),
+  });
+}
+
 export function getPipelineDag(pipelineId: number): Promise<DagResponse> {
   return request<DagResponse>(`/pipelines/${pipelineId}/dag`);
 }

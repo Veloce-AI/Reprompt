@@ -26,6 +26,27 @@ import {
 
 type WizardStep = "target-model" | "budget" | "confirm";
 
+type ModelFamily = "anthropic" | "gemini" | "openai" | "llama" | "generic";
+
+const _OPEN_WEIGHT_MARKERS = ["llama", "mistral", "mixtral", "gemma", "qwen", "deepseek", "phi", "vicuna", "falcon", "starcoder"];
+
+function resolveFamily(model: string): ModelFamily {
+  const lower = model.toLowerCase();
+  if (_OPEN_WEIGHT_MARKERS.some((m) => lower.includes(m))) return "llama";
+  if (lower.includes("claude")) return "anthropic";
+  if (lower.includes("gemini")) return "gemini";
+  if (lower.includes("gpt")) return "openai";
+  return "generic";
+}
+
+const FAMILY_TRANSFORM_LABELS: Record<ModelFamily, string> = {
+  anthropic: "XML-tagged sections (Anthropic convention)",
+  gemini: "Markdown headers (Gemini convention)",
+  openai: "Compression on mini/small variants only",
+  llama: "Compression on small variants only",
+  generic: "Compression on small variants only",
+};
+
 const STEPS: { id: WizardStep; label: string }[] = [
   { id: "target-model", label: "Target model" },
   { id: "budget", label: "Budget & parity threshold" },
@@ -127,9 +148,9 @@ export default function NewMigration() {
               <Badge variant="outline">Pending</Badge>
             </div>
             <p className="mb-6 max-w-[640px] text-14 text-ink-soft">
-              The optimizer that actually runs migrations hasn&apos;t been built yet, so this
-              migration is saved with its configuration but won&apos;t run anything. Once the
-              optimizer ships, this record is what it will pick up and execute.
+              Migration saved with its configuration. To start it, call{" "}
+              <span className="font-mono">POST /pipelines/{migration.pipeline_id}/migrations/{migration.id}/start</span>{" "}
+              and poll <span className="font-mono">GET …/status</span> for progress.
             </p>
             <div className="flex gap-3">
               <Button
@@ -237,7 +258,7 @@ export default function NewMigration() {
                 </p>
               )}
               {defaultModel && modelByName.has(defaultModel) && (
-                <ModelFacts option={modelByName.get(defaultModel)!} />
+                <ModelFacts option={modelByName.get(defaultModel)!} model={defaultModel} />
               )}
             </div>
 
@@ -257,12 +278,14 @@ export default function NewMigration() {
                     <TableHead>Cost / 1M tokens</TableHead>
                     <TableHead>Context window</TableHead>
                     <TableHead>JSON mode</TableHead>
+                    <TableHead>Prompt rewrite</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {stages.map((stage) => {
                     const effective = effectiveModel(stage.id);
                     const facts = modelByName.get(effective);
+                    const family = effective ? resolveFamily(effective) : null;
                     return (
                       <TableRow key={stage.id}>
                         <TableCell className="font-medium text-ink">{stage.name}</TableCell>
@@ -294,6 +317,15 @@ export default function NewMigration() {
                             <Badge variant={facts.supports_json_mode ? "pass" : "outline"}>
                               {facts.supports_json_mode ? "Supported" : "Not supported"}
                             </Badge>
+                          ) : (
+                            "—"
+                          )}
+                        </TableCell>
+                        <TableCell>
+                          {family ? (
+                            <span className="text-12 text-ink-soft">
+                              <Badge variant="neutral">{family}</Badge>
+                            </span>
                           ) : (
                             "—"
                           )}
@@ -450,7 +482,8 @@ export default function NewMigration() {
   );
 }
 
-function ModelFacts({ option }: { option: ModelOption }) {
+function ModelFacts({ option, model }: { option: ModelOption; model: string }) {
+  const family = resolveFamily(model);
   return (
     <div className="mt-3 flex flex-wrap gap-4 rounded-control border border-line bg-beam-soft/40 p-3 text-12 text-ink-soft">
       <span>
@@ -474,6 +507,13 @@ function ModelFacts({ option }: { option: ModelOption }) {
         <Badge variant={option.supports_function_calling ? "pass" : "outline"}>
           {option.supports_function_calling ? "Supported" : "Not supported"}
         </Badge>
+      </span>
+      <span>
+        Prompt rewrite:{" "}
+        <span className="text-ink">
+          <Badge variant="neutral">{family}</Badge>{" "}
+          {FAMILY_TRANSFORM_LABELS[family]}
+        </span>
       </span>
       {!option.requires_api_key && <Badge variant="neutral">No API key required</Badge>}
     </div>

@@ -33,9 +33,9 @@ export default function RubricReview() {
   const [model, setModel] = useState(() => localStorage.getItem("refract_rubric_model") ?? "");
   const [generatingAll, setGeneratingAll] = useState(false);
   const [generateError, setGenerateError] = useState<string | null>(null);
-  const [generatingStageIndex, setGeneratingStageIndex] = useState<number | null>(null);
+  const [generatingCompleted, setGeneratingCompleted] = useState(0);
   const [generatingTotal, setGeneratingTotal] = useState(0);
-  const [generatingCurrentStageName, setGeneratingCurrentStageName] = useState("");
+  const [generatingActiveIds, setGeneratingActiveIds] = useState<Set<number>>(new Set());
 
   const {
     data: rubrics,
@@ -69,22 +69,29 @@ export default function RubricReview() {
     setGenerateError(null);
     setGeneratingAll(true);
     setGeneratingTotal(allStages.length);
+    setGeneratingCompleted(0);
+    setGeneratingActiveIds(new Set(allStages.map((s) => s.id)));
     try {
       const results: RubricOut[] = [];
-      for (let i = 0; i < allStages.length; i++) {
-        const stage = allStages[i];
-        setGeneratingStageIndex(i);
-        setGeneratingCurrentStageName(stage.name);
-        const rubric = await generateRubric(pid, stage.id, trimmedModel);
-        results.push(rubric);
-        queryClient.setQueryData(["rubrics", pid], [...results]);
-      }
+      await Promise.all(
+        allStages.map(async (stage) => {
+          const rubric = await generateRubric(pid, stage.id, trimmedModel);
+          results.push(rubric);
+          setGeneratingCompleted((c) => c + 1);
+          setGeneratingActiveIds((prev) => {
+            const next = new Set(prev);
+            next.delete(stage.id);
+            return next;
+          });
+          queryClient.setQueryData(["rubrics", pid], [...results]);
+        })
+      );
     } catch (err) {
       setGenerateError(err instanceof Error ? err.message : "Failed to generate rubrics.");
     } finally {
       setGeneratingAll(false);
-      setGeneratingStageIndex(null);
-      setGeneratingCurrentStageName("");
+      setGeneratingCompleted(0);
+      setGeneratingActiveIds(new Set());
     }
   }
 
@@ -148,7 +155,7 @@ export default function RubricReview() {
         </div>
       </div>
 
-      {generatingAll && generatingStageIndex !== null && (
+      {generatingAll && (
         <div className="mb-6 rounded-control border border-beam/30 bg-beam-soft/10 p-4">
           <div className="mb-3 flex items-center justify-between">
             <div className="flex items-center gap-2">
@@ -156,18 +163,17 @@ export default function RubricReview() {
               <span className="text-13 font-medium text-ink">Generating rubrics</span>
             </div>
             <span className="text-13 tabular-nums text-ink-soft">
-              {generatingStageIndex + 1} / {generatingTotal}
+              {generatingCompleted} / {generatingTotal} completed
             </span>
           </div>
           <div className="mb-3 h-1.5 overflow-hidden rounded-full bg-line">
             <div
               className="h-full rounded-full bg-beam transition-all duration-700 ease-out"
-              style={{ width: `${(generatingStageIndex / generatingTotal) * 100}%` }}
+              style={{ width: `${generatingTotal > 0 ? (generatingCompleted / generatingTotal) * 100 : 0}%` }}
             />
           </div>
           <p className="text-12 text-ink-soft">
-            Currently generating:{" "}
-            <span className="font-medium text-ink">{generatingCurrentStageName}</span>
+            {generatingTotal - generatingCompleted} stage{generatingTotal - generatingCompleted !== 1 ? "s" : ""} in progress — results appear as each one finishes
           </p>
         </div>
       )}
@@ -209,11 +215,7 @@ export default function RubricReview() {
             rubric={rubric}
             pipelineId={pid}
             model={model}
-            isActive={
-              generatingAll &&
-              generatingStageIndex !== null &&
-              allStages[generatingStageIndex]?.id === rubric.stage_id
-            }
+            isActive={generatingAll && generatingActiveIds.has(rubric.stage_id)}
           />
         ))}
       </div>

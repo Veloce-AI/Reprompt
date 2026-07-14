@@ -149,6 +149,13 @@ export interface MigrationOut {
   budget: number;
   parity_threshold: number;
   status: string;
+  total_cost_usd: number | null;
+  stopped_early: boolean;
+  stop_reason: string | null;
+  progress_stage_name: string | null;
+  progress_current: number | null;
+  progress_total: number | null;
+  completed_at: string | null;
 }
 
 export function listModelOptions(pipelineId: number): Promise<ModelOption[]> {
@@ -168,6 +175,16 @@ export function createMigration(
 
 export function listMigrations(pipelineId: number): Promise<MigrationOut[]> {
   return request<MigrationOut[]>(`/pipelines/${pipelineId}/migrations`);
+}
+
+export function startMigration(pipelineId: number, migrationId: number): Promise<MigrationOut> {
+  return request<MigrationOut>(`/pipelines/${pipelineId}/migrations/${migrationId}/start`, {
+    method: "POST",
+  });
+}
+
+export function getMigrationStatus(pipelineId: number, migrationId: number): Promise<MigrationOut> {
+  return request<MigrationOut>(`/pipelines/${pipelineId}/migrations/${migrationId}/status`);
 }
 
 export async function importPipeline(file: File): Promise<ImportResult> {

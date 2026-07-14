@@ -145,6 +145,13 @@ describe("NewMigration wizard", () => {
       budget: 25,
       parity_threshold: 0.9,
       status: "pending",
+      total_cost_usd: null,
+      stopped_early: false,
+      stop_reason: null,
+      progress_stage_name: null,
+      progress_current: null,
+      progress_total: null,
+      completed_at: null,
     });
 
     renderAtPipeline("1");

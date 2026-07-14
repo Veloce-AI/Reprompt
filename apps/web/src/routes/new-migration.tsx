@@ -4,8 +4,11 @@ import { useMutation, useQuery } from "@tanstack/react-query";
 import {
   ApiError,
   createMigration,
+  getMigrationStatus,
   getPipelineDag,
   listModelOptions,
+  startMigration,
+  type MigrationOut,
   type ModelOption,
   type StageInfo,
 } from "@/lib/api";
@@ -66,8 +69,6 @@ function formatTokens(value: number | null): string {
 export default function NewMigration() {
   const { pipelineId } = useParams({ from: "/pipelines/$pipelineId/migrations/new" });
   const pid = Number(pipelineId);
-  const navigate = useNavigate();
-
   const [step, setStep] = useState<WizardStep>("target-model");
   const [defaultModel, setDefaultModel] = useState("");
   const [overrides, setOverrides] = useState<Record<string, string>>({});
@@ -134,38 +135,11 @@ export default function NewMigration() {
   const overrideCount = Object.keys(overrides).length;
 
   if (migrationMutation.isSuccess) {
-    const migration = migrationMutation.data;
     return (
-      <AppShell>
-      <div className="p-8">
-        <h1 className="font-display text-28 font-semibold leading-display text-ink">
-          New migration
-        </h1>
-        <Card className="mt-6">
-          <CardContent className="p-8">
-            <div className="mb-2 flex items-center gap-2 text-14 font-medium text-ink">
-              <span>Migration #{migration.id} created</span>
-              <Badge variant="outline">Pending</Badge>
-            </div>
-            <p className="mb-6 max-w-[640px] text-14 text-ink-soft">
-              Migration saved with its configuration. To start it, call{" "}
-              <span className="font-mono">POST /pipelines/{migration.pipeline_id}/migrations/{migration.id}/start</span>{" "}
-              and poll <span className="font-mono">GET …/status</span> for progress.
-            </p>
-            <div className="flex gap-3">
-              <Button
-                variant="primary"
-                onClick={() =>
-                  navigate({ to: "/pipelines/$pipelineId", params: { pipelineId } })
-                }
-              >
-                Back to pipeline canvas
-              </Button>
-            </div>
-          </CardContent>
-        </Card>
-      </div>
-      </AppShell>
+      <MigrationSuccessScreen
+        migration={migrationMutation.data}
+        pipelineId={pipelineId}
+      />
     );
   }
 
@@ -479,6 +453,176 @@ export default function NewMigration() {
       )}
     </div>
       </AppShell>
+  );
+}
+
+const STATUS_LABELS: Record<string, string> = {
+  pending: "Pending",
+  running: "Running",
+  completed: "Completed",
+  failed: "Failed",
+  stopped_early: "Stopped early",
+};
+
+const STATUS_VARIANTS: Record<string, "outline" | "pass" | "fail" | "neutral"> = {
+  pending: "outline",
+  running: "neutral",
+  completed: "pass",
+  failed: "fail",
+  stopped_early: "neutral",
+};
+
+function MigrationSuccessScreen({
+  migration,
+  pipelineId,
+}: {
+  migration: MigrationOut;
+  pipelineId: string;
+}) {
+  const pid = Number(pipelineId);
+  const navigate = useNavigate();
+  const [started, setStarted] = useState(false);
+
+  const startMutation = useMutation({
+    mutationFn: () => startMigration(pid, migration.id),
+    onSuccess: () => setStarted(true),
+  });
+
+  const statusQuery = useQuery({
+    queryKey: ["migration-status", pid, migration.id],
+    queryFn: () => getMigrationStatus(pid, migration.id),
+    enabled: started,
+    refetchInterval: (query) => {
+      const s = query.state.data?.status;
+      return s === "running" ? 2000 : false;
+    },
+  });
+
+  const status = statusQuery.data;
+  const isRunning = status?.status === "running";
+  const isTerminal = status && ["completed", "failed", "stopped_early"].includes(status.status);
+  const progressPercent =
+    status?.progress_current != null && status?.progress_total != null && status.progress_total > 0
+      ? Math.round((status.progress_current / status.progress_total) * 100)
+      : null;
+
+  return (
+    <AppShell>
+      <div className="p-8">
+        <h1 className="font-display text-28 font-semibold leading-display text-ink">
+          New migration
+        </h1>
+        <Card className="mt-6">
+          <CardContent className="p-8">
+            <div className="mb-4 flex items-center gap-2 text-14 font-medium text-ink">
+              <span>Migration #{migration.id} created</span>
+              <Badge variant={STATUS_VARIANTS[status?.status ?? "pending"]}>
+                {STATUS_LABELS[status?.status ?? "pending"]}
+              </Badge>
+            </div>
+
+            {!started && (
+              <>
+                <p className="mb-6 max-w-[640px] text-14 text-ink-soft">
+                  Migration saved. Make sure all rubrics are approved, then start the optimizer below.
+                </p>
+                {startMutation.isError && (
+                  <p className="mb-4 text-13 text-parity-fail" role="alert">
+                    {startMutation.error instanceof ApiError
+                      ? startMutation.error.message
+                      : "Failed to start migration."}
+                  </p>
+                )}
+                <div className="flex gap-3">
+                  <Button
+                    variant="primary"
+                    onClick={() => startMutation.mutate()}
+                    disabled={startMutation.isPending}
+                  >
+                    {startMutation.isPending ? "Starting…" : "Start migration"}
+                  </Button>
+                  <Button
+                    variant="secondary"
+                    onClick={() => navigate({ to: "/pipelines/$pipelineId", params: { pipelineId } })}
+                  >
+                    Back to pipeline canvas
+                  </Button>
+                </div>
+              </>
+            )}
+
+            {started && (
+              <div className="mt-2 max-w-[560px]">
+                {isRunning && (
+                  <>
+                    <div className="mb-3 flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <span className="h-2 w-2 animate-pulse rounded-full bg-beam" />
+                        <span className="text-13 font-medium text-ink">
+                          {status?.progress_stage_name
+                            ? `Optimizing: ${status.progress_stage_name}`
+                            : "Starting optimizer…"}
+                        </span>
+                      </div>
+                      {progressPercent !== null && (
+                        <span className="text-13 tabular-nums text-ink-soft">
+                          {status?.progress_current} / {status?.progress_total}
+                        </span>
+                      )}
+                    </div>
+                    <div className="mb-4 h-1.5 overflow-hidden rounded-full bg-line">
+                      <div
+                        className="h-full rounded-full bg-beam transition-all duration-700 ease-out"
+                        style={{ width: `${progressPercent ?? 0}%` }}
+                      />
+                    </div>
+                  </>
+                )}
+
+                {isTerminal && (
+                  <div className="space-y-2">
+                    {status?.status === "completed" && (
+                      <p className="text-14 text-ink">
+                        Optimization complete.{" "}
+                        {status.total_cost_usd != null && (
+                          <span className="text-ink-soft">
+                            Total cost:{" "}
+                            <span className="font-mono text-ink">
+                              ${status.total_cost_usd.toFixed(4)}
+                            </span>
+                          </span>
+                        )}
+                      </p>
+                    )}
+                    {(status?.status === "failed" || status?.status === "stopped_early") && (
+                      <p className="text-14 text-ink">
+                        {status.status === "stopped_early" ? "Stopped early" : "Failed"}
+                        {status.stop_reason && (
+                          <span className="text-ink-soft"> — {status.stop_reason}</span>
+                        )}
+                      </p>
+                    )}
+                  </div>
+                )}
+
+                {!isTerminal && !isRunning && statusQuery.isLoading && (
+                  <p className="text-13 text-ink-soft">Connecting…</p>
+                )}
+
+                <div className="mt-6">
+                  <Button
+                    variant="secondary"
+                    onClick={() => navigate({ to: "/pipelines/$pipelineId", params: { pipelineId } })}
+                  >
+                    Back to pipeline canvas
+                  </Button>
+                </div>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      </div>
+    </AppShell>
   );
 }
 

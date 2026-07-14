@@ -30,9 +30,12 @@ export default function RubricReview() {
   const pid = Number(pipelineId);
   const queryClient = useQueryClient();
 
-  const [model, setModel] = useState("");
+  const [model, setModel] = useState(() => localStorage.getItem("refract_rubric_model") ?? "");
   const [generatingAll, setGeneratingAll] = useState(false);
   const [generateError, setGenerateError] = useState<string | null>(null);
+  const [generatingStageIndex, setGeneratingStageIndex] = useState<number | null>(null);
+  const [generatingTotal, setGeneratingTotal] = useState(0);
+  const [generatingCurrentStageName, setGeneratingCurrentStageName] = useState("");
 
   const {
     data: rubrics,
@@ -65,17 +68,23 @@ export default function RubricReview() {
     }
     setGenerateError(null);
     setGeneratingAll(true);
+    setGeneratingTotal(allStages.length);
     try {
       const results: RubricOut[] = [];
-      for (const stage of allStages) {
+      for (let i = 0; i < allStages.length; i++) {
+        const stage = allStages[i];
+        setGeneratingStageIndex(i);
+        setGeneratingCurrentStageName(stage.name);
         const rubric = await generateRubric(pid, stage.id, trimmedModel);
         results.push(rubric);
+        queryClient.setQueryData(["rubrics", pid], [...results]);
       }
-      queryClient.setQueryData(["rubrics", pid], results);
     } catch (err) {
       setGenerateError(err instanceof Error ? err.message : "Failed to generate rubrics.");
     } finally {
       setGeneratingAll(false);
+      setGeneratingStageIndex(null);
+      setGeneratingCurrentStageName("");
     }
   }
 
@@ -103,7 +112,10 @@ export default function RubricReview() {
           <Input
             placeholder="Model (e.g. openai/gpt-4o)"
             value={model}
-            onChange={(e) => setModel(e.target.value)}
+            onChange={(e) => {
+              setModel(e.target.value);
+              localStorage.setItem("refract_rubric_model", e.target.value);
+            }}
             className="w-56"
             aria-label="Model for rubric generation"
           />
@@ -135,6 +147,30 @@ export default function RubricReview() {
           )}
         </div>
       </div>
+
+      {generatingAll && generatingStageIndex !== null && (
+        <div className="mb-6 rounded-control border border-beam/30 bg-beam-soft/10 p-4">
+          <div className="mb-3 flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <span className="h-2 w-2 animate-pulse rounded-full bg-beam" />
+              <span className="text-13 font-medium text-ink">Generating rubrics</span>
+            </div>
+            <span className="text-13 tabular-nums text-ink-soft">
+              {generatingStageIndex + 1} / {generatingTotal}
+            </span>
+          </div>
+          <div className="mb-3 h-1.5 overflow-hidden rounded-full bg-line">
+            <div
+              className="h-full rounded-full bg-beam transition-all duration-700 ease-out"
+              style={{ width: `${(generatingStageIndex / generatingTotal) * 100}%` }}
+            />
+          </div>
+          <p className="text-12 text-ink-soft">
+            Currently generating:{" "}
+            <span className="font-medium text-ink">{generatingCurrentStageName}</span>
+          </p>
+        </div>
+      )}
 
       {generateError && (
         <p className="mb-4 text-13 text-parity-fail" role="alert">
@@ -168,7 +204,17 @@ export default function RubricReview() {
 
       <div className="space-y-6 mt-6">
         {rubrics?.map((rubric) => (
-          <StageRubricCard key={rubric.id} rubric={rubric} pipelineId={pid} model={model} />
+          <StageRubricCard
+            key={rubric.id}
+            rubric={rubric}
+            pipelineId={pid}
+            model={model}
+            isActive={
+              generatingAll &&
+              generatingStageIndex !== null &&
+              allStages[generatingStageIndex]?.id === rubric.stage_id
+            }
+          />
         ))}
       </div>
     </div>
@@ -180,10 +226,12 @@ function StageRubricCard({
   rubric,
   pipelineId,
   model,
+  isActive = false,
 }: {
   rubric: RubricOut;
   pipelineId: number;
   model: string;
+  isActive?: boolean;
 }) {
   const queryClient = useQueryClient();
 
@@ -209,11 +257,14 @@ function StageRubricCard({
   });
 
   return (
-    <Card>
+    <Card className={isActive ? "ring-2 ring-beam/40 transition-shadow duration-300" : "transition-shadow duration-300"}>
       <CardHeader className="flex flex-row items-center justify-between space-y-0">
-        <div>
-          <CardTitle>{rubric.stage_name}</CardTitle>
-          <CardDescription>Stage id {rubric.stage_id}</CardDescription>
+        <div className="flex items-center gap-3">
+          {isActive && <span className="h-2 w-2 animate-pulse rounded-full bg-beam" />}
+          <div>
+            <CardTitle>{rubric.stage_name}</CardTitle>
+            <CardDescription>Stage id {rubric.stage_id}</CardDescription>
+          </div>
         </div>
         <div className="flex items-center gap-3">
           {regenerateMutation.isError && (

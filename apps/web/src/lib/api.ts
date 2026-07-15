@@ -107,6 +107,14 @@ export function approveAllRubrics(pipelineId: number): Promise<RubricOut[]> {
   });
 }
 
+export function generateRubric(pipelineId: number, stageId: number, model: string): Promise<RubricOut> {
+  return request<RubricOut>(`/pipelines/${pipelineId}/stages/${stageId}/generate-rubric`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...authHeaders() },
+    body: JSON.stringify({ model }),
+  });
+}
+
 export function getPipelineDag(pipelineId: number): Promise<DagResponse> {
   return request<DagResponse>(`/pipelines/${pipelineId}/dag`);
 }
@@ -124,8 +132,7 @@ export interface ModelOption {
 }
 
 export interface TargetModelConfig {
-  default: string;
-  stages: Record<string, string>;
+  models: string[];
 }
 
 export interface MigrationCreate {
@@ -141,6 +148,13 @@ export interface MigrationOut {
   budget: number;
   parity_threshold: number;
   status: string;
+  total_cost_usd: number | null;
+  stopped_early: boolean;
+  stop_reason: string | null;
+  progress_stage_name: string | null;
+  progress_current: number | null;
+  progress_total: number | null;
+  completed_at: string | null;
 }
 
 export function listModelOptions(pipelineId: number): Promise<ModelOption[]> {
@@ -160,6 +174,16 @@ export function createMigration(
 
 export function listMigrations(pipelineId: number): Promise<MigrationOut[]> {
   return request<MigrationOut[]>(`/pipelines/${pipelineId}/migrations`);
+}
+
+export function startMigration(pipelineId: number, migrationId: number): Promise<MigrationOut> {
+  return request<MigrationOut>(`/pipelines/${pipelineId}/migrations/${migrationId}/start`, {
+    method: "POST",
+  });
+}
+
+export function getMigrationStatus(pipelineId: number, migrationId: number): Promise<MigrationOut> {
+  return request<MigrationOut>(`/pipelines/${pipelineId}/migrations/${migrationId}/status`);
 }
 
 export async function importPipeline(file: File): Promise<ImportResult> {

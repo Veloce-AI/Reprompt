@@ -113,73 +113,75 @@ beforeEach(() => {
 });
 
 describe("NewMigration wizard", () => {
-  it("disables Continue until a default model is selected, then shows registry facts", async () => {
+  it("disables Continue until at least one model is checked", async () => {
     vi.mocked(getPipelineDag).mockResolvedValue(baseDag());
     vi.mocked(listModelOptions).mockResolvedValue(baseModels());
 
     renderAtPipeline("1");
 
-    await screen.findByText("Extract");
+    await screen.findByLabelText("gpt-4o-mini");
     expect(
       screen.getByRole("button", { name: "Continue to budget & parity threshold" })
     ).toBeDisabled();
-    expect(screen.getByText("Select a default model to continue.")).toBeInTheDocument();
+    expect(screen.getByText("Select at least one model to continue.")).toBeInTheDocument();
 
-    fireEvent.change(screen.getByLabelText("Default target model"), {
-      target: { value: "gpt-4o-mini" },
-    });
+    fireEvent.click(screen.getByLabelText("gpt-4o-mini"));
 
     expect(
       screen.getByRole("button", { name: "Continue to budget & parity threshold" })
     ).toBeEnabled();
-    expect(screen.getByText(/Cost \/ 1M tokens:/)).toBeInTheDocument();
   });
 
-  it("walks through all three steps and creates a migration with bulk + per-stage config", async () => {
+  it("walks through all three steps and creates a migration with multi-model config", async () => {
     vi.mocked(getPipelineDag).mockResolvedValue(baseDag());
     vi.mocked(listModelOptions).mockResolvedValue(baseModels());
     vi.mocked(createMigration).mockResolvedValue({
       id: 42,
       pipeline_id: 1,
-      target_model_config: { default: "gpt-4o-mini", stages: { "11": "claude-haiku-4-5" } },
+      target_model_config: { models: ["gpt-4o-mini", "claude-haiku-4-5"] },
       budget: 25,
       parity_threshold: 0.9,
       status: "pending",
+      total_cost_usd: null,
+      stopped_early: false,
+      stop_reason: null,
+      progress_stage_name: null,
+      progress_current: null,
+      progress_total: null,
+      completed_at: null,
     });
 
     renderAtPipeline("1");
 
-    await screen.findByText("Extract");
-    fireEvent.change(screen.getByLabelText("Default target model"), {
-      target: { value: "gpt-4o-mini" },
-    });
-    fireEvent.change(screen.getByLabelText("Target model for Summarize"), {
-      target: { value: "claude-haiku-4-5" },
-    });
+    // Step 1: check both models
+    await screen.findByLabelText("gpt-4o-mini");
+    fireEvent.click(screen.getByLabelText("gpt-4o-mini"));
+    fireEvent.click(screen.getByLabelText("claude-haiku-4-5"));
     fireEvent.click(
       screen.getByRole("button", { name: "Continue to budget & parity threshold" })
     );
 
+    // Step 2: budget + parity
     await screen.findByLabelText("Budget");
     fireEvent.change(screen.getByLabelText("Budget"), { target: { value: "25" } });
     fireEvent.change(screen.getByLabelText("Parity threshold"), { target: { value: "90" } });
     fireEvent.click(screen.getByRole("button", { name: "Continue to review" }));
 
+    // Step 3: confirm
     await screen.findByRole("button", { name: "Run migration" });
+    expect(screen.getByText("gpt-4o-mini")).toBeInTheDocument();
+    expect(screen.getByText("claude-haiku-4-5")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Run migration" }));
 
     await waitFor(() => {
       expect(createMigration).toHaveBeenCalledWith(1, {
-        target_model_config: { default: "gpt-4o-mini", stages: { "11": "claude-haiku-4-5" } },
+        target_model_config: { models: ["gpt-4o-mini", "claude-haiku-4-5"] },
         budget: 25,
         parity_threshold: 0.9,
       });
     });
 
     await screen.findByText(/Migration #42 created/);
-    expect(
-      screen.getByText(/optimizer that actually runs migrations hasn.t been built yet/)
-    ).toBeInTheDocument();
   });
 
   it("shows a validation hint and blocks continue for a non-positive budget", async () => {
@@ -187,10 +189,8 @@ describe("NewMigration wizard", () => {
     vi.mocked(listModelOptions).mockResolvedValue(baseModels());
 
     renderAtPipeline("1");
-    await screen.findByText("Extract");
-    fireEvent.change(screen.getByLabelText("Default target model"), {
-      target: { value: "gpt-4o-mini" },
-    });
+    await screen.findByLabelText("gpt-4o-mini");
+    fireEvent.click(screen.getByLabelText("gpt-4o-mini"));
     fireEvent.click(
       screen.getByRole("button", { name: "Continue to budget & parity threshold" })
     );

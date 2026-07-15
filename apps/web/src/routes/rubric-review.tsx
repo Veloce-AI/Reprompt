@@ -4,6 +4,8 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   approveAllRubrics,
   approveRubric,
+  generateRubric,
+  getPipelineDag,
   listRubrics,
   updateRubric,
   type RubricOut,
@@ -28,6 +30,13 @@ export default function RubricReview() {
   const pid = Number(pipelineId);
   const queryClient = useQueryClient();
 
+  const [model, setModel] = useState(() => localStorage.getItem("refract_rubric_model") ?? "");
+  const [generatingAll, setGeneratingAll] = useState(false);
+  const [generateError, setGenerateError] = useState<string | null>(null);
+  const [generatingCompleted, setGeneratingCompleted] = useState(0);
+  const [generatingTotal, setGeneratingTotal] = useState(0);
+  const [generatingActiveIds, setGeneratingActiveIds] = useState<Set<number>>(new Set());
+
   const {
     data: rubrics,
     isLoading,
@@ -38,17 +47,58 @@ export default function RubricReview() {
     queryFn: () => listRubrics(pid),
   });
 
+  const { data: dag } = useQuery({
+    queryKey: ["dag", pid],
+    queryFn: () => getPipelineDag(pid),
+  });
+
   const approveAllMutation = useMutation({
     mutationFn: () => approveAllRubrics(pid),
     onSuccess: (updated) => queryClient.setQueryData(["rubrics", pid], updated),
   });
 
+  const allStages = dag ? Object.values(dag.stages) : [];
   const allApproved = (rubrics ?? []).length > 0 && (rubrics ?? []).every((r) => r.approved);
+
+  async function handleGenerateAll() {
+    const trimmedModel = model.trim();
+    if (!trimmedModel) {
+      setGenerateError("Enter a model name first (e.g. openai/gpt-4o).");
+      return;
+    }
+    setGenerateError(null);
+    setGeneratingAll(true);
+    setGeneratingTotal(allStages.length);
+    setGeneratingCompleted(0);
+    setGeneratingActiveIds(new Set(allStages.map((s) => s.id)));
+    try {
+      const results: RubricOut[] = [];
+      await Promise.all(
+        allStages.map(async (stage) => {
+          const rubric = await generateRubric(pid, stage.id, trimmedModel);
+          results.push(rubric);
+          setGeneratingCompleted((c) => c + 1);
+          setGeneratingActiveIds((prev) => {
+            const next = new Set(prev);
+            next.delete(stage.id);
+            return next;
+          });
+          queryClient.setQueryData(["rubrics", pid], [...results]);
+        })
+      );
+    } catch (err) {
+      setGenerateError(err instanceof Error ? err.message : "Failed to generate rubrics.");
+    } finally {
+      setGeneratingAll(false);
+      setGeneratingCompleted(0);
+      setGeneratingActiveIds(new Set());
+    }
+  }
 
   return (
     <AppShell>
     <div className="p-8">
-      <div className="mb-6 flex items-start justify-between">
+      <div className="mb-2 flex items-start justify-between">
         <div>
           <Link
             to="/pipelines/$pipelineId"
@@ -65,25 +115,74 @@ export default function RubricReview() {
           </p>
         </div>
 
-        {/* "Approve all" is always available, not gated on a per-stage
-            "viewed" flag: the rubrics are all rendered on this one page (not
-            paginated or hidden behind a click-to-expand), so a reviewer who
-            scans the page has already seen everything there is to see. A
-            "viewed" flag would need its own persisted state and would only
-            protect against a reviewer who scrolls past without reading -
-            which "Approve all" doesn't uniquely enable anyway (per-stage
-            "Approve" has the exact same risk). Simpler to keep one clear
-            rule than a second, weaker safety net. */}
-        {rubrics && rubrics.length > 0 && (
+        <div className="flex items-center gap-3">
+          <Input
+            placeholder="Model (e.g. openai/gpt-4o)"
+            value={model}
+            onChange={(e) => {
+              setModel(e.target.value);
+              localStorage.setItem("refract_rubric_model", e.target.value);
+            }}
+            className="w-56"
+            aria-label="Model for rubric generation"
+          />
           <Button
-            variant="primary"
-            onClick={() => approveAllMutation.mutate()}
-            disabled={allApproved || approveAllMutation.isPending}
+            variant="secondary"
+            onClick={handleGenerateAll}
+            disabled={generatingAll || allStages.length === 0}
           >
-            {allApproved ? "All stages approved" : "Approve all"}
+            {generatingAll ? "Generating…" : "Generate all rubrics"}
           </Button>
-        )}
+
+          {/* "Approve all" is always available, not gated on a per-stage
+              "viewed" flag: the rubrics are all rendered on this one page (not
+              paginated or hidden behind a click-to-expand), so a reviewer who
+              scans the page has already seen everything there is to see. A
+              "viewed" flag would need its own persisted state and would only
+              protect against a reviewer who scrolls past without reading -
+              which "Approve all" doesn't uniquely enable anyway (per-stage
+              "Approve" has the exact same risk). Simpler to keep one clear
+              rule than a second, weaker safety net. */}
+          {rubrics && rubrics.length > 0 && (
+            <Button
+              variant="primary"
+              onClick={() => approveAllMutation.mutate()}
+              disabled={allApproved || approveAllMutation.isPending}
+            >
+              {allApproved ? "All stages approved" : "Approve all"}
+            </Button>
+          )}
+        </div>
       </div>
+
+      {generatingAll && (
+        <div className="mb-6 rounded-control border border-beam/30 bg-beam-soft/10 p-4">
+          <div className="mb-3 flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <span className="h-2 w-2 animate-pulse rounded-full bg-beam" />
+              <span className="text-13 font-medium text-ink">Generating rubrics</span>
+            </div>
+            <span className="text-13 tabular-nums text-ink-soft">
+              {generatingCompleted} / {generatingTotal} completed
+            </span>
+          </div>
+          <div className="mb-3 h-1.5 overflow-hidden rounded-full bg-line">
+            <div
+              className="h-full rounded-full bg-beam transition-all duration-700 ease-out"
+              style={{ width: `${generatingTotal > 0 ? (generatingCompleted / generatingTotal) * 100 : 0}%` }}
+            />
+          </div>
+          <p className="text-12 text-ink-soft">
+            {generatingTotal - generatingCompleted} stage{generatingTotal - generatingCompleted !== 1 ? "s" : ""} in progress — results appear as each one finishes
+          </p>
+        </div>
+      )}
+
+      {generateError && (
+        <p className="mb-4 text-13 text-parity-fail" role="alert">
+          {generateError}
+        </p>
+      )}
 
       {isLoading && (
         <p className="text-14 text-ink-soft" role="status">
@@ -102,15 +201,22 @@ export default function RubricReview() {
           <CardContent className="p-8 text-center">
             <p className="font-display text-20 font-semibold text-ink">No rubrics yet</p>
             <p className="mt-2 text-14 text-ink-soft">
-              This pipeline doesn&apos;t have any generated rubrics to review yet.
+              Enter a model name above and click &ldquo;Generate all rubrics&rdquo; to generate rubrics for
+              every stage automatically.
             </p>
           </CardContent>
         </Card>
       )}
 
-      <div className="space-y-6">
+      <div className="space-y-6 mt-6">
         {rubrics?.map((rubric) => (
-          <StageRubricCard key={rubric.id} rubric={rubric} pipelineId={pid} />
+          <StageRubricCard
+            key={rubric.id}
+            rubric={rubric}
+            pipelineId={pid}
+            model={model}
+            isActive={generatingAll && generatingActiveIds.has(rubric.stage_id)}
+          />
         ))}
       </div>
     </div>
@@ -118,7 +224,17 @@ export default function RubricReview() {
   );
 }
 
-function StageRubricCard({ rubric, pipelineId }: { rubric: RubricOut; pipelineId: number }) {
+function StageRubricCard({
+  rubric,
+  pipelineId,
+  model,
+  isActive = false,
+}: {
+  rubric: RubricOut;
+  pipelineId: number;
+  model: string;
+  isActive?: boolean;
+}) {
   const queryClient = useQueryClient();
 
   function replaceInCache(updated: RubricOut) {
@@ -137,14 +253,38 @@ function StageRubricCard({ rubric, pipelineId }: { rubric: RubricOut; pipelineId
     onSuccess: replaceInCache,
   });
 
+  const regenerateMutation = useMutation({
+    mutationFn: () => generateRubric(pipelineId, rubric.stage_id, model.trim()),
+    onSuccess: replaceInCache,
+  });
+
   return (
-    <Card>
+    <Card className={isActive ? "ring-2 ring-beam/40 transition-shadow duration-300" : "transition-shadow duration-300"}>
       <CardHeader className="flex flex-row items-center justify-between space-y-0">
-        <div>
-          <CardTitle>{rubric.stage_name}</CardTitle>
-          <CardDescription>Stage id {rubric.stage_id}</CardDescription>
+        <div className="flex items-center gap-3">
+          {isActive && <span className="h-2 w-2 animate-pulse rounded-full bg-beam" />}
+          <div>
+            <CardTitle>{rubric.stage_name}</CardTitle>
+            <CardDescription>Stage id {rubric.stage_id}</CardDescription>
+          </div>
         </div>
         <div className="flex items-center gap-3">
+          {regenerateMutation.isError && (
+            <p className="text-12 text-parity-fail">
+              {regenerateMutation.error instanceof Error
+                ? regenerateMutation.error.message
+                : "Regeneration failed"}
+            </p>
+          )}
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => regenerateMutation.mutate()}
+            disabled={regenerateMutation.isPending || !model.trim()}
+            title={!model.trim() ? "Enter a model name at the top of the page first" : undefined}
+          >
+            {regenerateMutation.isPending ? "Generating…" : "Regenerate"}
+          </Button>
           <Badge variant={rubric.approved ? "pass" : "outline"}>
             {rubric.approved ? "Approved" : "Needs review"}
           </Badge>
@@ -354,6 +494,7 @@ function JudgeCriteriaSection({
 }) {
   const [editingIndex, setEditingIndex] = useState<number | null>(null);
   const [newName, setNewName] = useState("");
+  const [newDescription, setNewDescription] = useState("");
 
   function deleteAt(index: number) {
     onChange(criteria.filter((_, i) => i !== index));
@@ -367,8 +508,9 @@ function JudgeCriteriaSection({
   function addFromInput() {
     const name = newName.trim();
     if (!name) return;
-    onChange([...criteria, { name, weight: 1, description: "" }]);
+    onChange([...criteria, { name, weight: 1, description: newDescription.trim() }]);
     setNewName("");
+    setNewDescription("");
   }
 
   return (
@@ -408,17 +550,28 @@ function JudgeCriteriaSection({
         ))}
         {criteria.length === 0 && <li className="text-13 text-ink-soft">No content criteria yet.</li>}
       </ul>
-      <div className="mt-3 flex gap-2">
-        <Input
-          placeholder="e.g. Covers all key entities"
-          aria-label="Add a content criterion"
-          value={newName}
-          onChange={(e) => setNewName(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && addFromInput()}
-        />
-        <Button variant="secondary" onClick={addFromInput}>
-          Add criterion
-        </Button>
+      <div className="mt-3 space-y-2">
+        <div className="flex gap-2">
+          <Input
+            placeholder="Criterion name (e.g. Covers all key entities)"
+            aria-label="Add a content criterion name"
+            value={newName}
+            onChange={(e) => setNewName(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && addFromInput()}
+          />
+        </div>
+        <div className="flex gap-2">
+          <Input
+            placeholder="Description — what should the judge look for? (e.g. Output mentions all entities from the input)"
+            aria-label="Add a content criterion description"
+            value={newDescription}
+            onChange={(e) => setNewDescription(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && addFromInput()}
+          />
+          <Button variant="secondary" onClick={addFromInput}>
+            Add criterion
+          </Button>
+        </div>
       </div>
     </section>
   );

@@ -21,7 +21,7 @@ branches, not just the covered ones.
 `router.tsx`'s root route component was hardcoded to `<Home />` instead of
 `<Outlet />`, so every route (including `/dev/kit`) rendered the home page.
 Found via Playwright, not by inspection - the h1 assertion failed with
-"Refract" instead of the expected page title. Fixed by rendering
+"Reprompt" instead of the expected page title. Fixed by rendering
 `<Outlet />` at the root. Lesson: an e2e test that actually navigates and
 asserts on rendered content catches routing bugs that unit tests and
 manual code review both missed.

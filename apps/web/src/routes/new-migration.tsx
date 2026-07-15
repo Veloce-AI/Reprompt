@@ -9,7 +9,6 @@ import {
   listModelOptions,
   startMigration,
   type MigrationOut,
-  type ModelOption,
 } from "@/lib/api";
 import { AppShell } from "@/components/app-shell";
 import { Button } from "@/components/ui/button";

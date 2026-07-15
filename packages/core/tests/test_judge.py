@@ -1,14 +1,14 @@
-"""Tests for the pairwise LLM judge (refract_core.judge).
+"""Tests for the pairwise LLM judge (reprompt_core.judge).
 
 No real network calls / no live key needed
 ---------------------------------------------
 Same story as ``test_llm_client.py``: there is no BYOK key configured in
 this environment. Every test here mocks
-``refract_core.llm.client.complete`` directly via monkeypatch (per the task
+``reprompt_core.llm.client.complete`` directly via monkeypatch (per the task
 brief, "same pattern used in the existing llm client tests") — judge.py
 calls it as ``llm_client.complete(...)`` (a module-attribute lookup, not a
 bound `from ... import complete`), so patching the attribute on
-``refract_core.llm.client`` is visible to judge.py regardless of which
+``reprompt_core.llm.client`` is visible to judge.py regardless of which
 import path a test patches through; both point at the same function object.
 """
 
@@ -18,15 +18,15 @@ import json
 
 import pytest
 
-from refract_core.judge import (
+from reprompt_core.judge import (
     DEFAULT_DISAGREEMENT_THRESHOLD,
     JudgeCriterion,
     JudgeResponseError,
     JudgeResult,
     judge_pairwise,
 )
-from refract_core.llm.client import LLMResponse
-from refract_core.trace import TokenUsage
+from reprompt_core.llm.client import LLMResponse
+from reprompt_core.trace import TokenUsage
 
 BENCHMARK = "The invoice total is $1,204.50, due on the 15th of next month."
 CANDIDATE = "Invoice total: $1,204.50. Payment due the 15th of next month."
@@ -72,7 +72,7 @@ def test_prompt_includes_criteria_names_weights_and_both_outputs(monkeypatch: py
         captured_calls.append({"model": model, "messages": messages, "kwargs": kwargs})
         return _fake_llm_response(_uniform_score_content(CRITERIA, 0.9))
 
-    monkeypatch.setattr("refract_core.llm.client.complete", fake_complete)
+    monkeypatch.setattr("reprompt_core.llm.client.complete", fake_complete)
 
     judge_pairwise(BENCHMARK, CANDIDATE, CRITERIA, model="claude-sonnet-4-5")
 
@@ -96,7 +96,7 @@ def test_prompt_includes_original_input_when_given(monkeypatch: pytest.MonkeyPat
         captured.append({"messages": messages})
         return _fake_llm_response(_uniform_score_content(CRITERIA, 0.8))
 
-    monkeypatch.setattr("refract_core.llm.client.complete", fake_complete)
+    monkeypatch.setattr("reprompt_core.llm.client.complete", fake_complete)
 
     judge_pairwise(
         BENCHMARK, CANDIDATE, CRITERIA, model="claude-sonnet-4-5", input={"customer_id": "cust_4821"}
@@ -113,7 +113,7 @@ def test_prompt_omits_input_section_when_not_given(monkeypatch: pytest.MonkeyPat
         captured.append({"messages": messages})
         return _fake_llm_response(_uniform_score_content(CRITERIA, 0.8))
 
-    monkeypatch.setattr("refract_core.llm.client.complete", fake_complete)
+    monkeypatch.setattr("reprompt_core.llm.client.complete", fake_complete)
 
     judge_pairwise(BENCHMARK, CANDIDATE, CRITERIA, model="claude-sonnet-4-5")
 
@@ -129,7 +129,7 @@ def test_calls_complete_exactly_twice_per_judge(monkeypatch: pytest.MonkeyPatch)
         call_count += 1
         return _fake_llm_response(_uniform_score_content(CRITERIA, 0.75))
 
-    monkeypatch.setattr("refract_core.llm.client.complete", fake_complete)
+    monkeypatch.setattr("reprompt_core.llm.client.complete", fake_complete)
 
     judge_pairwise(BENCHMARK, CANDIDATE, CRITERIA, model="claude-sonnet-4-5")
 
@@ -148,7 +148,7 @@ def test_position_swap_makes_two_distinct_calls_with_swapped_content(monkeypatch
         captured.append(messages[1]["content"])
         return _fake_llm_response(_uniform_score_content(CRITERIA, 0.9))
 
-    monkeypatch.setattr("refract_core.llm.client.complete", fake_complete)
+    monkeypatch.setattr("reprompt_core.llm.client.complete", fake_complete)
 
     judge_pairwise(BENCHMARK, CANDIDATE, CRITERIA, model="claude-sonnet-4-5")
 
@@ -182,7 +182,7 @@ def test_combines_scores_by_averaging_across_orderings(monkeypatch: pytest.Monke
     def fake_complete(model, messages, **kwargs):
         return _fake_llm_response(_uniform_score_content(CRITERIA, 0.8, reasoning="Matches well."))
 
-    monkeypatch.setattr("refract_core.llm.client.complete", fake_complete)
+    monkeypatch.setattr("reprompt_core.llm.client.complete", fake_complete)
 
     result = judge_pairwise(BENCHMARK, CANDIDATE, CRITERIA, model="claude-sonnet-4-5")
 
@@ -211,7 +211,7 @@ def test_overall_score_respects_criterion_weights(monkeypatch: pytest.MonkeyPatc
         )
         return _fake_llm_response(content)
 
-    monkeypatch.setattr("refract_core.llm.client.complete", fake_complete)
+    monkeypatch.setattr("reprompt_core.llm.client.complete", fake_complete)
 
     result = judge_pairwise(BENCHMARK, CANDIDATE, CRITERIA, model="claude-sonnet-4-5")
 
@@ -227,7 +227,7 @@ def test_combined_reasoning_includes_both_orderings_when_they_differ(monkeypatch
         reasoning = "Order-1 reasoning." if call_index == 1 else "Order-2 reasoning."
         return _fake_llm_response(_uniform_score_content(CRITERIA, 0.7, reasoning=reasoning))
 
-    monkeypatch.setattr("refract_core.llm.client.complete", fake_complete)
+    monkeypatch.setattr("reprompt_core.llm.client.complete", fake_complete)
 
     result = judge_pairwise(BENCHMARK, CANDIDATE, CRITERIA, model="claude-sonnet-4-5")
 
@@ -240,7 +240,7 @@ def test_cost_and_latency_are_summed_across_both_calls(monkeypatch: pytest.Monke
     def fake_complete(model, messages, **kwargs):
         return _fake_llm_response(_uniform_score_content(CRITERIA, 0.5), cost_usd=0.002)
 
-    monkeypatch.setattr("refract_core.llm.client.complete", fake_complete)
+    monkeypatch.setattr("reprompt_core.llm.client.complete", fake_complete)
 
     result = judge_pairwise(BENCHMARK, CANDIDATE, CRITERIA, model="claude-sonnet-4-5")
 
@@ -252,7 +252,7 @@ def test_cost_none_when_both_calls_report_none(monkeypatch: pytest.MonkeyPatch) 
     def fake_complete(model, messages, **kwargs):
         return _fake_llm_response(_uniform_score_content(CRITERIA, 0.5), cost_usd=None)
 
-    monkeypatch.setattr("refract_core.llm.client.complete", fake_complete)
+    monkeypatch.setattr("reprompt_core.llm.client.complete", fake_complete)
 
     result = judge_pairwise(BENCHMARK, CANDIDATE, CRITERIA, model="claude-sonnet-4-5")
 
@@ -276,7 +276,7 @@ def test_high_disagreement_between_orderings_is_flagged_low_confidence(monkeypat
         score = 0.95 if call_index == 1 else 0.1
         return _fake_llm_response(_uniform_score_content(CRITERIA, score))
 
-    monkeypatch.setattr("refract_core.llm.client.complete", fake_complete)
+    monkeypatch.setattr("reprompt_core.llm.client.complete", fake_complete)
 
     result = judge_pairwise(BENCHMARK, CANDIDATE, CRITERIA, model="claude-sonnet-4-5")
 
@@ -304,7 +304,7 @@ def test_disagreement_uses_max_not_mean_across_criteria(monkeypatch: pytest.Monk
         )
         return _fake_llm_response(content)
 
-    monkeypatch.setattr("refract_core.llm.client.complete", fake_complete)
+    monkeypatch.setattr("reprompt_core.llm.client.complete", fake_complete)
 
     result = judge_pairwise(BENCHMARK, CANDIDATE, CRITERIA, model="claude-sonnet-4-5")
 
@@ -321,7 +321,7 @@ def test_disagreement_threshold_is_configurable(monkeypatch: pytest.MonkeyPatch)
         score = 0.6 if call_index == 1 else 0.5
         return _fake_llm_response(_uniform_score_content(CRITERIA, score))
 
-    monkeypatch.setattr("refract_core.llm.client.complete", fake_complete)
+    monkeypatch.setattr("reprompt_core.llm.client.complete", fake_complete)
 
     # disagreement is 0.1: below a strict threshold, above a very loose one.
     strict = judge_pairwise(
@@ -345,7 +345,7 @@ def test_invalid_json_response_raises_judge_response_error(monkeypatch: pytest.M
     def fake_complete(model, messages, **kwargs):
         return _fake_llm_response("not json at all")
 
-    monkeypatch.setattr("refract_core.llm.client.complete", fake_complete)
+    monkeypatch.setattr("reprompt_core.llm.client.complete", fake_complete)
 
     with pytest.raises(JudgeResponseError, match="doesn't match the expected JSON schema"):
         judge_pairwise(BENCHMARK, CANDIDATE, CRITERIA, model="claude-sonnet-4-5")
@@ -356,7 +356,7 @@ def test_response_missing_a_criterion_raises_judge_response_error(monkeypatch: p
         content = json.dumps({"criteria": [{"name": CRITERIA[0].name, "score": 0.9, "reasoning": "ok"}]})
         return _fake_llm_response(content)
 
-    monkeypatch.setattr("refract_core.llm.client.complete", fake_complete)
+    monkeypatch.setattr("reprompt_core.llm.client.complete", fake_complete)
 
     with pytest.raises(JudgeResponseError, match=CRITERIA[1].name):
         judge_pairwise(BENCHMARK, CANDIDATE, CRITERIA, model="claude-sonnet-4-5")
@@ -374,7 +374,7 @@ def test_criterion_name_matching_is_case_and_whitespace_insensitive(monkeypatch:
         )
         return _fake_llm_response(content)
 
-    monkeypatch.setattr("refract_core.llm.client.complete", fake_complete)
+    monkeypatch.setattr("reprompt_core.llm.client.complete", fake_complete)
 
     result = judge_pairwise(BENCHMARK, CANDIDATE, CRITERIA, model="claude-sonnet-4-5")
 
@@ -399,7 +399,7 @@ def test_accepts_plain_dicts_for_judge_criteria(monkeypatch: pytest.MonkeyPatch)
         )
         return _fake_llm_response(content)
 
-    monkeypatch.setattr("refract_core.llm.client.complete", fake_complete)
+    monkeypatch.setattr("reprompt_core.llm.client.complete", fake_complete)
 
     result = judge_pairwise(BENCHMARK, CANDIDATE, raw_criteria, model="claude-sonnet-4-5")
 
@@ -410,7 +410,7 @@ def test_empty_judge_criteria_raises_value_error(monkeypatch: pytest.MonkeyPatch
     def should_not_be_called(model, messages, **kwargs):
         raise AssertionError("complete() must not be called with zero criteria")
 
-    monkeypatch.setattr("refract_core.llm.client.complete", should_not_be_called)
+    monkeypatch.setattr("reprompt_core.llm.client.complete", should_not_be_called)
 
     with pytest.raises(ValueError, match="at least one judge criterion"):
         judge_pairwise(BENCHMARK, CANDIDATE, [], model="claude-sonnet-4-5")

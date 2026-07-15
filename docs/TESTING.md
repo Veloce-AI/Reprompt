@@ -17,7 +17,7 @@ here, it's a one-time machine setup, not a repo setup.
 ### 1.1 Get into the repo
 
 ```bash
-cd C:/VeloceAI/Refract          # or wherever you cloned/copied it
+cd C:/VeloceAI/Reprompt          # or wherever you cloned/copied it
 ```
 
 Everything from here on is relative to this folder. Open two more terminal
@@ -44,8 +44,8 @@ uv pip install -e . --no-deps
 Why both commands: `uv sync` installs dependencies (pydantic, pytest,
 sentence-transformers, litellm, optuna, etc.) into `.venv`, but doesn't
 install the package itself in editable mode in every case — the second
-command guarantees `import refract_core` actually resolves. If you ever
-see `ModuleNotFoundError: No module named 'refract_core'` later, re-run
+command guarantees `import reprompt_core` actually resolves. If you ever
+see `ModuleNotFoundError: No module named 'reprompt_core'` later, re-run
 just that second line.
 
 Verify it worked:
@@ -83,12 +83,12 @@ Two more one-time steps before you can actually *run* the app (not needed
 just to run the test suite above — `uv run pytest` doesn't touch either):
 
 **Encryption key** — Settings/BYOK API-key storage needs
-`REFRACT_SETTINGS_ENCRYPTION_KEY` set or it 500s. Generate one and put it
+`REPROMPT_SETTINGS_ENCRYPTION_KEY` set or it 500s. Generate one and put it
 in `apps/api/.env` (gitignored):
 
 ```bash
 uv run python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
-# echo "REFRACT_SETTINGS_ENCRYPTION_KEY=<paste the output>" > .env
+# echo "REPROMPT_SETTINGS_ENCRYPTION_KEY=<paste the output>" > .env
 ```
 
 **Database** — create it via Alembic, not by just starting the API and
@@ -133,7 +133,7 @@ Two terminals, both from repo root:
 # Terminal 1 — API
 cd apps/api
 set -a && source .env && set +a
-uv run uvicorn refract_api.main:app --reload
+uv run uvicorn reprompt_api.main:app --reload
 # → http://localhost:8000 (docs at /docs)
 
 # Terminal 2 — Web
@@ -188,7 +188,7 @@ calling a milestone done.
    state with a working drop zone.
 2. Drop `packages/core/tests/fixtures/mixed_12stage.json` (or a real file
    from `Sample Queries/`, converted via
-   `refract_core.importers.query_log.convert_file`).
+   `reprompt_core.importers.query_log.convert_file`).
 3. Validation report shows the correct stage/trace counts → click
    "Continue to DAG preview" → layer breakdown looks right → click "View
    pipeline canvas".
@@ -201,7 +201,7 @@ calling a milestone done.
 
 1. Seed rubrics for the imported pipeline (no generator exists yet — this
    is a dev-only step): `cd apps/api && uv run python -m
-   refract_api.seed_rubrics --pipeline-id <id>`.
+   reprompt_api.seed_rubrics --pipeline-id <id>`.
 2. From the canvas, click "Review rubrics" → each stage shows three
    grouped sections: Format checks, Content criteria, Downstream contract
    — all in plain English (no raw JSON/schema shown to the reviewer).
@@ -243,7 +243,7 @@ calling a milestone done.
 6. Delete the key, confirm it's gone from the list.
 7. **Known gap, not yet built**: a saved key doesn't do anything live yet
    beyond the one proof-of-concept endpoint
-   (`POST /pipelines/{id}/stages/{id}/test-prompt`, see `apps/api/src/refract_api/llm_context.py`)
+   (`POST /pipelines/{id}/stages/{id}/test-prompt`, see `apps/api/src/reprompt_api/llm_context.py`)
    — it isn't wired into the rubric generator or optimizer because
    neither of those exist yet either.
 

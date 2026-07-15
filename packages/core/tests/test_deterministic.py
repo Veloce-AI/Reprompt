@@ -1,6 +1,6 @@
 import pytest
 
-from refract_core.deterministic import (
+from reprompt_core.deterministic import (
     EnumValuesCheck,
     JsonSchemaCheck,
     LengthBoundsCheck,

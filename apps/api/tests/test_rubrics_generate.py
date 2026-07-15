@@ -1,12 +1,12 @@
 """Tests for POST /pipelines/{pipeline_id}/stages/{stage_id}/generate-rubric
-— the M2 rubric-engine endpoint that wires refract_core.rubric_generator to
+— the M2 rubric-engine endpoint that wires reprompt_core.rubric_generator to
 a workspace's real BYOK credential and persists the result.
 
 Same TestClient + in-memory SQLite + magic-link sign-in pattern as
 test_pipelines_test_prompt.py. No real network call in this suite: the live
-proof of refract_core.rubric_generator actually working against a real
+proof of reprompt_core.rubric_generator actually working against a real
 model lives in packages/core's test_rubric_generator_live.py (per the task
-brief). Here, `refract_api.rubrics.complete_with_workspace_credentials` is
+brief). Here, `reprompt_api.rubrics.complete_with_workspace_credentials` is
 monkeypatched directly — the exact call site the endpoint uses — to a fake
 that returns a canned LLMResponse, so the auth/404/missing-key paths and
 the real generation -> translation -> persistence pipeline are all
@@ -26,7 +26,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from refract_core import (
+from reprompt_core import (
     Pipeline as CorePipeline,
     Stage as CoreStage,
     StageRecord as CoreStageRecord,
@@ -34,13 +34,13 @@ from refract_core import (
     Trace as CoreTrace,
     TraceFile,
 )
-from refract_core.llm.client import LLMResponse
-from refract_core.trace import TokenUsage as CoreTokenUsageModel
+from reprompt_core.llm.client import LLMResponse
+from reprompt_core.trace import TokenUsage as CoreTokenUsageModel
 
-from refract_api import crypto, models
-from refract_api.db import get_db
-from refract_api.main import app
-from refract_api.models import Base
+from reprompt_api import crypto, models
+from reprompt_api.db import get_db
+from reprompt_api.main import app
+from reprompt_api.models import Base
 
 VALID_RUBRIC_CONTENT = json.dumps(
     {
@@ -238,7 +238,7 @@ def test_success_path_generates_and_persists_a_real_rubric_row(
         return _fake_llm_response(VALID_RUBRIC_CONTENT)
 
     monkeypatch.setattr(
-        "refract_api.rubrics.complete_with_workspace_credentials", fake_complete_with_workspace_credentials
+        "reprompt_api.rubrics.complete_with_workspace_credentials", fake_complete_with_workspace_credentials
     )
 
     response = client.post(
@@ -342,7 +342,7 @@ def test_regenerating_an_approved_rubric_overwrites_content_and_resets_approval(
     pipeline_id, stage_id = _import_pipeline_with_traces(client, outputs=['{"currency": "USD", "revenue": 100}'])
 
     monkeypatch.setattr(
-        "refract_api.rubrics.complete_with_workspace_credentials",
+        "reprompt_api.rubrics.complete_with_workspace_credentials",
         lambda db, workspace, model, messages, **kw: _fake_llm_response(VALID_RUBRIC_CONTENT),
     )
 
@@ -366,7 +366,7 @@ def test_regenerating_an_approved_rubric_overwrites_content_and_resets_approval(
         }
     )
     monkeypatch.setattr(
-        "refract_api.rubrics.complete_with_workspace_credentials",
+        "reprompt_api.rubrics.complete_with_workspace_credentials",
         lambda db, workspace, model, messages, **kw: _fake_llm_response(new_content),
     )
 
@@ -399,7 +399,7 @@ def test_regenerating_an_approved_rubric_overwrites_content_and_resets_approval(
 
 def test_unusable_model_output_returns_422(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
     """Two consecutive unparseable responses (the generator's one retry also
-    fails) surfaces as a 422, not a 500 - see refract_core.rubric_generator's
+    fails) surfaces as a 422, not a 500 - see reprompt_core.rubric_generator's
     RubricGenerationError handling."""
     token, _ = _sign_in(client, "badoutput@example.com")
     client.post(
@@ -410,7 +410,7 @@ def test_unusable_model_output_returns_422(client: TestClient, monkeypatch: pyte
     pipeline_id, stage_id = _import_pipeline_with_traces(client, outputs=["out1"])
 
     monkeypatch.setattr(
-        "refract_api.rubrics.complete_with_workspace_credentials",
+        "reprompt_api.rubrics.complete_with_workspace_credentials",
         lambda db, workspace, model, messages, **kw: _fake_llm_response("not json at all"),
     )
 

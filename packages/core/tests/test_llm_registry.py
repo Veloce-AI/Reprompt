@@ -1,7 +1,7 @@
-"""Tests for the model capability registry (refract_core.llm.registry).
+"""Tests for the model capability registry (reprompt_core.llm.registry).
 
 This is a thin layer over LiteLLM's own model metadata (see the module
-docstring in ``refract_core/llm/registry.py``), so most of these tests
+docstring in ``reprompt_core/llm/registry.py``), so most of these tests
 exercise it against real LiteLLM data (no network calls — LiteLLM's model
 metadata is a bundled static table) rather than mocking LiteLLM itself.
 The filtering logic (credential vs. non-credential env vars) is tested
@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import pytest
 
-from refract_core.llm.registry import (
+from reprompt_core.llm.registry import (
     ModelCapabilities,
     get_model_capabilities,
     missing_credential_env_vars,
@@ -57,7 +57,7 @@ def test_missing_credential_env_vars_filters_non_credential_vars(monkeypatch: py
             "missing_keys": ["SOME_PROVIDER_API_BASE", "SOME_PROVIDER_API_KEY"],
         }
 
-    monkeypatch.setattr("refract_core.llm.registry.litellm.validate_environment", fake_validate_environment)
+    monkeypatch.setattr("reprompt_core.llm.registry.litellm.validate_environment", fake_validate_environment)
 
     assert missing_credential_env_vars("some/model") == ["SOME_PROVIDER_API_KEY"]
 

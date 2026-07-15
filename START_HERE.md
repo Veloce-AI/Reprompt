@@ -6,7 +6,7 @@ is just the map.
 
 ## What this is
 
-Refract migrates multi-stage LLM pipelines to cheaper/on-prem models and
+Reprompt migrates multi-stage LLM pipelines to cheaper/on-prem models and
 proves the outputs still match. Full plain-language explanation: `README.md`.
 
 ## Read in this order
@@ -16,7 +16,7 @@ proves the outputs still match. Full plain-language explanation: `README.md`.
    remaining build plan** (see "Remaining plan" section at the bottom)
 3. `DEV_TRACKER.md` — detailed, actively-updated phase-by-phase status of
    the optimizer (M3) work specifically — check this before touching
-   anything under `packages/core/src/refract_core/optimizer/`
+   anything under `packages/core/src/reprompt_core/optimizer/`
 4. `docs/TESTING.md` — full screen map, click-path, manual test checklist
    (keep this updated whenever a screen/feature changes — it says how)
 5. `docs/trace-format.md` — the data format the whole system is built on
@@ -51,7 +51,7 @@ Full walkthrough with expected results: `docs/TESTING.md`. Short version:
 
 ```bash
 # Terminal 1
-cd apps/api && uv run uvicorn refract_api.main:app --reload
+cd apps/api && uv run uvicorn reprompt_api.main:app --reload
 # Terminal 2
 cd apps/web && pnpm dev
 ```

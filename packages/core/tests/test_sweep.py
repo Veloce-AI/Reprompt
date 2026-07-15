@@ -1,9 +1,9 @@
-"""Tests for the param/format sweep candidate generator (refract_core.sweep).
+"""Tests for the param/format sweep candidate generator (reprompt_core.sweep).
 
 Uses Optuna's real ``GridSampler`` throughout (no mocking) — grid
 enumeration is pure local computation with no network dependency, so
 there's nothing to fake. Model capability lookups (``supports_json_mode``)
-go through the real ``refract_core.llm.registry`` against LiteLLM's bundled
+go through the real ``reprompt_core.llm.registry`` against LiteLLM's bundled
 static model metadata (same convention as ``test_llm_registry.py``) —
 ``"gpt-4o"`` is a real, JSON-mode-supporting model string and
 ``"totally-not-a-real-model-xyz-123"`` is LiteLLM's own "unrecognized
@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import itertools
 
-from refract_core.sweep import (
+from reprompt_core.sweep import (
     DEFAULT_FORMAT_MODES,
     DEFAULT_STRUCTURED_OUTPUT_MODES,
     DEFAULT_TEMPERATURES,

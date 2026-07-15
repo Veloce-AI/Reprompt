@@ -30,7 +30,7 @@ export default function RubricReview() {
   const pid = Number(pipelineId);
   const queryClient = useQueryClient();
 
-  const [model, setModel] = useState(() => localStorage.getItem("refract_rubric_model") ?? "");
+  const [model, setModel] = useState(() => localStorage.getItem("reprompt_rubric_model") ?? "");
   const [generatingAll, setGeneratingAll] = useState(false);
   const [generateError, setGenerateError] = useState<string | null>(null);
   const [generatingCompleted, setGeneratingCompleted] = useState(0);
@@ -121,7 +121,7 @@ export default function RubricReview() {
             value={model}
             onChange={(e) => {
               setModel(e.target.value);
-              localStorage.setItem("refract_rubric_model", e.target.value);
+              localStorage.setItem("reprompt_rubric_model", e.target.value);
             }}
             className="w-56"
             aria-label="Model for rubric generation"

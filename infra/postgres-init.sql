@@ -1,2 +1,2 @@
-CREATE DATABASE refract;
+CREATE DATABASE reprompt;
 CREATE DATABASE langfuse;

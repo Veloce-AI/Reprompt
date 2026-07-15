@@ -1,12 +1,12 @@
 import { test, expect } from "@playwright/test";
 
 // The API server this suite runs against is started manually (see
-// docs/DEVELOPMENT.md) with REFRACT_DEV_MAGIC_LINKS left at its default
+// docs/DEVELOPMENT.md) with REPROMPT_DEV_MAGIC_LINKS left at its default
 // (on) - there's no real email provider configured, so the API hands the
 // magic link back directly in the /auth/request-link response, and this
 // test reads it from there exactly like a user reading it off this page
 // would (see login.tsx's dev-only fallback card).
-const SESSION_TOKEN_STORAGE_KEY = "refract_session_token";
+const SESSION_TOKEN_STORAGE_KEY = "reprompt_session_token";
 
 test.describe("magic-link auth", () => {
   test("request a link, follow it, and land on Pipelines home authenticated", async ({

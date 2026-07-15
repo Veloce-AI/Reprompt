@@ -2,8 +2,8 @@ from pathlib import Path
 
 import pytest
 
-from refract_core.dag import CycleError, build_dag, format_dag, topological_layers
-from refract_core.trace import Pipeline, Stage, load_trace_file
+from reprompt_core.dag import CycleError, build_dag, format_dag, topological_layers
+from reprompt_core.trace import Pipeline, Stage, load_trace_file
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 

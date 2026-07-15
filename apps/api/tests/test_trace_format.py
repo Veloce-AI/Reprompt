@@ -5,8 +5,8 @@ from __future__ import annotations
 import json
 
 from fastapi.testclient import TestClient
-from refract_api.main import app
-from refract_api.trace_format import SCHEMA_PATH
+from reprompt_api.main import app
+from reprompt_api.trace_format import SCHEMA_PATH
 
 client = TestClient(app)
 

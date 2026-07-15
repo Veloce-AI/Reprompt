@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# First-time setup for Refract. Safe to re-run - every step is idempotent.
+# First-time setup for Reprompt. Safe to re-run - every step is idempotent.
 #
 # What this does:
 #   1. Installs packages/core and apps/api (each has its own venv - see
@@ -12,7 +12,7 @@
 #   4. Installs the web app's dependencies (pnpm).
 #
 # No Postgres/Docker required for any of this - SQLite is the default
-# (apps/api/src/refract_api/db.py). Postgres is optional; see
+# (apps/api/src/reprompt_api/db.py). Postgres is optional; see
 # docs/DEVELOPMENT.md's "Running against Postgres instead of SQLite".
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
@@ -39,7 +39,7 @@ if [ ! -f "$ENV_FILE" ]; then
 # Encrypts workspace BYOK provider API keys at rest (Fernet). Losing this
 # key makes every already-saved API key unrecoverable - back it up if this
 # stops being a throwaway dev environment.
-REFRACT_SETTINGS_ENCRYPTION_KEY=$KEY
+REPROMPT_SETTINGS_ENCRYPTION_KEY=$KEY
 EOF
   echo "Wrote $ENV_FILE"
 else
@@ -69,6 +69,6 @@ pnpm install
 echo
 echo "== Done =="
 echo "Next: read docs/TESTING.md's 'first time run' section, or just:"
-echo "  Terminal 1: cd apps/api && set -a && source .env && set +a && uv run uvicorn refract_api.main:app --reload"
+echo "  Terminal 1: cd apps/api && set -a && source .env && set +a && uv run uvicorn reprompt_api.main:app --reload"
 echo "  Terminal 2: cd apps/web && pnpm dev"
 echo "Then open http://localhost:5173"

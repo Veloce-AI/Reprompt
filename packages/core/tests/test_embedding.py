@@ -1,9 +1,9 @@
-"""Tests for the embedding-similarity evaluator (refract_core.embedding).
+"""Tests for the embedding-similarity evaluator (reprompt_core.embedding).
 
 Model choice for this suite
 ----------------------------
-The product default is ``BAAI/bge-m3`` (see refract_core/embedding.py and
-refract-parity-engine-plan.md §2/§10) and stays the default in the
+The product default is ``BAAI/bge-m3`` (see reprompt_core/embedding.py and
+reprompt-parity-engine-plan.md §2/§10) and stays the default in the
 module — this suite does NOT change that. But bge-m3 is a ~2GB download
 and slow to load on CPU, which is impractical to pay on every test run.
 So these tests explicitly pass a much smaller, fast model,
@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import pytest
 
-from refract_core.embedding import EmbeddingSimilarityScorer
+from reprompt_core.embedding import EmbeddingSimilarityScorer
 
 TEST_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 
@@ -91,16 +91,16 @@ def test_model_is_cached_across_scorer_instances(scorer: EmbeddingSimilarityScor
     know a second EmbeddingSimilarityScorer(model_name=...) doesn't
     trigger a second (slow) model load.
     """
-    from refract_core.embedding import _load_model
+    from reprompt_core.embedding import _load_model
 
     other_scorer = EmbeddingSimilarityScorer(model_name=TEST_MODEL)
     assert _load_model(scorer.model_name) is _load_model(other_scorer.model_name)
 
 
 def test_module_level_convenience_function_matches_class() -> None:
-    from refract_core.embedding import embedding_similarity
+    from reprompt_core.embedding import embedding_similarity
 
-    a, b = "Refract migrates LLM pipelines.", "Refract migrates pipelines between LLMs."
+    a, b = "Reprompt migrates LLM pipelines.", "Reprompt migrates pipelines between LLMs."
     direct = embedding_similarity(a, b, model_name=TEST_MODEL)
     via_class = EmbeddingSimilarityScorer(model_name=TEST_MODEL).score(a, b)
     assert direct == pytest.approx(via_class, abs=1e-9)

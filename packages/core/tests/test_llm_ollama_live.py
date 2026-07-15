@@ -4,7 +4,7 @@ Per the task this module was built for: there is no paid API key available
 in this environment, so real network calls to a cloud provider are out of
 scope for automated tests. But if a local Ollama server is already running
 (this suite does not install or start one), that's a genuinely free,
-local, real end-to-end exercise of refract_core.llm.complete() worth
+local, real end-to-end exercise of reprompt_core.llm.complete() worth
 taking — it is the one case where "no API key needed" can actually be
 proven against a live model, not just asserted against a mock.
 
@@ -23,7 +23,7 @@ import urllib.request
 
 import pytest
 
-from refract_core.llm.client import LLMResponse, complete
+from reprompt_core.llm.client import LLMResponse, complete
 
 OLLAMA_BASE_URL = "http://localhost:11434"
 

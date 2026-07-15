@@ -1,4 +1,4 @@
-"""Tests for the composite scorer (refract_core.scoring).
+"""Tests for the composite scorer (reprompt_core.scoring).
 
 Model choice for the end-to-end test
 ----------------------------------------
@@ -12,14 +12,14 @@ from __future__ import annotations
 
 import pytest
 
-from refract_core.deterministic import (
+from reprompt_core.deterministic import (
     EvaluationResult,
     JsonSchemaCheck,
     LengthBoundsCheck,
     RequiredKeysCheck,
     evaluate_deterministic_checks,
 )
-from refract_core.scoring import (
+from reprompt_core.scoring import (
     DEFAULT_MIN_DETERMINISTIC_SCORE_FOR_JUDGE,
     DEFAULT_WEIGHTS,
     CompositeScore,
@@ -36,7 +36,7 @@ TEST_EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 def _det_result(*, passed: list[bool], types: list[str] | None = None) -> EvaluationResult:
     """Build an EvaluationResult with the given pass/fail pattern, without
     needing real check objects — scoring.py only reads .results[i].passed/.type."""
-    from refract_core.deterministic import CheckResult
+    from reprompt_core.deterministic import CheckResult
 
     types = types or ["required_keys"] * len(passed)
     return EvaluationResult(

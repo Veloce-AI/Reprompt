@@ -15,7 +15,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from refract_core import (
+from reprompt_core import (
     Pipeline as CorePipeline,
     Stage as CoreStage,
     StageRecord as CoreStageRecord,
@@ -24,10 +24,10 @@ from refract_core import (
     TraceFile,
 )
 
-from refract_api import models
-from refract_api.db import get_db
-from refract_api.main import app
-from refract_api.models import Base
+from reprompt_api import models
+from reprompt_api.db import get_db
+from reprompt_api.main import app
+from reprompt_api.models import Base
 
 
 @pytest.fixture()
@@ -369,7 +369,7 @@ def test_start_happy_path_sets_running_and_schedules_task(
         _seed_rubric(session_factory, stage_id, approved=True)
 
     mock_runner = MagicMock()
-    with patch("refract_api.migrations.run_optimizer_for_migration", mock_runner):
+    with patch("reprompt_api.migrations.run_optimizer_for_migration", mock_runner):
         response = client.post(f"/pipelines/{pipeline_id}/migrations/{migration_id}/start")
 
     assert response.status_code == 200, response.text

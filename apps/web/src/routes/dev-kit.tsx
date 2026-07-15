@@ -38,7 +38,7 @@ export default function DevKit() {
           Design kit
         </h1>
         <p className="text-16 text-ink-soft mt-2">
-          Refract design system — all tokens, primitives, and the signature
+          Reprompt design system — all tokens, primitives, and the signature
           ParityBeam component.
         </p>
       </header>

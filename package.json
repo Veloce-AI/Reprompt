@@ -1,9 +1,9 @@
 {
   "private": true,
   "scripts": {
-    "dev": "pnpm --filter @refract/web dev",
-    "build": "pnpm --filter @refract/web build",
-    "test": "pnpm --filter @refract/web test"
+    "dev": "pnpm --filter @reprompt/web dev",
+    "build": "pnpm --filter @reprompt/web build",
+    "test": "pnpm --filter @reprompt/web test"
   },
   "engines": {
     "node": ">=18"

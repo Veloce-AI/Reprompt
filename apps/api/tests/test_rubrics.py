@@ -2,7 +2,7 @@
 POST /rubrics/{id}/approve, POST /pipelines/{id}/rubrics/approve-all.
 
 Same TestClient + in-memory SQLite pattern as test_pipelines.py. Rubric rows
-are created via refract_api.seed_rubrics (the dev/test seed helper, since
+are created via reprompt_api.seed_rubrics (the dev/test seed helper, since
 there's no rubric generator yet) rather than hand-rolled here, so these
 tests exercise the exact same seed data path used to build the UI against.
 """
@@ -18,7 +18,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from refract_core import (
+from reprompt_core import (
     Pipeline as CorePipeline,
     Stage as CoreStage,
     StageRecord as CoreStageRecord,
@@ -27,11 +27,11 @@ from refract_core import (
     TraceFile,
 )
 
-from refract_api import models
-from refract_api.db import get_db
-from refract_api.main import app
-from refract_api.models import Base
-from refract_api.seed_rubrics import seed_rubrics_for_pipeline
+from reprompt_api import models
+from reprompt_api.db import get_db
+from reprompt_api.main import app
+from reprompt_api.models import Base
+from reprompt_api.seed_rubrics import seed_rubrics_for_pipeline
 
 
 @pytest.fixture()
@@ -107,7 +107,7 @@ def _upload(client: TestClient, trace_file: TraceFile) -> int:
 
 def _seed(session_factory: sessionmaker, pipeline_id: int, *, stage_ids: list[int] | None = None) -> list[int]:
     """Seed rubrics via the real helper, in its own session (mirrors how a
-    standalone `uv run python -m refract_api.seed_rubrics` invocation or a
+    standalone `uv run python -m reprompt_api.seed_rubrics` invocation or a
     pytest fixture would do it - a separate connection from the TestClient's
     request-scoped sessions, same DB file/engine underneath).
     """

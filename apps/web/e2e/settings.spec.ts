@@ -11,7 +11,7 @@ test.describe("settings", () => {
     const email = `settings-e2e-${Date.now()}@example.com`;
 
     // Sign in via the dev-mode magic link flow (no real email provider is
-    // configured in this environment - see refract_api/auth.py).
+    // configured in this environment - see reprompt_api/auth.py).
     await page.goto("/login");
     await page.getByLabel("Email address").fill(email);
     await page.getByRole("button", { name: "Send magic link" }).click();

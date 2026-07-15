@@ -1,4 +1,4 @@
-# Refract — Dev Tracker
+# Reprompt — Dev Tracker
 
 Single source of truth for what's built across the whole project (M0-M5)
 and, in detail, what's in progress and what's next on the M3 optimizer
@@ -8,11 +8,11 @@ accurate so anyone (human or AI) can pick this up cold without
 re-deriving context. Read `START_HERE.md` first if you haven't — it
 points here plus the rest of the docs in reading order.
 
-Last updated: 2026-07-12.
+Last updated: 2026-07-14.
 
 ## Current state (one paragraph)
 
-Two optimizer strategies exist in `packages/core/src/refract_core/optimizer/`:
+Two optimizer strategies exist in `packages/core/src/reprompt_core/optimizer/`:
 **simple** (one-shot: mutate the prompt once via one LLM call, then run
 the param/format sweep) and **Prism** (multi-round: mutate → cheap-score →
 critique the weak ones → refine → sweep again → full-score → select, plus
@@ -20,17 +20,39 @@ optional few-shot example selection). Both are 100% in-house code — no
 vendored source, no new dependencies, both call the engine's own
 `llm/client.py` so both work with any provider (OpenAI/Anthropic/Gemini/
 self-hosted) uniformly. `run_optimizer(..., strategy="simple"|"prism")`
-selects between them; `apps/api` will read this from an
-`OPTIMIZER_STRATEGY` env var once Phase 4 wires it up.
+selects between them; `apps/api` reads this from `OPTIMIZER_STRATEGY`
+(see `apps/api/.env.example`).
 
 **Done and test-verified**: Phase 0 (cleanup), the DB/credential
 groundwork, Phase 1 (`mutator.py`'s `critique_and_refine`/
 `select_few_shot_examples`), Phase 2 (`loop.py`'s strategy dispatch and
-`_optimize_stage_prism`), and Phase 3 (`packages/core` tests — 18 new
-tests, full suite 273 passed / 2 skipped). **Not started**: Phase 4
-(`apps/api` wiring — `optimizer_runner.py`, start/status endpoints),
-Phase 4b (`apps/api` tests), Phase 6 (final end-to-end verification). See
-the phase list below for exactly where to pick up.
+`_optimize_stage_prism`), Phase 3 (`packages/core` tests), and **Phase 4 +
+4b** (`apps/api` wiring — merged via PR #3/#4 from an external
+contributor, `shreychechani`, reviewed and tested before merge — see
+"PR #3/#4 review notes" below for what changed vs. this file's original
+Phase 4 spec and one real gap found). **Not started**: Phase 6 (final
+end-to-end manual verification), the `target_model` tracking fix (see
+below).
+
+Full **Refract → Reprompt** rename completed 2026-07-14: both Python
+packages (`refract_core`→`reprompt_core`, `refract_api`→`reprompt_api`,
+every import), both `pyproject.toml` names, all docs (including renaming
+`docs/refract-master-build-prompt.md`/`docs/refract-parity-engine-plan.md`
+to their `reprompt-*` names), all env var prefixes
+(`REFRACT_*`→`REPROMPT_*` — update any local `.env` files by hand, they're
+gitignored so this rename doesn't touch them automatically), UI text,
+`infra/` Postgres config. All 3 test suites re-verified green after
+(`packages/core` 273/2 skipped, `apps/api` 104, `apps/web` 65 + clean
+typecheck). **Caution for next time**: a blanket `sed 's/refract/reprompt/g'`
+run without excluding `.venv`/`node_modules` corrupted third-party library
+source (`sympy`, `pygments`) inside the venvs, and separately mangled the
+physics term "refracted"→"reprompted" in two docs (the logo's visual
+metaphor is still literally light refracting through a prism — that word
+must stay "refract*" regardless of the product's name). Both fixed (venvs
+deleted + reinstalled from lockfile; docs hand-corrected). Always exclude
+`.venv`/`node_modules`/`.git` explicitly and grep for the *product name*
+specifically, not indiscriminate substring matches, before a repo-wide
+rename sed.
 
 A real bug was found and fixed while writing Phase 3's plateau test (see
 Phase 2's own note below): the early-stopping-on-plateau check was
@@ -39,6 +61,48 @@ since refined candidates always have new text — fixed via a
 parent-score "baseline" tracked at refinement time instead. Worth reading
 if you're touching `_optimize_stage_prism` again — the same mistake is
 easy to reintroduce if the lineage-tracking reasoning isn't kept in mind.
+
+**Logo — deferred, not forgotten.** Kept the beam/lens mark (`Logo` in
+`apps/web/src/components/logo.tsx`, `docs/logo.svg`) for now — it reads
+fine in light mode but hasn't been checked/tuned for dark mode yet. A
+more distinctive monogram direction was explored and parked (not lost —
+worth revisiting, just not now).
+
+## PR #3/#4 review notes — Phase 4 landed differently than originally spec'd
+
+An external contributor (`shreychechani`) built Phase 4 + 4b independently
+(PR #3, then extended in PR #4) — reviewed end-to-end (diff read, all 3
+test suites actually run in an isolated `git worktree`, not just read)
+before merging. Real differences from this file's original Phase 4 spec,
+worth knowing before touching `optimizer_runner.py`/`migrations.py` again:
+
+- **`target_model_config` shape changed**: was `{"default": "<model>",
+  "stages": {<per-stage override>}}` (this file's original spec) → now
+  `{"models": ["<model1>", "<model2>", ...]}` — a list of candidate models
+  tried against *every* stage, budget shared across all of them via one
+  `BudgetTracker`, best kept per stage. Bigger scope than originally
+  planned (compare multiple models in one migration run, not just target
+  one). `optimizer_runner._get_target_models()` reads both shapes for
+  backward compatibility with any migration rows created under the old
+  schema — but note it only reads the old shape's `default`, silently
+  dropping any old per-stage `stages` overrides (acceptable: no real
+  migrations existed under the old schema yet at merge time).
+- **Real gap, not yet fixed**: neither `StageAttempt` (packages/core) nor
+  `Candidate` (apps/api) records *which* target model produced a given
+  attempt. Once a migration tries multiple models, there's no way to tell
+  from a `Candidate` row which model the winning prompt was actually tuned
+  for. Cheap to fix now (add a `target_model` field to both), will be
+  painful once the Phase 5/scorecard screen is built assuming the current
+  schema. **Next concrete task**, not yet started.
+- Two trivial issues found and fixed directly (not worth a follow-up PR):
+  an unused `ModelOption` import in `new-migration.tsx` (real `tsc
+  --noEmit` error), and a missing `db.rollback()` in
+  `optimizer_runner.py`'s failure-recovery path (narrow edge case — only
+  matters if the exception that triggered it was itself a DB-level error,
+  which would otherwise leave a migration stuck at `"running"` forever).
+- Full review detail (process used, every finding) kept in
+  `.local/pr-reviews/PR_REVIEW.md` — gitignored, local-only, per standing
+  instruction not to commit review working files to the repo.
 
 ## Working in parallel (more than one developer/AI at once)
 
@@ -149,7 +213,7 @@ producing real results to show.
 Done before the Prism/simple split was decided, still needed by both
 strategies:
 
-- [x] `apps/api/src/refract_api/models.py`:
+- [x] `apps/api/src/reprompt_api/models.py`:
   - `WorkspaceApiKey.base_url: str | None` — customer self-hosted endpoint
     (Ollama/vLLM/LM Studio/etc), forwarded to LiteLLM as `api_base`
   - `Migration`: added `total_cost_usd`, `stopped_early`, `stop_reason`,
@@ -159,11 +223,11 @@ strategies:
 - [x] Alembic migration:
   `apps/api/alembic/versions/f3a7b1c9d2e4_add_base_url_and_migration_progress.py`
   — applied cleanly against a full rebuild of the dev DB
-- [x] `apps/api/src/refract_api/llm_context.py`: `base_url` threaded
+- [x] `apps/api/src/reprompt_api/llm_context.py`: `base_url` threaded
   through `complete_with_workspace_credentials()` as `api_base=`,
   `_resolve_workspace_key_row()` extracted so both `resolve_workspace_credential`
   and the base_url lookup share one query
-- [x] `apps/api/src/refract_api/settings.py`: `base_url` in
+- [x] `apps/api/src/reprompt_api/settings.py`: `base_url` in
   `ApiKeyCreate`/`ApiKeyOut`, round-trips through add/list
 
 ## Why guided critique/refine instead of DSPy or genetic/Pareto search
@@ -268,9 +332,9 @@ implementing each function in Phase 1, not an afterthought.
 
 ### 3. Name the verification harness explicitly
 
-The three-way scorer (`refract_core.deterministic` +
-`refract_core.embedding` + `refract_core.judge`, combined by
-`refract_core.scoring.score_candidate`) *is* what the harness-engineering
+The three-way scorer (`reprompt_core.deterministic` +
+`reprompt_core.embedding` + `reprompt_core.judge`, combined by
+`reprompt_core.scoring.score_candidate`) *is* what the harness-engineering
 literature calls a "verification harness" — the scaffolding that lets the
 rest of the system trust a candidate's output without a human checking
 every one by hand. This is already fully built; the only action item is
@@ -301,7 +365,7 @@ applied deliberately rather than by accident.
 
 ## Phase 1 — Extend `mutator.py` for Prism [DONE — 2026-07-12]
 
-File: `packages/core/src/refract_core/optimizer/mutator.py` (existing —
+File: `packages/core/src/reprompt_core/optimizer/mutator.py` (existing —
 `generate_prompt_mutations()` already there, stays unchanged, is the
 "simple" strategy's only mutation step, and is also Prism's round-1
 variant generator — Prism does not replace it, it adds rounds after it).
@@ -385,7 +449,7 @@ system-prompt-construction style as `_build_messages`.
 
 ## Phase 2 — Extend `loop.py` with strategy selection [DONE — 2026-07-12]
 
-File: `packages/core/src/refract_core/optimizer/loop.py`. Already has
+File: `packages/core/src/reprompt_core/optimizer/loop.py`. Already has
 (from earlier work, done):
 
 - `run_sweep_for_stage(stage_input, prompt_candidates, *, call, budget, judge_model, parity_threshold, max_sweep_candidates_per_prompt, on_attempt) -> StageResult`
@@ -566,7 +630,7 @@ during actual implementation; the coverage they describe is all present).
    ```
    If either doesn't match, something changed since this was written —
    figure out why before adding Phase 4 on top of an unknown state.
-2. Read `packages/core/src/refract_core/optimizer/loop.py`'s module
+2. Read `packages/core/src/reprompt_core/optimizer/loop.py`'s module
    docstring and `run_optimizer()`'s docstring in full — Phase 4 is purely
    about *calling* this function correctly with real data; it does not
    change anything inside `packages/core`. If you find yourself wanting to
@@ -601,12 +665,12 @@ Not done until all of these are true, in this order:
       reflect reality — don't leave the tracker stale once the work is
       actually done, same discipline as every phase before this one.
 
-### `apps/api/src/refract_api/optimizer_runner.py` (new)
+### `apps/api/src/reprompt_api/optimizer_runner.py` (new)
 
 Reads `OPTIMIZER_STRATEGY` env var (`os.environ.get("OPTIMIZER_STRATEGY", "simple")`).
 
 **Building `stages: list[StageOptimizationInput]`** — concrete query plan,
-using the real schema (see `apps/api/src/refract_api/models.py`):
+using the real schema (see `apps/api/src/reprompt_api/models.py`):
 
 ```python
 stages = db.scalars(select(models.Stage).where(models.Stage.pipeline_id == pipeline_id)).all()
@@ -675,7 +739,7 @@ exception string as `stop_reason` instead of leaving `status="running"`
 stuck forever — this is the one case where a bug must still leave the DB
 in a legible state for the UI to show something sane.
 
-### `apps/api/src/refract_api/migrations.py` — new endpoints
+### `apps/api/src/reprompt_api/migrations.py` — new endpoints
 
 - **`POST /pipelines/{pipeline_id}/migrations/{migration_id}/start`**
   - Load the `Migration`, 404 if not found or wrong pipeline.
@@ -705,8 +769,8 @@ in a legible state for the UI to show something sane.
 stack, a different thing). Create one covering every env var `apps/api`
 actually reads, so a new developer doesn't have to grep the source to
 discover them — at minimum: `DATABASE_URL` (commented out, showing the
-default), `REFRACT_SETTINGS_ENCRYPTION_KEY` (placeholder value + a
-comment saying `scripts/setup.sh` generates a real one), `REFRACT_DEV_MAGIC_LINKS`
+default), `REPROMPT_SETTINGS_ENCRYPTION_KEY` (placeholder value + a
+comment saying `scripts/setup.sh` generates a real one), `REPROMPT_DEV_MAGIC_LINKS`
 (default `true`, from `auth.py`), and the new `OPTIMIZER_STRATEGY=simple`
 with a one-line comment pointing at this file's "Why two strategies"
 section for what `prism` does.
@@ -787,14 +851,14 @@ section for what `prism` does.
       session itself — standing project rule): `git add` the specific
       changed files (never `git add -A` — this repo's working tree
       routinely accumulates local-only DB files like `apps/api/test.db`/
-      `refract.db` that must never be committed), a commit message
+      `reprompt.db` that must never be committed), a commit message
       summarizing the phase(s) completed, and `git push origin master`
       left for the user to actually run.
 
 ## Known constraints to respect while building the above
 
 - **No Docker, no LiteLLM proxy, no external framework dependency** for
-  either strategy — both call `refract_core.llm.client.complete()`
+  either strategy — both call `reprompt_core.llm.client.complete()`
   directly, same as every other LLM-powered piece in this codebase.
 - **`packages/core` stays headless** — zero FastAPI/DB imports. Progress
   and persistence are `apps/api`'s job via the `on_attempt` callback.

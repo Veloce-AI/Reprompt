@@ -1,12 +1,12 @@
 # Trace format
 
-Canonical JSON schema Refract uses to ingest a pipeline plus its benchmark
-traces. This is Refract's own format — Langfuse exports, OTel traces, etc.
+Canonical JSON schema Reprompt uses to ingest a pipeline plus its benchmark
+traces. This is Reprompt's own format — Langfuse exports, OTel traces, etc.
 are normalized *into* this shape by importers; nothing downstream of ingest
 should know about any other trace format.
 
 The schema is implemented as Pydantic v2 models in
-[`packages/core/src/refract_core/trace.py`](../packages/core/src/refract_core/trace.py)
+[`packages/core/src/reprompt_core/trace.py`](../packages/core/src/reprompt_core/trace.py)
 (`TraceFile` is the root model). That module is the source of truth if this
 doc and the code ever disagree — but they shouldn't; keep both in sync.
 
@@ -17,7 +17,7 @@ A trace file is a single JSON document with two top-level parts:
 2. **`traces`** — the benchmark set itself: one entry per query, each a full
    record of every stage's execution for that query.
 
-This mirrors refract-parity-engine-plan.md §2: `Pipeline → Stage[]`,
+This mirrors reprompt-parity-engine-plan.md §2: `Pipeline → Stage[]`,
 `Pipeline → BenchmarkSet → Trace[] → StageRecord`.
 
 ## Top level: `TraceFile`
@@ -48,7 +48,7 @@ validate as-is, no migration needed. What changed:
 
 `schema_version` itself isn't checked against an enum — it's a plain string
 field, purely informational for now (a future importer/version-gate could
-branch on it, but nothing in `packages/core/src/refract_core/trace.py` does
+branch on it, but nothing in `packages/core/src/reprompt_core/trace.py` does
 today).
 
 ## `Pipeline`
@@ -137,9 +137,9 @@ when constructing the model from Python).
 
 Don't call `TraceFile.model_validate(...)` directly if you want readable
 errors — Pydantic's raw `ValidationError` is a full dump of every failure
-with internal type names. Use `refract_core.load_trace_file(path)` (from
-disk) or `refract_core.parse_trace_file(dict)` (already-parsed JSON)
-instead. Both raise `refract_core.TraceFileError` — a `ValueError` subclass —
+with internal type names. Use `reprompt_core.load_trace_file(path)` (from
+disk) or `reprompt_core.parse_trace_file(dict)` (already-parsed JSON)
+instead. Both raise `reprompt_core.TraceFileError` — a `ValueError` subclass —
 with a short, field-level message, e.g.:
 
 ```

@@ -1,4 +1,4 @@
-"""Tests for the BYOK completion wrapper (refract_core.llm.client).
+"""Tests for the BYOK completion wrapper (reprompt_core.llm.client).
 
 No real network calls to a paid provider
 ------------------------------------------
@@ -30,7 +30,7 @@ import pytest
 from litellm import exceptions as litellm_exceptions
 from litellm.types.utils import Choices, CompletionTokensDetailsWrapper, Message as LiteLLMMessage, ModelResponse, Usage
 
-from refract_core.llm.client import (
+from reprompt_core.llm.client import (
     AuthenticationLLMError,
     LLMResponse,
     MissingAPIKeyError,
@@ -40,7 +40,7 @@ from refract_core.llm.client import (
     UnsupportedFeatureError,
     complete,
 )
-from refract_core.trace import TokenUsage
+from reprompt_core.trace import TokenUsage
 
 
 def _fake_response(
@@ -100,8 +100,8 @@ def test_builds_request_with_required_fields_only(monkeypatch: pytest.MonkeyPatc
         captured.update(kwargs)
         return _fake_response()
 
-    monkeypatch.setattr("refract_core.llm.client.litellm.completion", fake_completion)
-    monkeypatch.setattr("refract_core.llm.client.missing_credential_env_vars", lambda model: [])
+    monkeypatch.setattr("reprompt_core.llm.client.litellm.completion", fake_completion)
+    monkeypatch.setattr("reprompt_core.llm.client.missing_credential_env_vars", lambda model: [])
 
     complete("gpt-4o", [{"role": "user", "content": "hi"}])
 
@@ -122,9 +122,9 @@ def test_builds_request_with_all_optional_params(monkeypatch: pytest.MonkeyPatch
         captured.update(kwargs)
         return _fake_response()
 
-    monkeypatch.setattr("refract_core.llm.client.litellm.completion", fake_completion)
-    monkeypatch.setattr("refract_core.llm.client.missing_credential_env_vars", lambda model: [])
-    monkeypatch.setattr("refract_core.llm.client.supports_json_mode", lambda model: True)
+    monkeypatch.setattr("reprompt_core.llm.client.litellm.completion", fake_completion)
+    monkeypatch.setattr("reprompt_core.llm.client.missing_credential_env_vars", lambda model: [])
+    monkeypatch.setattr("reprompt_core.llm.client.supports_json_mode", lambda model: True)
 
     complete(
         "gpt-4o",
@@ -163,10 +163,10 @@ def test_never_accepts_api_key_as_a_function_argument() -> None:
 
 def test_parses_content_model_and_finish_reason(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
-        "refract_core.llm.client.litellm.completion",
+        "reprompt_core.llm.client.litellm.completion",
         lambda **kwargs: _fake_response(model="gpt-4o-2024-08-06", content="the answer is 42", finish_reason="stop"),
     )
-    monkeypatch.setattr("refract_core.llm.client.missing_credential_env_vars", lambda model: [])
+    monkeypatch.setattr("reprompt_core.llm.client.missing_credential_env_vars", lambda model: [])
 
     result = complete("gpt-4o", [{"role": "user", "content": "what is the answer?"}])
 
@@ -179,10 +179,10 @@ def test_parses_content_model_and_finish_reason(monkeypatch: pytest.MonkeyPatch)
 
 def test_parses_token_usage(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
-        "refract_core.llm.client.litellm.completion",
+        "reprompt_core.llm.client.litellm.completion",
         lambda **kwargs: _fake_response(prompt_tokens=123, completion_tokens=45),
     )
-    monkeypatch.setattr("refract_core.llm.client.missing_credential_env_vars", lambda model: [])
+    monkeypatch.setattr("reprompt_core.llm.client.missing_credential_env_vars", lambda model: [])
 
     result = complete("gpt-4o", [{"role": "user", "content": "hi"}])
 
@@ -191,10 +191,10 @@ def test_parses_token_usage(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_parses_reasoning_tokens_as_thinking(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
-        "refract_core.llm.client.litellm.completion",
+        "reprompt_core.llm.client.litellm.completion",
         lambda **kwargs: _fake_response(prompt_tokens=50, completion_tokens=200, reasoning_tokens=150),
     )
-    monkeypatch.setattr("refract_core.llm.client.missing_credential_env_vars", lambda model: [])
+    monkeypatch.setattr("reprompt_core.llm.client.missing_credential_env_vars", lambda model: [])
 
     result = complete("gpt-4o", [{"role": "user", "content": "hi"}])
 
@@ -203,10 +203,10 @@ def test_parses_reasoning_tokens_as_thinking(monkeypatch: pytest.MonkeyPatch) ->
 
 def test_computes_cost_via_litellm_completion_cost(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
-        "refract_core.llm.client.litellm.completion",
+        "reprompt_core.llm.client.litellm.completion",
         lambda **kwargs: _fake_response(model="gpt-4o-2024-08-06", prompt_tokens=1000, completion_tokens=1000),
     )
-    monkeypatch.setattr("refract_core.llm.client.missing_credential_env_vars", lambda model: [])
+    monkeypatch.setattr("reprompt_core.llm.client.missing_credential_env_vars", lambda model: [])
 
     result = complete("gpt-4o", [{"role": "user", "content": "hi"}])
 
@@ -219,15 +219,15 @@ def test_computes_cost_via_litellm_completion_cost(monkeypatch: pytest.MonkeyPat
 
 def test_cost_none_when_completion_cost_raises(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
-        "refract_core.llm.client.litellm.completion",
+        "reprompt_core.llm.client.litellm.completion",
         lambda **kwargs: _fake_response(),
     )
-    monkeypatch.setattr("refract_core.llm.client.missing_credential_env_vars", lambda model: [])
+    monkeypatch.setattr("reprompt_core.llm.client.missing_credential_env_vars", lambda model: [])
 
     def raising_cost(**kwargs):
         raise RuntimeError("pricing data unavailable")
 
-    monkeypatch.setattr("refract_core.llm.client.litellm.completion_cost", raising_cost)
+    monkeypatch.setattr("reprompt_core.llm.client.litellm.completion_cost", raising_cost)
 
     result = complete("gpt-4o", [{"role": "user", "content": "hi"}])
 
@@ -241,8 +241,8 @@ def test_latency_is_measured(monkeypatch: pytest.MonkeyPatch) -> None:
         time_module.sleep(0.05)
         return _fake_response()
 
-    monkeypatch.setattr("refract_core.llm.client.litellm.completion", slow_completion)
-    monkeypatch.setattr("refract_core.llm.client.missing_credential_env_vars", lambda model: [])
+    monkeypatch.setattr("reprompt_core.llm.client.litellm.completion", slow_completion)
+    monkeypatch.setattr("reprompt_core.llm.client.missing_credential_env_vars", lambda model: [])
 
     result = complete("gpt-4o", [{"role": "user", "content": "hi"}])
 
@@ -253,10 +253,10 @@ def test_latency_is_measured(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_empty_content_becomes_empty_string_not_none(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
-        "refract_core.llm.client.litellm.completion",
+        "reprompt_core.llm.client.litellm.completion",
         lambda **kwargs: _fake_response(content=""),
     )
-    monkeypatch.setattr("refract_core.llm.client.missing_credential_env_vars", lambda model: [])
+    monkeypatch.setattr("reprompt_core.llm.client.missing_credential_env_vars", lambda model: [])
 
     result = complete("gpt-4o", [{"role": "user", "content": "hi"}])
 
@@ -277,10 +277,10 @@ def test_missing_api_key_raises_before_any_network_call(monkeypatch: pytest.Monk
         called = True
         return _fake_response()
 
-    monkeypatch.setattr("refract_core.llm.client.litellm.completion", should_not_be_called)
+    monkeypatch.setattr("reprompt_core.llm.client.litellm.completion", should_not_be_called)
 
     # No OPENAI_API_KEY is set anywhere in this process (see the autouse
-    # fixture above) — this is the real refract_core.llm.registry check,
+    # fixture above) — this is the real reprompt_core.llm.registry check,
     # not a mock.
     with pytest.raises(MissingAPIKeyError) as exc_info:
         complete("gpt-4o", [{"role": "user", "content": "hi"}])
@@ -303,7 +303,7 @@ def test_local_model_never_raises_missing_api_key(monkeypatch: pytest.MonkeyPatc
     """ollama/vllm-style local models must not require a key to be present,
     even though this environment genuinely has zero provider keys set."""
     monkeypatch.setattr(
-        "refract_core.llm.client.litellm.completion",
+        "reprompt_core.llm.client.litellm.completion",
         lambda **kwargs: _fake_response(model="ollama/llama3"),
     )
 
@@ -325,9 +325,9 @@ def test_unsupported_response_format_raises_before_network_call(monkeypatch: pyt
         called = True
         return _fake_response()
 
-    monkeypatch.setattr("refract_core.llm.client.litellm.completion", should_not_be_called)
-    monkeypatch.setattr("refract_core.llm.client.missing_credential_env_vars", lambda model: [])
-    monkeypatch.setattr("refract_core.llm.client.supports_json_mode", lambda model: False)
+    monkeypatch.setattr("reprompt_core.llm.client.litellm.completion", should_not_be_called)
+    monkeypatch.setattr("reprompt_core.llm.client.missing_credential_env_vars", lambda model: [])
+    monkeypatch.setattr("reprompt_core.llm.client.supports_json_mode", lambda model: False)
 
     with pytest.raises(UnsupportedFeatureError, match="does not appear to support"):
         complete(
@@ -343,15 +343,15 @@ def test_response_format_omitted_never_checks_json_support(monkeypatch: pytest.M
     """If the caller doesn't ask for response_format, JSON-mode support is
     irrelevant and must never be consulted (and never block the call)."""
     monkeypatch.setattr(
-        "refract_core.llm.client.litellm.completion",
+        "reprompt_core.llm.client.litellm.completion",
         lambda **kwargs: _fake_response(),
     )
-    monkeypatch.setattr("refract_core.llm.client.missing_credential_env_vars", lambda model: [])
+    monkeypatch.setattr("reprompt_core.llm.client.missing_credential_env_vars", lambda model: [])
 
     def should_not_be_called(model):
         raise AssertionError("supports_json_mode should not be called when response_format is None")
 
-    monkeypatch.setattr("refract_core.llm.client.supports_json_mode", should_not_be_called)
+    monkeypatch.setattr("reprompt_core.llm.client.supports_json_mode", should_not_be_called)
 
     complete("gpt-4o", [{"role": "user", "content": "hi"}])  # must not raise
 
@@ -380,8 +380,8 @@ def test_transient_provider_errors_map_to_transient_llm_error(monkeypatch, litel
     def raising_completion(**kwargs):
         raise litellm_exc_factory()
 
-    monkeypatch.setattr("refract_core.llm.client.litellm.completion", raising_completion)
-    monkeypatch.setattr("refract_core.llm.client.missing_credential_env_vars", lambda model: [])
+    monkeypatch.setattr("reprompt_core.llm.client.litellm.completion", raising_completion)
+    monkeypatch.setattr("reprompt_core.llm.client.missing_credential_env_vars", lambda model: [])
 
     with pytest.raises(TransientLLMError) as exc_info:
         complete("gpt-4o", [{"role": "user", "content": "hi"}])
@@ -398,8 +398,8 @@ def test_auth_rejected_after_key_present_maps_to_authentication_error(monkeypatc
             message="invalid api key", llm_provider="openai", model="gpt-4o"
         )
 
-    monkeypatch.setattr("refract_core.llm.client.litellm.completion", raising_completion)
-    monkeypatch.setattr("refract_core.llm.client.missing_credential_env_vars", lambda model: [])
+    monkeypatch.setattr("reprompt_core.llm.client.litellm.completion", raising_completion)
+    monkeypatch.setattr("reprompt_core.llm.client.missing_credential_env_vars", lambda model: [])
 
     with pytest.raises(AuthenticationLLMError):
         complete("gpt-4o", [{"role": "user", "content": "hi"}])
@@ -419,8 +419,8 @@ def test_permanent_provider_errors_map_to_permanent_llm_error(monkeypatch, litel
     def raising_completion(**kwargs):
         raise litellm_exc_factory()
 
-    monkeypatch.setattr("refract_core.llm.client.litellm.completion", raising_completion)
-    monkeypatch.setattr("refract_core.llm.client.missing_credential_env_vars", lambda model: [])
+    monkeypatch.setattr("reprompt_core.llm.client.litellm.completion", raising_completion)
+    monkeypatch.setattr("reprompt_core.llm.client.missing_credential_env_vars", lambda model: [])
 
     with pytest.raises(PermanentLLMError):
         complete("gpt-4o", [{"role": "user", "content": "hi"}])
@@ -430,8 +430,8 @@ def test_unrecognized_error_maps_to_unknown_llm_error_not_silently_swallowed(mon
     def raising_completion(**kwargs):
         raise ValueError("something litellm-internal and unmapped")
 
-    monkeypatch.setattr("refract_core.llm.client.litellm.completion", raising_completion)
-    monkeypatch.setattr("refract_core.llm.client.missing_credential_env_vars", lambda model: [])
+    monkeypatch.setattr("reprompt_core.llm.client.litellm.completion", raising_completion)
+    monkeypatch.setattr("reprompt_core.llm.client.missing_credential_env_vars", lambda model: [])
 
     with pytest.raises(UnknownLLMError) as exc_info:
         complete("gpt-4o", [{"role": "user", "content": "hi"}])

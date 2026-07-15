@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from refract_core.trace import TraceFileError, load_trace_file, parse_trace_file
+from reprompt_core.trace import TraceFileError, load_trace_file, parse_trace_file
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 

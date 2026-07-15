@@ -3,7 +3,7 @@ the get_current_user dependency.
 
 Same TestClient + in-memory SQLite pattern as test_pipelines.py /
 test_rubrics.py. request-link's dev-mode-link behavior is exercised by
-directly monkeypatching refract_api.auth.DEV_MODE_LINKS (computed once at
+directly monkeypatching reprompt_api.auth.DEV_MODE_LINKS (computed once at
 import time from an env var, so flipping the env var after import wouldn't
 take effect - this is the straightforward way to test both branches).
 """
@@ -21,13 +21,13 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from refract_api import models
-from refract_api.auth import create_session_token
-from refract_api.db import get_db
-from refract_api.main import app
-from refract_api.models import Base
+from reprompt_api import models
+from reprompt_api.auth import create_session_token
+from reprompt_api.db import get_db
+from reprompt_api.main import app
+from reprompt_api.models import Base
 
-import refract_api.auth as auth_module
+import reprompt_api.auth as auth_module
 
 
 @pytest.fixture()

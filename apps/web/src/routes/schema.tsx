@@ -142,9 +142,9 @@ export default function SchemaReference() {
         Trace format
       </h1>
       <p className="mt-2 max-w-[640px] text-14 text-ink-soft">
-        Refract ingests execution traces from any AI pipeline - however you
+        Reprompt ingests execution traces from any AI pipeline - however you
         built it, whatever models it calls. This page explains the shape
-        Refract expects, so you can decide whether to write an exporter
+        Reprompt expects, so you can decide whether to write an exporter
         against it before you import anything.
       </p>
 
@@ -237,7 +237,7 @@ Trace[]                     the benchmark set - one entry per query
           <CardHeader>
             <CardTitle>Raw JSON Schema</CardTitle>
             <CardDescription>
-              Download the full JSON Schema document Refract validates trace
+              Download the full JSON Schema document Reprompt validates trace
               files against, generated straight from the canonical Pydantic
               model - useful for generating types or wiring up validation in
               your own exporter.
@@ -271,7 +271,7 @@ Trace[]                     the benchmark set - one entry per query
               <code className="font-mono text-13 text-ink">
                 docs/examples/trace_recorder.py
               </code>{" "}
-              in the Refract repo.
+              in the Reprompt repo.
             </CardDescription>
           </CardHeader>
         </Card>

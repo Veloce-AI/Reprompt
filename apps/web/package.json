@@ -1,5 +1,5 @@
 {
-  "name": "@refract/web",
+  "name": "@reprompt/web",
   "private": true,
   "type": "module",
   "scripts": {

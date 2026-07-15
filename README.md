@@ -1,7 +1,7 @@
 <div align="center">
-<img src="docs/logo.svg" width="80" height="80" alt="Refract logo" /><br/>
+<img src="docs/logo.svg" width="80" height="80" alt="Reprompt logo" /><br/>
 
-# Refract
+# Reprompt
 
 **Change the AI model behind your product without breaking it — and prove it.**
 
@@ -15,7 +15,7 @@
 Migrates multi-stage LLM pipelines to cheaper or on-prem models, and proves
 the outputs still match — no manual prompt rewriting, no guessing.
 
-[What it does](#what-refract-does) · [How the search works](#how-the-try-it-until-it-matches-step-actually-works) · [What's built](#whats-built-so-far) · [How to run it](#how-to-run-it--try-it-yourself)
+[What it does](#what-reprompt-does) · [How the search works](#how-the-try-it-until-it-matches-step-actually-works) · [What's built](#whats-built-so-far) · [How to run it](#how-to-run-it--try-it-yourself)
 
 </div>
 
@@ -35,10 +35,10 @@ swap the model, the answers often get worse, because every one of those
 Fixing this by hand — rewriting 20 prompts, testing them, checking nothing
 broke — takes a team weeks per product.
 
-## What Refract does
+## What Reprompt does
 
-You give Refract real examples of your pipeline running (what went in,
-what came out, at every step). Refract:
+You give Reprompt real examples of your pipeline running (what went in,
+what came out, at every step). Reprompt:
 
 1. **Learns what "a good answer" looks like** for each step, from your own examples.
 2. **Tries the cheaper model** with different prompts/settings until it matches.
@@ -48,7 +48,7 @@ what came out, at every step). Refract:
 5. **Hands you back**: the new working prompts + a scorecard (accuracy kept,
    cost saved, speed change) you can show anyone.
 
-You never touch a prompt by hand. You pick the model, Refract does the rest.
+You never touch a prompt by hand. You pick the model, Reprompt does the rest.
 
 ## How the "try it until it matches" step actually works
 
@@ -67,19 +67,19 @@ Both are 100% our own code, calling any AI provider the same way — see
 
 ### How it knows when to stop (loop engineering)
 
-> Refract never runs longer or costs more than it has to.
+> Reprompt never runs longer or costs more than it has to.
 
 - **Hard dollar ceiling.** Every migration has a real budget; once real
-  spend hits it, Refract stops trying — no surprise bills.
+  spend hits it, Reprompt stops trying — no surprise bills.
 - **Plateau detection.** Prism also stops refining one specific attempt
   early the moment a round stops actually improving it, instead of
   burning budget chasing a dead end that's already plateaued.
 
 ### How it stays reliable (harness engineering)
 
-> Refract never just believes what an AI model says back.
+> Reprompt never just believes what an AI model says back.
 
-Every AI response — not just prompt rewriting, everywhere Refract asks a
+Every AI response — not just prompt rewriting, everywhere Reprompt asks a
 model to do something — is checked against a strict, validated shape
 before it's trusted. A malformed response gets exactly one automatic
 retry with a note about what went wrong, then a clear failure instead of
@@ -102,7 +102,7 @@ technical detail: `DEV_TRACKER.md`.
 | Understand the pipeline structure (steps, order, parallel steps) | ✅ Working |
 | Learn "what good looks like" per step | ✅ Working |
 | Score an answer 3 ways (rules / AI judge / similarity) | ✅ Working |
-| Review screens (see your pipeline, review what Refract learned) | ✅ Working |
+| Review screens (see your pipeline, review what Reprompt learned) | ✅ Working |
 | Log in, save your API keys securely | ✅ Working |
 | **The actual "try the cheaper model until it matches" search** | ⚙️ Engine built + tested, not wired into the app yet — see below |
 | Final report screen | 🚧 Waiting on the above |
@@ -126,7 +126,7 @@ and all you need for local dev; Postgres is optional (see
 
 ### Getting an AI model API key
 
-Refract needs at least one AI model API key to run rubric generation, the
+Reprompt needs at least one AI model API key to run rubric generation, the
 AI judge, and test migrations. It works with any provider (OpenAI, Anthropic,
 Gemini, NVIDIA NIM, or a local model) — this project currently develops
 against **NVIDIA NIM**, since it gives free access to strong open models

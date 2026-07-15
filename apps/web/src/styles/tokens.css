@@ -1,6 +1,6 @@
 /* ============================================================
-   Refract design tokens — "Instrument Grade"
-   Source of truth: docs/refract-master-build-prompt.md §3.
+   Reprompt design tokens — "Instrument Grade"
+   Source of truth: docs/reprompt-master-build-prompt.md §3.
    Everything in the UI derives from these variables.
    Do not use raw hex or px values in components — token it.
    ============================================================ */

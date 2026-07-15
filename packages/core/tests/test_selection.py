@@ -1,4 +1,4 @@
-"""Tests for candidate selection (refract_core.selection).
+"""Tests for candidate selection (reprompt_core.selection).
 
 Builds CompositeScore instances directly (rather than via
 compute_composite_score / score_candidate) since these tests only care
@@ -12,10 +12,10 @@ from __future__ import annotations
 
 import pytest
 
-from refract_core.deterministic import EvaluationResult
-from refract_core.scoring import DEFAULT_WEIGHTS, CompositeScore
-from refract_core.selection import ScoredSweepCandidate, select_best_candidate
-from refract_core.sweep import SweepCandidate
+from reprompt_core.deterministic import EvaluationResult
+from reprompt_core.scoring import DEFAULT_WEIGHTS, CompositeScore
+from reprompt_core.selection import ScoredSweepCandidate, select_best_candidate
+from reprompt_core.sweep import SweepCandidate
 
 
 def _score(final_score: float, *, gated: bool = False) -> CompositeScore:

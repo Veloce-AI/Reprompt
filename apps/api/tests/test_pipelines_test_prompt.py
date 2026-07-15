@@ -1,11 +1,11 @@
 """Tests for POST /pipelines/{pipeline_id}/stages/{stage_id}/test-prompt —
 the M5 BYOK proof-of-concept endpoint that exercises
-refract_api.llm_context end to end through the real HTTP surface.
+reprompt_api.llm_context end to end through the real HTTP surface.
 
 Same TestClient + in-memory SQLite pattern as test_pipelines.py/
 test_settings.py. Users/sessions come from the real magic-link flow (as
 in test_settings.py) since this endpoint is workspace-scoped. No real
-network call: `refract_core.llm.client.complete` is mocked at the
+network call: `reprompt_core.llm.client.complete` is mocked at the
 `litellm.completion` layer, same technique as
 packages/core/tests/test_llm_client.py and test_llm_context.py.
 """
@@ -24,7 +24,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from refract_core import (
+from reprompt_core import (
     Pipeline as CorePipeline,
     Stage as CoreStage,
     StageRecord as CoreStageRecord,
@@ -33,10 +33,10 @@ from refract_core import (
     TraceFile,
 )
 
-from refract_api import crypto, models
-from refract_api.db import get_db
-from refract_api.main import app
-from refract_api.models import Base
+from reprompt_api import crypto, models
+from reprompt_api.db import get_db
+from reprompt_api.main import app
+from reprompt_api.models import Base
 
 
 @pytest.fixture(autouse=True)
@@ -230,7 +230,7 @@ def test_success_path_returns_llm_response_and_uses_the_saved_key(
         captured.update(kwargs)
         return _fake_response(content="a one-sentence summary")
 
-    monkeypatch.setattr("refract_core.llm.client.litellm.completion", fake_completion)
+    monkeypatch.setattr("reprompt_core.llm.client.litellm.completion", fake_completion)
 
     response = client.post(
         f"/pipelines/{pipeline_id}/stages/{stage_id}/test-prompt",
@@ -253,7 +253,7 @@ def test_success_path_returns_llm_response_and_uses_the_saved_key(
         {"role": "user", "content": "Summarize this in one sentence."}
     ]
     # And the workspace's *decrypted* key reached LiteLLM directly - never
-    # via an environment variable (see refract_api.llm_context).
+    # via an environment variable (see reprompt_api.llm_context).
     assert captured["api_key"] == "sk-workspacekey12345"
     import os
 
@@ -276,7 +276,7 @@ def test_second_workspace_never_sees_first_workspaces_key(
     pipeline_id, stage_id = _import_single_stage_pipeline(client, model="gpt-4o")
 
     monkeypatch.setattr(
-        "refract_core.llm.client.litellm.completion", lambda **kwargs: _fake_response()
+        "reprompt_core.llm.client.litellm.completion", lambda **kwargs: _fake_response()
     )
 
     ok = client.post(
@@ -343,7 +343,7 @@ def test_two_workspaces_back_to_back_requests_never_cross_streams(
         seen.append((kwargs["messages"][0]["content"], kwargs["api_key"]))
         return _fake_response()
 
-    monkeypatch.setattr("refract_core.llm.client.litellm.completion", fake_completion)
+    monkeypatch.setattr("reprompt_core.llm.client.litellm.completion", fake_completion)
 
     response_a = client.post(
         f"/pipelines/{pipeline_a}/stages/{stage_a}/test-prompt",

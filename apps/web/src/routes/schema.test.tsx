@@ -65,7 +65,7 @@ describe("SchemaReference", () => {
     renderSchemaPage();
 
     expect(
-      await screen.findByText(/Refract ingests execution traces from any AI pipeline/)
+      await screen.findByText(/Reprompt ingests execution traces from any AI pipeline/)
     ).toBeInTheDocument();
   });
 

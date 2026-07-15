@@ -1,10 +1,10 @@
-"""Tests for the LLM-powered rubric generator (refract_core.rubric_generator).
+"""Tests for the LLM-powered rubric generator (reprompt_core.rubric_generator).
 
 No real network calls / no live key needed
 ---------------------------------------------
 Every test here supplies a fake ``call`` callable directly (the module's own
 dependency-injection point — see its docstring), same spirit as
-``test_judge.py`` monkeypatching ``refract_core.llm.client.complete``. The
+``test_judge.py`` monkeypatching ``reprompt_core.llm.client.complete``. The
 one genuine live call lives in ``test_rubric_generator_live.py``.
 """
 
@@ -14,16 +14,16 @@ import json
 
 import pytest
 
-from refract_core.deterministic import parse_deterministic_checks
-from refract_core.llm.client import LLMResponse
-from refract_core.rubric_generator import (
+from reprompt_core.deterministic import parse_deterministic_checks
+from reprompt_core.llm.client import LLMResponse
+from reprompt_core.rubric_generator import (
     DEFAULT_MAX_SAMPLES,
     RubricGenerationError,
     RubricGenerationResult,
     StageOutputSample,
     generate_rubric,
 )
-from refract_core.trace import TokenUsage
+from reprompt_core.trace import TokenUsage
 
 STAGE_NAME = "Extract financials"
 STAGE_MODEL = "gpt-4o-2024-08-06"

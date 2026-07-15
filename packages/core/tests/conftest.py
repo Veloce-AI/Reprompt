@@ -1,4 +1,4 @@
-"""Ensure refract_core is importable under Python 3.14, where .pth files
+"""Ensure reprompt_core is importable under Python 3.14, where .pth files
 in the venv's site-packages are not always processed automatically (a
 regression in Python 3.14.0 with uv-generated editable installs).
 """

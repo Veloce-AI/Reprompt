@@ -26,7 +26,7 @@ import {
 } from "@/components/ui/table";
 
 // Curated suggestion list only - the provider field is free text server-side
-// (see apps/api/src/refract_api/models.py's WorkspaceApiKey docstring for
+// (see apps/api/src/reprompt_api/models.py's WorkspaceApiKey docstring for
 // why: LiteLLM supports many more providers than any fixed list, and "any
 // provider" is an explicit project design goal). "Other" reveals a plain
 // text input so nothing is actually blocked by this list.

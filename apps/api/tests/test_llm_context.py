@@ -1,8 +1,8 @@
-"""Tests for refract_api.llm_context — the mechanism that scopes a
+"""Tests for reprompt_api.llm_context — the mechanism that scopes a
 workspace's decrypted BYOK key into exactly one
-`refract_core.llm.client.complete()` call.
+`reprompt_core.llm.client.complete()` call.
 
-See refract_api.llm_context's module docstring for the full design
+See reprompt_api.llm_context's module docstring for the full design
 rationale (direct per-call kwarg to LiteLLM, chosen over env-var + lock).
 Because that design never touches `os.environ` at all, "no leakage
 across concurrent calls" holds by construction rather than by careful
@@ -10,7 +10,7 @@ cleanup — several tests below assert that property directly (no env var
 is ever set/left behind), which is the strongest possible evidence for
 "the next call in this process never sees a stale credential."
 
-No real network calls: `refract_core.llm.client.complete` is monkeypatched
+No real network calls: `reprompt_core.llm.client.complete` is monkeypatched
 at the `litellm.completion` layer, same technique as
 packages/core/tests/test_llm_client.py.
 """
@@ -29,13 +29,13 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from refract_api import crypto, models
-from refract_api.llm_context import (
+from reprompt_api import crypto, models
+from reprompt_api.llm_context import (
     ProviderKeyNotConfigured,
     complete_with_workspace_credentials,
     resolve_workspace_credential,
 )
-from refract_api.models import Base
+from reprompt_api.models import Base
 
 
 @pytest.fixture(autouse=True)
@@ -179,7 +179,7 @@ def test_scoped_credential_reaches_litellm_as_a_direct_kwarg_not_an_env_var(
         assert "OPENAI_API_KEY" not in os.environ
         return _fake_response()
 
-    monkeypatch.setattr("refract_core.llm.client.litellm.completion", fake_completion)
+    monkeypatch.setattr("reprompt_core.llm.client.litellm.completion", fake_completion)
 
     result = complete_with_workspace_credentials(
         db, workspace, "gpt-4o", [{"role": "user", "content": "hi"}]
@@ -202,7 +202,7 @@ def test_scoped_credential_never_leaks_into_the_environment(
     assert "OPENAI_API_KEY" not in os.environ
 
     monkeypatch.setattr(
-        "refract_core.llm.client.litellm.completion", lambda **kwargs: _fake_response()
+        "reprompt_core.llm.client.litellm.completion", lambda **kwargs: _fake_response()
     )
     complete_with_workspace_credentials(
         db, workspace, "gpt-4o", [{"role": "user", "content": "hi"}]
@@ -220,13 +220,13 @@ def test_scoped_credential_not_leaked_to_a_subsequent_unrelated_call(
     it should behave exactly as if no workspace credential mechanism
     exists (i.e. hit the real "missing API key" pre-flight check).
     """
-    from refract_core.llm.client import MissingAPIKeyError, complete
+    from reprompt_core.llm.client import MissingAPIKeyError, complete
 
     workspace = _make_workspace(db)
     _save_key(db, workspace, "openai", "sk-firstcallkey1111")
 
     monkeypatch.setattr(
-        "refract_core.llm.client.litellm.completion", lambda **kwargs: _fake_response()
+        "reprompt_core.llm.client.litellm.completion", lambda **kwargs: _fake_response()
     )
     complete_with_workspace_credentials(
         db, workspace, "gpt-4o", [{"role": "user", "content": "hi"}]
@@ -253,7 +253,7 @@ def test_two_workspaces_scoped_calls_never_see_each_others_key(
     issued back-to-back) and asserts each call's `api_key` kwarg matches
     only its own workspace's key. Because the credential is a local
     variable threaded through the call stack (never `os.environ`, never
-    any object shared between calls — see refract_api.llm_context's
+    any object shared between calls — see reprompt_api.llm_context's
     module docstring), this holds regardless of thread interleaving; this
     test demonstrates that rather than merely asserting it.
 
@@ -291,7 +291,7 @@ def test_two_workspaces_scoped_calls_never_see_each_others_key(
             seen.append((kwargs["messages"][0]["content"], kwargs["api_key"]))
         return _fake_response()
 
-    monkeypatch.setattr("refract_core.llm.client.litellm.completion", fake_completion)
+    monkeypatch.setattr("reprompt_core.llm.client.litellm.completion", fake_completion)
 
     errors: list[BaseException] = []
 
@@ -299,7 +299,7 @@ def test_two_workspaces_scoped_calls_never_see_each_others_key(
         try:
             # Each thread gets its own engine, not just its own session -
             # a real multi-request server wouldn't share a connection
-            # across requests either (see refract_api.db.get_db).
+            # across requests either (see reprompt_api.db.get_db).
             thread_engine = create_engine(f"sqlite:///{tmp_path / 'concurrency-test.db'}")
             thread_session = sessionmaker(bind=thread_engine)()
             try:

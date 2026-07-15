@@ -1790,61 +1790,6 @@ wheels = [
 ]
 
 [[package]]
-name = "refract-api"
-version = "0.0.1"
-source = { virtual = "." }
-dependencies = [
-    { name = "alembic" },
-    { name = "cryptography" },
-    { name = "fastapi" },
-    { name = "python-multipart" },
-    { name = "refract-core" },
-    { name = "sqlalchemy" },
-    { name = "uvicorn", extra = ["standard"] },
-]
-
-[package.optional-dependencies]
-dev = [
-    { name = "httpx" },
-    { name = "pytest" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "alembic", specifier = ">=1.18.5" },
-    { name = "cryptography", specifier = ">=42.0.0" },
-    { name = "fastapi" },
-    { name = "httpx", marker = "extra == 'dev'" },
-    { name = "pytest", marker = "extra == 'dev'" },
-    { name = "python-multipart" },
-    { name = "refract-core", editable = "../../packages/core" },
-    { name = "sqlalchemy", specifier = ">=2.0.51" },
-    { name = "uvicorn", extras = ["standard"] },
-]
-provides-extras = ["dev"]
-
-[[package]]
-name = "refract-core"
-version = "0.0.1"
-source = { editable = "../../packages/core" }
-dependencies = [
-    { name = "litellm" },
-    { name = "optuna" },
-    { name = "pydantic" },
-    { name = "sentence-transformers" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "litellm", specifier = ">=1.63" },
-    { name = "optuna", specifier = ">=3.6" },
-    { name = "pydantic", specifier = ">=2.7" },
-    { name = "pytest", marker = "extra == 'dev'" },
-    { name = "sentence-transformers", specifier = ">=3.0" },
-]
-provides-extras = ["dev"]
-
-[[package]]
 name = "regex"
 version = "2026.6.28"
 source = { registry = "https://pypi.org/simple" }
@@ -1931,6 +1876,61 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/0f/de/f8613c03b36786ddef2c930d28f9bcae861fcd541cc9203a870956cf1e83/regex-2026.6.28-cp314-cp314t-win_amd64.whl", hash = "sha256:ede8d8e53b6dde0a50f7eca902f0af76d87ab02a55aba7542da68ae3e5dfe83d", size = 283650, upload-time = "2026-06-28T19:56:50.614Z" },
     { url = "https://files.pythonhosted.org/packages/4d/f3/f5ec86839bbabe33b6dee649b62ff9a445d43de6b0ad780cf6b83c56f61e/regex-2026.6.28-cp314-cp314t-win_arm64.whl", hash = "sha256:4da6f6a72f8700b97a1a765e837fb7d5750bfd9f13acea7bae498f573e3a70a8", size = 283338, upload-time = "2026-06-28T19:56:52.879Z" },
 ]
+
+[[package]]
+name = "reprompt-api"
+version = "0.0.1"
+source = { virtual = "." }
+dependencies = [
+    { name = "alembic" },
+    { name = "cryptography" },
+    { name = "fastapi" },
+    { name = "python-multipart" },
+    { name = "reprompt-core" },
+    { name = "sqlalchemy" },
+    { name = "uvicorn", extra = ["standard"] },
+]
+
+[package.optional-dependencies]
+dev = [
+    { name = "httpx" },
+    { name = "pytest" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "alembic", specifier = ">=1.18.5" },
+    { name = "cryptography", specifier = ">=42.0.0" },
+    { name = "fastapi" },
+    { name = "httpx", marker = "extra == 'dev'" },
+    { name = "pytest", marker = "extra == 'dev'" },
+    { name = "python-multipart" },
+    { name = "reprompt-core", editable = "../../packages/core" },
+    { name = "sqlalchemy", specifier = ">=2.0.51" },
+    { name = "uvicorn", extras = ["standard"] },
+]
+provides-extras = ["dev"]
+
+[[package]]
+name = "reprompt-core"
+version = "0.0.1"
+source = { editable = "../../packages/core" }
+dependencies = [
+    { name = "litellm" },
+    { name = "optuna" },
+    { name = "pydantic" },
+    { name = "sentence-transformers" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "litellm", specifier = ">=1.63" },
+    { name = "optuna", specifier = ">=3.6" },
+    { name = "pydantic", specifier = ">=2.7" },
+    { name = "pytest", marker = "extra == 'dev'" },
+    { name = "sentence-transformers", specifier = ">=3.0" },
+]
+provides-extras = ["dev"]
 
 [[package]]
 name = "requests"

@@ -2,7 +2,7 @@
  * Plain-English translation for rubric checklist items (screen 4).
  *
  * A non-technical reviewer should never see a raw check object or the words
- * "JSON schema" - each `refract_core.deterministic` check type is rendered
+ * "JSON schema" - each `reprompt_core.deterministic` check type is rendered
  * as one readable sentence here instead. Pure functions, no React, so they're
  * trivial to unit test in isolation from the route component.
  */

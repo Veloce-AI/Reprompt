@@ -1,4 +1,4 @@
-"""Tests for refract_core.optimizer.mutator — prompt mutation
+"""Tests for reprompt_core.optimizer.mutator — prompt mutation
 (generate_prompt_mutations), Prism's critique/refine step
 (critique_and_refine), and Prism's optional few-shot selection
 (select_few_shot_examples).
@@ -14,16 +14,16 @@ import json
 
 import pytest
 
-from refract_core.deterministic import CheckResult, EvaluationResult
-from refract_core.llm.client import LLMResponse
-from refract_core.optimizer.mutator import (
+from reprompt_core.deterministic import CheckResult, EvaluationResult
+from reprompt_core.llm.client import LLMResponse
+from reprompt_core.optimizer.mutator import (
     MutationExample,
     PromptMutationError,
     critique_and_refine,
     select_few_shot_examples,
 )
-from refract_core.scoring import DEFAULT_WEIGHTS, CompositeScore
-from refract_core.trace import TokenUsage
+from reprompt_core.scoring import DEFAULT_WEIGHTS, CompositeScore
+from reprompt_core.trace import TokenUsage
 
 PROMPT_TEMPLATE = "Extract the currency and revenue figure from: {{document}}"
 TARGET_MODEL = "gemini/gemini-2.0-flash"

@@ -1,8 +1,8 @@
-# Development guide — running, checking, and testing Refract
+# Development guide — running, checking, and testing Reprompt
 
 Practical reference for actually running this project day to day. For product
-context read `refract-parity-engine-plan.md`; for the build plan read
-`refract-master-build-prompt.md`; for "what broke and why" read `LESSONS.md`.
+context read `reprompt-parity-engine-plan.md`; for the build plan read
+`reprompt-master-build-prompt.md`; for "what broke and why" read `LESSONS.md`.
 
 ## Prerequisites
 
@@ -43,12 +43,12 @@ What it does, if you want to run the steps by hand instead:
    uv pip install -e . --no-deps
    ```
 2. **Generate a BYOK encryption key.** Settings/API-key storage needs
-   `REFRACT_SETTINGS_ENCRYPTION_KEY` set to a real Fernet key or every
+   `REPROMPT_SETTINGS_ENCRYPTION_KEY` set to a real Fernet key or every
    `/settings/api-keys` call 500s. Create `apps/api/.env` (gitignored):
    ```bash
    cd apps/api
    uv run python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
-   # paste the output as REFRACT_SETTINGS_ENCRYPTION_KEY=<value> into apps/api/.env
+   # paste the output as REPROMPT_SETTINGS_ENCRYPTION_KEY=<value> into apps/api/.env
    ```
 3. **Create the database via Alembic, not the app's own auto-create.**
    ```bash
@@ -78,11 +78,11 @@ still create the DB via Alembic first rather than relying on this alone):
 
 ```bash
 cd apps/api
-uv run uvicorn refract_api.main:app --reload
+uv run uvicorn reprompt_api.main:app --reload
 ```
 
 **Web** (http://localhost:5173, proxies API calls to http://localhost:8000
-via CORS, not a Vite proxy — see `apps/api/src/refract_api/main.py`):
+via CORS, not a Vite proxy — see `apps/api/src/reprompt_api/main.py`):
 
 ```bash
 cd apps/web
@@ -144,7 +144,7 @@ first pipeline" empty state first):
 ```bash
 cd apps/api
 rm -f e2e_test.db
-DATABASE_URL="sqlite:///./e2e_test.db" uv run uvicorn refract_api.main:app --port 8000
+DATABASE_URL="sqlite:///./e2e_test.db" uv run uvicorn reprompt_api.main:app --port 8000
 ```
 
 Then in another terminal: `cd apps/web && npx playwright test`. Delete and
@@ -160,7 +160,7 @@ automated pass is not a substitute for actually looking at the screen:
    first pipeline" empty state with a working drop zone.
 3. Drop one of `packages/core/tests/fixtures/*.json` (synthetic) — or run a
    real file from `Sample Queries/` through the importer first
-   (`refract_core.importers.query_log.convert_file(path)`) and upload the
+   (`reprompt_core.importers.query_log.convert_file(path)`) and upload the
    result.
 4. Confirm: validation report step shows correct stage/trace counts →
    "Continue to DAG preview" shows the right layer breakdown → canvas
@@ -182,8 +182,8 @@ automated pass is not a substitute for actually looking at the screen:
   minute ago, just re-run `uv pip install -e . --no-deps` in that package.
 - **`packages/core/pyproject.toml` needs a `[build-system]` table**
   (hatchling) — without it, `uv` treats the project as "virtual" and never
-  installs `refract_core` into its own venv, which silently breaks
-  `import refract_core` in every test file. Already fixed; noted here so
+  installs `reprompt_core` into its own venv, which silently breaks
+  `import reprompt_core` in every test file. Already fixed; noted here so
   nobody removes it thinking it's unused boilerplate.
 - **`<StrictMode>` is deliberately NOT used** in `apps/web/src/main.tsx` —
   it breaks `@tanstack/react-query` mutations in this dependency

@@ -1,6 +1,6 @@
 """Live test of the rubric generator against a real model — proves the
 whole pipeline (prompt -> real provider call -> real JSON response ->
-translation into refract_core.deterministic's strict types) actually works
+translation into reprompt_core.deterministic's strict types) actually works
 end to end, not just against a mocked response.
 
 Same convention as ``test_llm_ollama_live.py``: skipped, not faked, when no
@@ -8,7 +8,7 @@ real credential is available in the environment. Here the credential is
 ``NVIDIA_NIM_API_KEY`` (a cloud provider key, unlike Ollama's "no key
 needed" story) — this module never reads, prints, or logs its value; it
 only checks whether the env var is present, and lets
-``refract_core.llm.client.complete`` read it itself via LiteLLM's normal
+``reprompt_core.llm.client.complete`` read it itself via LiteLLM's normal
 env-var convention.
 
 Deliberately minimal: one short sample, ``max_samples=1``, no huge rubric —
@@ -27,9 +27,9 @@ import os
 
 import pytest
 
-from refract_core.deterministic import parse_deterministic_checks
-from refract_core.llm.client import complete
-from refract_core.rubric_generator import RubricGenerationResult, StageOutputSample, generate_rubric
+from reprompt_core.deterministic import parse_deterministic_checks
+from reprompt_core.llm.client import complete
+from reprompt_core.rubric_generator import RubricGenerationResult, StageOutputSample, generate_rubric
 
 LIVE_MODEL = "nvidia_nim/z-ai/glm-5.2"
 

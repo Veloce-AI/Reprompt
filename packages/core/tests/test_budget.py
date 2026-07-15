@@ -1,7 +1,7 @@
-"""Tests for budget accounting (refract_core.budget).
+"""Tests for budget accounting (reprompt_core.budget).
 
 No network calls: ``estimate_cost_usd`` goes through the real
-``refract_core.llm.registry`` against LiteLLM's bundled static pricing
+``reprompt_core.llm.registry`` against LiteLLM's bundled static pricing
 table (same convention as ``test_llm_registry.py``) — ``"gpt-4o"`` has
 known per-token pricing there, ``"totally-not-a-real-model-xyz-123"`` does
 not (LiteLLM's own "unrecognized model" case).
@@ -11,13 +11,13 @@ from __future__ import annotations
 
 import pytest
 
-from refract_core.budget import (
+from reprompt_core.budget import (
     BudgetExceededError,
     BudgetTracker,
     estimate_cost_usd,
     filter_affordable_candidates,
 )
-from refract_core.sweep import SweepCandidate
+from reprompt_core.sweep import SweepCandidate
 
 PRICED_MODEL = "gpt-4o"
 UNPRICED_MODEL = "totally-not-a-real-model-xyz-123"

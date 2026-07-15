@@ -16,9 +16,9 @@ from typing import Any
 
 import pytest
 
-from refract_core.dag import build_dag, topological_layers
-from refract_core.importers.query_log import convert, convert_file
-from refract_core.trace import parse_trace_file
+from reprompt_core.dag import build_dag, topological_layers
+from reprompt_core.importers.query_log import convert, convert_file
+from reprompt_core.trace import parse_trace_file
 
 # Sample Queries/ lives at the repo root: packages/core/tests/../../../Sample Queries
 SAMPLE_QUERIES_DIR = Path(__file__).resolve().parents[3] / "Sample Queries"

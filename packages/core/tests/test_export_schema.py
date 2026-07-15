@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from refract_core.trace import TraceFile
+from reprompt_core.trace import TraceFile
 
 # packages/core/tests/test_export_schema.py -> repo root -> docs/
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -26,6 +26,6 @@ def test_committed_schema_matches_live_models() -> None:
     live_schema = TraceFile.model_json_schema()
 
     assert committed_schema == live_schema, (
-        f"{SCHEMA_PATH} is out of date with refract_core.trace.TraceFile - "
+        f"{SCHEMA_PATH} is out of date with reprompt_core.trace.TraceFile - "
         "run `cd packages/core && uv run python scripts/export_schema.py` and commit the result."
     )

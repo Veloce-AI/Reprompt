@@ -1,8 +1,10 @@
 /**
- * Refract's mark: a beam entering a prism and splitting into the spectrum
- * gradient — the same visual idea ParityBeam already uses (a signal passing
- * through unchanged in kind, refracted in color). Reuses --ink and
- * --spectrum tokens, nothing new to the palette.
+ * Reprompt's mark: one beam enters, splits into two candidate paths (a
+ * lens shape — the search), and resolves into a single confident beam in
+ * the brand's primary indigo (the winner). Maps directly to what the
+ * product does: try multiple directions, converge on one answer. Reuses
+ * --ink and --beam tokens, plus the two spectrum extremes for the
+ * candidate arcs — nothing new to the palette.
  */
 export function Logo({ className }: { className?: string }) {
   return (
@@ -12,21 +14,13 @@ export function Logo({ className }: { className?: string }) {
       className={className}
       aria-hidden="true"
     >
-      <defs>
-        <linearGradient id="refract-logo-spectrum" x1="16" y1="6" x2="30" y2="26" gradientUnits="userSpaceOnUse">
-          <stop offset="0%" stopColor="#8B5CF6" />
-          <stop offset="50%" stopColor="#4C5FE8" />
-          <stop offset="100%" stopColor="#14B8A6" />
-        </linearGradient>
-      </defs>
-      {/* incoming beam */}
-      <path d="M2 16 H14" stroke="var(--ink)" strokeWidth="2.5" strokeLinecap="round" />
-      {/* prism */}
-      <path d="M14 7 L22 16 L14 25 Z" fill="var(--paper)" stroke="var(--ink)" strokeWidth="1.5" strokeLinejoin="round" />
-      {/* refracted spectrum beams */}
-      <path d="M20 10 L30 6" stroke="url(#refract-logo-spectrum)" strokeWidth="2.5" strokeLinecap="round" />
-      <path d="M22 16 L30 16" stroke="url(#refract-logo-spectrum)" strokeWidth="2.5" strokeLinecap="round" />
-      <path d="M20 22 L30 26" stroke="url(#refract-logo-spectrum)" strokeWidth="2.5" strokeLinecap="round" />
+      {/* incoming beam - the original prompt */}
+      <path d="M2 16 H8" stroke="var(--ink)" strokeWidth="2.5" strokeLinecap="round" />
+      {/* two candidate arcs - the search, forming a lens */}
+      <path d="M8 16 Q 16 4 24 16" stroke="#8B5CF6" strokeWidth="2.25" strokeLinecap="round" />
+      <path d="M8 16 Q 16 28 24 16" stroke="#14B8A6" strokeWidth="2.25" strokeLinecap="round" />
+      {/* resolved beam - the winner, emphasized in the brand accent */}
+      <path d="M24 16 H30" stroke="var(--beam)" strokeWidth="3" strokeLinecap="round" />
     </svg>
   );
 }

@@ -1,5 +1,5 @@
 from fastapi.testclient import TestClient
-from refract_api.main import app
+from reprompt_api.main import app
 
 client = TestClient(app)
 

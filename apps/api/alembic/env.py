@@ -8,11 +8,11 @@ from sqlalchemy import pool
 
 from alembic import context
 
-# Make sure `refract_api` (src layout) is importable regardless of cwd.
+# Make sure `reprompt_api` (src layout) is importable regardless of cwd.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from refract_api.db import DATABASE_URL  # noqa: E402
-from refract_api.models import Base  # noqa: E402
+from reprompt_api.db import DATABASE_URL  # noqa: E402
+from reprompt_api.models import Base  # noqa: E402
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
@@ -23,7 +23,7 @@ config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-# Drive the DB URL from the same env var / default as the app (refract_api.db),
+# Drive the DB URL from the same env var / default as the app (reprompt_api.db),
 # instead of the static value in alembic.ini. DATABASE_URL env var wins if set.
 config.set_main_option(
     "sqlalchemy.url", os.environ.get("DATABASE_URL", DATABASE_URL)

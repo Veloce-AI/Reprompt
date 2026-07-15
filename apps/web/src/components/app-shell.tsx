@@ -37,7 +37,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           className="mb-8 flex flex-col items-center gap-2 px-6 font-display text-20 font-semibold leading-display text-ink"
         >
           <Logo className="h-8 w-8" />
-          Refract
+          Reprompt
         </Link>
         <div className="flex flex-col gap-1 px-3">
           {NAV_ITEMS.map((item) => {

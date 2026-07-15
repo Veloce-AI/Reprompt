@@ -1,4 +1,4 @@
-"""Tests for the model-card transform layer (refract_core.llm.model_card).
+"""Tests for the model-card transform layer (reprompt_core.llm.model_card).
 
 Per the module's own contract (see its docstring): every transform here is
 a pure, deterministic text rewrite — no LLM call, no network, no I/O, no
@@ -12,8 +12,8 @@ from __future__ import annotations
 import ast
 import inspect
 
-from refract_core.llm import model_card
-from refract_core.llm.model_card import (
+from reprompt_core.llm import model_card
+from reprompt_core.llm.model_card import (
     FamilyCard,
     TransformRule,
     applicable_rules,
@@ -312,7 +312,7 @@ def test_transform_is_deterministic_and_idempotent_for_xml_wrap() -> None:
 def test_module_never_imports_or_calls_the_llm_client() -> None:
     """Cheap enforcement that this stayed mechanical: parse the module's
     actual import statements (not just grep prose/comments/docstrings,
-    which legitimately *mention* refract_core.llm.client to explain what
+    which legitimately *mention* reprompt_core.llm.client to explain what
     this module is not) and assert none of them pull in the LLM client or
     `complete`. Also asserts the module namespace never bound `complete`
     and that `litellm.completion` (the one call that would hit a network/

@@ -1,11 +1,11 @@
-"""Minimal, stdlib-only trace recorder for Refract's trace-format (schema
+"""Minimal, stdlib-only trace recorder for Reprompt's trace-format (schema
 version "1.1" - see ../trace-format.md).
 
 Copy this file into your own codebase and adapt it - no dependency on
-Refract itself. Only stdlib (json, dataclasses, typing) is used, so it
-drops into any Python 3.9+ project without adding refract-core/Pydantic as
+Reprompt itself. Only stdlib (json, dataclasses, typing) is used, so it
+drops into any Python 3.9+ project without adding reprompt-core/Pydantic as
 a dependency. It does not validate its own output against the schema - run
-the result through refract_core.parse_trace_file, or check it against
+the result through reprompt_core.parse_trace_file, or check it against
 ../trace-format.schema.json (also served at GET /trace-format/schema), if
 you want that.
 

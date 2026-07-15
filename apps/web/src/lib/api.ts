@@ -202,7 +202,7 @@ export async function importPipeline(file: File): Promise<ImportResult> {
 // Public, unauthenticated - serves the raw JSON Schema document generated
 // from packages/core's Pydantic TraceFile model (see docs/trace-format.md).
 // Typed as unknown rather than a specific interface since it's a JSON Schema
-// document, not a Refract domain object - the schema page only needs to
+// document, not a Reprompt domain object - the schema page only needs to
 // stringify and download it, not read individual fields off it.
 export function getTraceFormatSchema(): Promise<unknown> {
   return request<unknown>("/trace-format/schema");
@@ -212,7 +212,7 @@ export function getTraceFormatSchema(): Promise<unknown> {
 // Auth (magic link)
 // ---------------------------------------------------------------------------
 //
-// See apps/api/src/refract_api/auth.py's module docstring for the full
+// See apps/api/src/reprompt_api/auth.py's module docstring for the full
 // design (lazy account creation, dev-mode magic links, the session token
 // mechanism). The session token is stored in localStorage (not a cookie) -
 // simplest option that works across the Vite dev server (:5173) and API
@@ -220,7 +220,7 @@ export function getTraceFormatSchema(): Promise<unknown> {
 // cross-origin cookie/CORS credential settings for an MVP that doesn't need
 // route guards yet (see login.tsx / auth-verify.tsx).
 
-const SESSION_TOKEN_STORAGE_KEY = "refract_session_token";
+const SESSION_TOKEN_STORAGE_KEY = "reprompt_session_token";
 
 export function setSessionToken(token: string): void {
   localStorage.setItem(SESSION_TOKEN_STORAGE_KEY, token);
@@ -290,7 +290,7 @@ export function getCurrentUser(): Promise<MeResult> {
 // ---------------------------------------------------------------------------
 //
 // Every call here needs the Bearer session token - see
-// apps/api/src/refract_api/settings.py, mounted behind get_current_user.
+// apps/api/src/reprompt_api/settings.py, mounted behind get_current_user.
 // authHeaders() mirrors the inline pattern getCurrentUser() already uses
 // above, pulled out since every settings function needs it.
 

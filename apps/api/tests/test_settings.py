@@ -7,9 +7,9 @@ verify) rather than hand-inserted rows, so these tests exercise the exact
 auth path a real client would use - including getting a Bearer session
 token to pass as Authorization on every settings call.
 
-REFRACT_SETTINGS_ENCRYPTION_KEY is set via an autouse fixture so every test
+REPROMPT_SETTINGS_ENCRYPTION_KEY is set via an autouse fixture so every test
 gets a real Fernet key by default; the one test that cares about the
-"not configured" path removes it and clears refract_api.crypto's cache
+"not configured" path removes it and clears reprompt_api.crypto's cache
 explicitly.
 """
 
@@ -25,10 +25,10 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from refract_api import crypto, models
-from refract_api.db import get_db
-from refract_api.main import app
-from refract_api.models import Base
+from reprompt_api import crypto, models
+from reprompt_api.db import get_db
+from reprompt_api.main import app
+from reprompt_api.models import Base
 
 
 @pytest.fixture(autouse=True)

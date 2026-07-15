@@ -16,7 +16,7 @@ const E2E_DATABASE_URL = "sqlite:///./e2e_test.db";
 
 /**
  * Seeds rubrics for `pipelineId` using the real dev/test seed helper
- * (refract_api.seed_rubrics - see that module for what it writes and why:
+ * (reprompt_api.seed_rubrics - see that module for what it writes and why:
  * there's no rubric GENERATOR yet, this is hand-authored fixture data shaped
  * like the real deterministic-check types). Run out-of-band as a subprocess
  * rather than through an HTTP endpoint, since seeding isn't a product
@@ -26,7 +26,7 @@ const E2E_DATABASE_URL = "sqlite:///./e2e_test.db";
 function seedRubricsForPipeline(pipelineId: number) {
   execFileSync(
     "uv",
-    ["run", "python", "-m", "refract_api.seed_rubrics", "--pipeline-id", String(pipelineId)],
+    ["run", "python", "-m", "reprompt_api.seed_rubrics", "--pipeline-id", String(pipelineId)],
     {
       cwd: API_DIR,
       env: { ...process.env, DATABASE_URL: E2E_DATABASE_URL },

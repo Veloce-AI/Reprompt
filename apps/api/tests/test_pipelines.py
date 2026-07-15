@@ -1,6 +1,6 @@
 """Tests for POST /pipelines/import, GET /pipelines, GET /pipelines/{id}/dag.
 
-Builds trace-file payloads via refract_core's own Pydantic models (rather
+Builds trace-file payloads via reprompt_core's own Pydantic models (rather
 than hand-writing raw JSON dicts) so these tests can't drift from the actual
 schema packages/core enforces.
 """
@@ -16,7 +16,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from refract_core import (
+from reprompt_core import (
     Pipeline as CorePipeline,
     Stage as CoreStage,
     StageRecord as CoreStageRecord,
@@ -25,10 +25,10 @@ from refract_core import (
     TraceFile,
 )
 
-from refract_api import models
-from refract_api.db import get_db
-from refract_api.main import app
-from refract_api.models import Base
+from reprompt_api import models
+from reprompt_api.db import get_db
+from reprompt_api.main import app
+from reprompt_api.models import Base
 
 
 @pytest.fixture()
@@ -206,7 +206,7 @@ def test_import_minimal_stage_record_persists_null_tokens_and_latency(
     1.1 (docs/trace-format.md): a StageRecord with no tokens/latency/cost/
     documents must import without crashing, and persist tokens_in/out/
     thinking and latency_ms as NULL - not coerced to 0 - since those columns
-    are now nullable (apps/api/src/refract_api/models.py).
+    are now nullable (apps/api/src/reprompt_api/models.py).
     """
     stages = [
         CoreStage(id="only", name="Only Stage", model="gpt-4o", prompt_template="{{q}}")

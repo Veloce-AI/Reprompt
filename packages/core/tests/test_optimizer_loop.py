@@ -1,4 +1,4 @@
-"""Tests for refract_core.optimizer.loop — run_sweep_for_stage (shared,
+"""Tests for reprompt_core.optimizer.loop — run_sweep_for_stage (shared,
 backend-agnostic), the "simple" strategy, and the "prism" strategy
 (multi-round mutate/critique/refine).
 
@@ -16,16 +16,16 @@ import json
 
 import pytest
 
-from refract_core.budget import BudgetTracker
-from refract_core.llm.client import LLMResponse
-from refract_core.optimizer.loop import (
+from reprompt_core.budget import BudgetTracker
+from reprompt_core.llm.client import LLMResponse
+from reprompt_core.optimizer.loop import (
     PLATEAU_EPSILON,
     OptimizationResult,
     StageOptimizationInput,
     run_optimizer,
 )
-from refract_core.optimizer.mutator import MutationExample
-from refract_core.trace import TokenUsage
+from reprompt_core.optimizer.mutator import MutationExample
+from reprompt_core.trace import TokenUsage
 
 TARGET_MODEL = "gemini/gemini-2.0-flash"
 JUDGE_MODEL = "gemini/gemini-2.0-flash"
@@ -188,7 +188,7 @@ def test_prism_plateau_early_stop(monkeypatch: pytest.MonkeyPatch) -> None:
     max_refine_rounds allows more."""
     embedding_scores = iter([0.3, 0.3, 0.3, 0.3, 0.3, 0.3, 0.3, 0.3])  # always plateaued
     monkeypatch.setattr(
-        "refract_core.optimizer.loop.embedding_similarity",
+        "reprompt_core.optimizer.loop.embedding_similarity",
         lambda benchmark, candidate, **kw: next(embedding_scores, 0.3),
     )
 
@@ -228,7 +228,7 @@ def test_prism_one_stage_failure_does_not_abort_run(monkeypatch: pytest.MonkeyPa
     def broken_embedding_similarity(*args, **kwargs):
         raise RuntimeError("simulated unexpected failure")
 
-    monkeypatch.setattr("refract_core.optimizer.loop.embedding_similarity", broken_embedding_similarity)
+    monkeypatch.setattr("reprompt_core.optimizer.loop.embedding_similarity", broken_embedding_similarity)
 
     call, _captured = _make_call(mutation_variants=["variant A"])
     budget = BudgetTracker(budget_usd=10.0)

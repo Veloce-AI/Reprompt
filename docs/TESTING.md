@@ -199,9 +199,13 @@ calling a milestone done.
 
 ### 3.2 Rubric review (screen 4)
 
-1. Seed rubrics for the imported pipeline (no generator exists yet — this
-   is a dev-only step): `cd apps/api && uv run python -m
-   reprompt_api.seed_rubrics --pipeline-id <id>`.
+1. Either seed rubrics for the imported pipeline via the dev-only script
+   (`cd apps/api && uv run python -m reprompt_api.seed_rubrics
+   --pipeline-id <id>`), **or** use the real generator now built into the
+   screen itself: enter a model name (e.g. `openai/gpt-4o`) in the field at
+   the top of `/pipelines/$pipelineId/rubrics` and click "Generate all
+   rubrics" — needs a real BYOK key configured for that model's provider
+   (see §3.4 below), makes one real LLM call per stage.
 2. From the canvas, click "Review rubrics" → each stage shows three
    grouped sections: Format checks, Content criteria, Downstream contract
    — all in plain English (no raw JSON/schema shown to the reviewer).
@@ -215,7 +219,12 @@ calling a milestone done.
 1. From the canvas, click "New migration" → step 1 shows the model picker
    with cost/context-window/JSON-mode info per model (including at least
    one local/no-key model like an `ollama/...` entry, which should show
-   `requires_key: false`).
+   `requires_key: false`) and, next to each model option, its model-card
+   info fetched from `GET /model-cards/{model}` — resolved prompt family
+   (anthropic/gemini/openai/llama/generic) and which transform rules will
+   actually apply to that specific model (e.g. "xml_wrap_sections" for a
+   Claude target, "terseify_if_small" only for a nano/mini/haiku-class
+   model) — see `DEV_TRACKER.md`'s "Phase D(a)".
 2. Set a bulk default model, override one stage individually.
 3. Step 2: set a budget and parity threshold (default 95%).
 4. Step 3: confirm screen shows the full config correctly, including the
@@ -252,11 +261,23 @@ calling a milestone done.
    reappear anywhere in the UI or a network response after the initial
    save.
 6. Delete the key, confirm it's gone from the list.
-7. **Known gap, not yet built**: a saved key doesn't do anything live yet
-   beyond the one proof-of-concept endpoint
-   (`POST /pipelines/{id}/stages/{id}/test-prompt`, see `apps/api/src/reprompt_api/llm_context.py`)
-   — it isn't wired into the rubric generator or optimizer because
-   neither of those exist yet either.
+7. Scroll down to the **"Configured models"** card (new, 2026-07-15 — this
+   used to be the empty/undersized part of the page): before adding any
+   key, it lists only the no-key-required curated models (the `ollama/...`
+   entries, since local/self-hosted models never need a BYOK key). Add an
+   API key for `openai` (step 5 above) → reload/refetch → `gpt-4o` and
+   `gpt-4o-mini` now appear too, grouped under an "openai" heading. Each
+   model shows input/output cost per 1M tokens (or "Free (local)"),
+   its resolved prompt family, and a pill per model-card transform rule
+   that will actually apply to it — the same underlying data as the
+   migration wizard's model picker (§3.3 step 1,
+   `GET /settings/models`/`apps/api/src/reprompt_api/settings.py`), just
+   surfaced globally instead of buried inside one pipeline's wizard.
+8. A saved key is wired into: the model-picker/wizard's live model calls,
+   the rubric generator (§3.2), and the optimizer (§3.3) — all three read
+   workspace BYOK keys via `complete_with_workspace_credentials`
+   (`apps/api/src/reprompt_api/llm_context.py`). Not wired: nothing left
+   outstanding here that's specific to Settings itself.
 
 ### 3.5 Design system sanity check
 
@@ -284,11 +305,16 @@ cd apps/web && npx playwright test     # needs the API running separately first,
 
 - No route guards on any pipeline/rubric/migration screen — auth exists
   but nothing requires being logged in yet, by design.
-- No rubric *generator* — rubrics only exist if hand-seeded via
-  `seed_rubrics.py`.
-- No optimizer — "Run migration" creates a config record, nothing more.
-- No scorecard screen, no config export — both need real migration
-  results that don't exist without an optimizer.
+- No API endpoint runs the raw `Sample Queries/*.txt` query-log converter
+  (`reprompt_core.importers.query_log.convert_file`) — dropping one of
+  those files straight into the import wizard fails validation (it's not
+  yet in the universal trace schema shape). Convert it to JSON with that
+  function first (one Python call, see §3.1) before importing via the UI.
+  A real, pre-existing gap (not something this session broke) — worth
+  closing with a proper API-side conversion step in a future pass.
+- No scorecard screen, no config export — both need a full M4 3-pass
+  migration run's real results, which the current single-pass M3 loop
+  doesn't produce yet.
 - Docker/Postgres path exists but is untested in this environment by
   choice (SQLite only so far).
 

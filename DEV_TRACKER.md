@@ -57,6 +57,126 @@ record which target model produced them (Alembic migration
 separate status doc; just flag completion inline in whichever `.md` file
 the change actually touches.
 
+## Root-cause investigation — "the flow is broken, nothing is working" [FIXED — 2026-07-15]
+
+Product owner reported the app broken after several rounds of merged work
+(Prism fixes, live DAG view, model-card info, live sub-step signal,
+`target_model` fix). Actually started both servers and drove the real
+golden path (import → DAG → rubrics → migration wizard → start → live
+status, via curl against the API directly — no browser-driving tool
+available in this environment) instead of assuming it was a UX opinion.
+Found one genuine, concrete regression:
+
+**Root cause: two divergent Alembic heads, silently broken migrations.**
+`8c4f6d1a3e9b` (`add_target_model_to_candidates`, from this file's own
+"`target_model` tracking fix") and `b8e1c4a7f209` (`add_migration_progress_substep`,
+from "Phase A — Live optimizer sub-step signal") were both built in
+parallel worktrees against the same parent revision (`f3a7b1c9d2e4`) and
+never rebased onto each other before merging — `down_revision =
+'f3a7b1c9d2e4'` on both. Confirmed via `uv run alembic heads`: two heads,
+not one. `uv run alembic upgrade head` failed outright with "Multiple head
+revisions are present" — meaning nobody could migrate a fresh dev DB past
+`f3a7b1c9d2e4` since whichever of those two phases merged second. This
+repo's own dev DB (`apps/api/test.db`) was confirmed stuck exactly there
+(`select version_num from alembic_version` → `f3a7b1c9d2e4`) — neither
+`Candidate.target_model` nor `Migration.progress_substep` existed as real
+columns despite both being "done" per this file, so any code path touching
+either (which is most of the live-status/candidate-tracking work from the
+last two rounds) would throw a real `sqlite3.OperationalError: no such
+column` at runtime. This is concretely "nothing is working," not a vague
+complaint.
+
+**Fix**: `uv run alembic merge -m "merge target_model and progress_substep
+heads" 8c4f6d1a3e9b b8e1c4a7f209` — the standard Alembic resolution, a new
+no-op revision (`450ae8aefaa7`) whose `down_revision` is the tuple of both
+former heads. Verified against both a fresh SQLite DB (full chain applies
+cleanly start to finish, single resulting head) and this repo's actual dev
+DB (`apps/api/test.db`, upgraded from the stuck `f3a7b1c9d2e4` all the way
+to `450ae8aefaa7` with no errors). **Lesson for next time two people build
+migrations in parallel worktrees**: `alembic heads` should be run (not just
+`alembic upgrade head`, which silently "works" for whoever merged first and
+only fails for the second) as part of every merge's own verification step,
+same discipline as re-running the test suites — a green test suite in each
+worktree individually said nothing about this, since neither worktree's
+own tests exercised a migration chain the other worktree also touched.
+
+**Also verified, not bugs**: `apps/api/src/reprompt_api/migrations.py`'s
+`CURATED_MODELS` list looked like it had a `"ollama\qwen2.5:14b"` backslash
+typo when read via a grep tool — checked against the actual file content
+and a live `GET /pipelines/{id}/models` response, both confirm it's really
+`"ollama/qwen2.5:14b"` (forward slash, correct); the backslash was an
+artifact of how one tool's output got escaped in transcript, not real file
+content. Full three-suite baseline reconfirmed clean after the alembic fix
+alone, before any other change: `packages/core` 286 passed/2 skipped,
+`apps/api` 124 passed, `apps/web` 74 passed + clean `tsc --noEmit`.
+
+**Golden path, actually driven end-to-end (curl, no BYOK key available in
+this environment so the optimizer's real LLM calls couldn't be exercised
+for real — verified instead that the no-key path degrades correctly
+rather than crashing, see below)**: imported a converted `Sample Queries/`
+trace file → `GET /pipelines/{id}/dag` → seeded rubrics → approved all →
+`GET /pipelines/{id}/models` (curated model list) → created a migration
+(`POST .../migrations`) → started it (`POST .../migrations/{id}/start`) →
+polled `GET .../status`, confirmed `stage_states` and `progress_substep`
+both populate correctly. Without a workspace BYOK key, each stage's
+optimizer call raises `ProviderKeyNotConfigured` — caught per-stage by
+`optimizer_runner.py` (logged, stage marked failed, migration still
+reaches a terminal `"completed"` state rather than crashing the whole
+request) — this is the correct, already-built graceful-degradation
+behavior, not a bug. **One pre-existing gap, not a regression**: dropping
+a raw `Sample Queries/*.txt` file straight into the import wizard fails
+validation — `reprompt_api`'s `/pipelines/import` expects the universal
+trace schema already, and nothing wires
+`reprompt_core.importers.query_log.convert_file` into an API endpoint;
+`docs/TESTING.md` already documented this as a manual offline-conversion
+step before this session, so it's a known, standing gap worth closing
+later, not something the recent merges broke.
+
+## Settings page — real model-configuration content [DONE — 2026-07-15]
+
+Per `START_HERE.md`/this file's own standing note, Settings was BYOK-key
+CRUD + workspace rename only, flagged as needing real content from the
+first planning round and deferred every round since. Built the missing
+piece, reusing existing infrastructure wholesale — no new model registry,
+no new provider-onboarding flow:
+
+- **`apps/api/src/reprompt_api/model_cards.py`**: extracted
+  `build_family_card(model) -> FamilyCardOut` out of the `GET
+  /model-cards/{model}` route handler (which now just calls it) so another
+  router can reuse the exact same family/rule resolution without an
+  internal HTTP round-trip.
+- **`apps/api/src/reprompt_api/settings.py`**: new `GET /settings/models`
+  (auth-required, workspace-scoped) → `ConfiguredModelOut` — every model
+  from `migrations.py`'s existing `CURATED_MODELS` list that either needs
+  no key (local/self-hosted, e.g. `ollama/...`) or whose provider has a
+  BYOK key configured for this workspace, each with its `model_card` info
+  attached via `build_family_card`. Reuses `migrations.py`'s
+  `CURATED_MODELS`/`ModelOption`/`_to_option` directly (imported, not
+  duplicated) — confirmed no import-cycle risk (`migrations.py` doesn't
+  import `settings.py`).
+- **`apps/web`**: `lib/api.ts` gained `ConfiguredModel` +
+  `listConfiguredModels()`. `routes/settings.tsx` gained a new
+  `ConfiguredModelsCard`, rendered below the existing workspace-name and
+  API-keys cards — models grouped by provider, each showing input/output
+  cost per 1M tokens (or "Free (local)"), resolved prompt family, and a
+  pill per model-card transform rule that will actually apply to it (only
+  `will_apply: true` rules shown, never the full inapplicable set).
+- **What a user actually sees**: Settings now has a third section,
+  "Configured models" — before adding any BYOK key it shows just the
+  no-key-required local models; adding a key for a provider immediately
+  surfaces that provider's curated models with real cost and prompt-style
+  info, the same data previously only visible by opening a specific
+  pipeline's migration wizard.
+- **Tests**: `apps/api/tests/test_settings.py` — 5 new (`test_list_configured_models_*`):
+  no-key-models-only before any BYOK key, provider's models appear after a
+  key is added, model-card info present, workspace isolation (one user's
+  key never leaks another's model list), unauthenticated rejection folded
+  into the existing all-endpoints test. `apps/web/src/routes/settings.test.tsx`
+  — 3 new: grouped-by-provider rendering with model-card info, only
+  no-key models shown before any key, empty state. Final: `apps/api`
+  **128 passed**, `apps/web` **77 passed** + clean `tsc --noEmit`,
+  `packages/core` untouched (**286 passed, 2 skipped**, unaffected).
+
 Full **Refract → Reprompt** rename completed 2026-07-14: both Python
 packages (`refract_core`→`reprompt_core`, `refract_api`→`reprompt_api`,
 every import), both `pyproject.toml` names, all docs (including renaming

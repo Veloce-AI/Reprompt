@@ -10,7 +10,7 @@ import {
   RouterProvider,
 } from "@tanstack/react-router";
 import Settings from "./settings";
-import type { ApiKeyOut, WorkspaceSettings } from "@/lib/api";
+import type { ApiKeyOut, ConfiguredModel, WorkspaceSettings } from "@/lib/api";
 
 vi.mock("@/lib/api", async () => {
   const actual = await vi.importActual<typeof import("@/lib/api")>("@/lib/api");
@@ -23,6 +23,7 @@ vi.mock("@/lib/api", async () => {
     listApiKeys: vi.fn(),
     addApiKey: vi.fn(),
     deleteApiKey: vi.fn(),
+    listConfiguredModels: vi.fn(),
   };
 });
 
@@ -32,6 +33,7 @@ import {
   getSessionToken,
   getWorkspaceSettings,
   listApiKeys,
+  listConfiguredModels,
   updateWorkspaceSettings,
 } from "@/lib/api";
 
@@ -49,6 +51,35 @@ function baseKey(overrides: Partial<ApiKeyOut> = {}): ApiKeyOut {
     provider: "openai",
     last_four: "a1b2",
     created_at: "2026-01-15T12:00:00Z",
+    ...overrides,
+  };
+}
+
+function baseConfiguredModel(overrides: Partial<ConfiguredModel> = {}): ConfiguredModel {
+  return {
+    model: "ollama/llama3.1",
+    provider: "ollama",
+    input_cost_per_1m: 0,
+    output_cost_per_1m: 0,
+    max_input_tokens: 8192,
+    max_output_tokens: 8192,
+    supports_json_mode: true,
+    supports_function_calling: true,
+    requires_api_key: false,
+    model_card: {
+      family: "llama",
+      version: 1,
+      description: "Open-weight/self-hosted bucket.",
+      is_small_variant: false,
+      rules: [
+        {
+          name: "terseify_if_small",
+          description: "Strip hedging/filler phrases.",
+          applies_to: "small_only",
+          will_apply: false,
+        },
+      ],
+    },
     ...overrides,
   };
 }
@@ -85,6 +116,10 @@ beforeEach(() => {
   vi.mocked(listApiKeys).mockReset();
   vi.mocked(addApiKey).mockReset();
   vi.mocked(deleteApiKey).mockReset();
+  vi.mocked(listConfiguredModels).mockReset();
+  // Default every test to an empty configured-models list unless a test
+  // overrides it - most tests here aren't about this card specifically.
+  vi.mocked(listConfiguredModels).mockResolvedValue([]);
 });
 
 describe("Settings", () => {
@@ -229,5 +264,60 @@ describe("Settings", () => {
 
     await screen.findByText("No API keys configured yet.");
     expect(screen.getByRole("button", { name: "Add API key" })).toBeDisabled();
+  });
+
+  it("shows configured models grouped by provider with model-card info", async () => {
+    vi.mocked(getSessionToken).mockReturnValue("session-token");
+    vi.mocked(getWorkspaceSettings).mockResolvedValue(baseWorkspace());
+    vi.mocked(listApiKeys).mockResolvedValue([baseKey()]);
+    vi.mocked(listConfiguredModels).mockResolvedValue([
+      baseConfiguredModel(),
+      baseConfiguredModel({
+        model: "gpt-4o",
+        provider: "openai",
+        input_cost_per_1m: 2.5,
+        output_cost_per_1m: 10,
+        requires_api_key: true,
+        model_card: {
+          family: "openai",
+          version: 1,
+          description: "GPT-family models.",
+          is_small_variant: false,
+          rules: [],
+        },
+      }),
+    ]);
+
+    renderSettings();
+
+    expect(await screen.findByText("Configured models")).toBeInTheDocument();
+    expect(await screen.findByText("ollama/llama3.1")).toBeInTheDocument();
+    expect(screen.getByText("gpt-4o")).toBeInTheDocument();
+    expect(screen.getByText("ollama")).toBeInTheDocument();
+    expect(screen.getByText("openai", { selector: "h3" })).toBeInTheDocument();
+    expect(screen.getByText(/Free \(local\)/)).toBeInTheDocument();
+  });
+
+  it("shows only no-key-required models when no BYOK key is configured", async () => {
+    vi.mocked(getSessionToken).mockReturnValue("session-token");
+    vi.mocked(getWorkspaceSettings).mockResolvedValue(baseWorkspace());
+    vi.mocked(listApiKeys).mockResolvedValue([]);
+    vi.mocked(listConfiguredModels).mockResolvedValue([baseConfiguredModel()]);
+
+    renderSettings();
+
+    expect(await screen.findByText("ollama/llama3.1")).toBeInTheDocument();
+    expect(screen.queryByText("gpt-4o")).not.toBeInTheDocument();
+  });
+
+  it("shows an empty state when no models are available yet", async () => {
+    vi.mocked(getSessionToken).mockReturnValue("session-token");
+    vi.mocked(getWorkspaceSettings).mockResolvedValue(baseWorkspace());
+    vi.mocked(listApiKeys).mockResolvedValue([]);
+    vi.mocked(listConfiguredModels).mockResolvedValue([]);
+
+    renderSettings();
+
+    expect(await screen.findByText("No models available yet.")).toBeInTheDocument();
   });
 });

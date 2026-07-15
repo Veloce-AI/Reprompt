@@ -9,7 +9,9 @@ import {
   getSessionToken,
   getWorkspaceSettings,
   listApiKeys,
+  listConfiguredModels,
   updateWorkspaceSettings,
+  type ConfiguredModel,
 } from "@/lib/api";
 import { AppShell } from "@/components/app-shell";
 import { Button } from "@/components/ui/button";
@@ -67,6 +69,7 @@ export default function Settings() {
       <div className="mt-6 flex flex-col gap-6">
         <WorkspaceNameCard />
         <ApiKeysCard />
+        <ConfiguredModelsCard />
       </div>
     </div>
     </AppShell>
@@ -349,6 +352,112 @@ function ApiKeysCard() {
               : "Couldn't delete the API key."}
           </p>
         )}
+      </CardContent>
+    </Card>
+  );
+}
+
+function formatCost(perMillion: number | null): string {
+  if (perMillion === null) return "—";
+  if (perMillion === 0) return "Free (local)";
+  return `$${perMillion.toFixed(2)} / 1M tokens`;
+}
+
+function ConfiguredModelsCard() {
+  const modelsQuery = useQuery({
+    queryKey: ["settings-configured-models"],
+    queryFn: listConfiguredModels,
+    retry: false,
+  });
+
+  if (modelsQuery.isError && isUnauthorized(modelsQuery.error)) {
+    return (
+      <Card>
+        <CardContent className="p-8">
+          <SessionExpiredNotice />
+        </CardContent>
+      </Card>
+    );
+  }
+
+  const byProvider = new Map<string, ConfiguredModel[]>();
+  for (const model of modelsQuery.data ?? []) {
+    const key = model.provider ?? "other";
+    const group = byProvider.get(key) ?? [];
+    group.push(model);
+    byProvider.set(key, group);
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Configured models</CardTitle>
+        <CardDescription>
+          What you can actually target in a migration right now: local models need no key,
+          everything else needs a BYOK key above for that provider. Each model shows the prompt
+          rewrite rules (model-card transforms) that will apply when it's picked as a migration
+          target.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-6">
+        {modelsQuery.isLoading && (
+          <p className="text-14 text-ink-soft" role="status">
+            Loading…
+          </p>
+        )}
+        {modelsQuery.isError && !isUnauthorized(modelsQuery.error) && (
+          <p className="text-14 text-parity-fail" role="alert">
+            Couldn&apos;t load configured models.
+          </p>
+        )}
+
+        {modelsQuery.data && modelsQuery.data.length === 0 && (
+          <p className="text-13 text-ink-soft">No models available yet.</p>
+        )}
+
+        {Array.from(byProvider.entries()).map(([provider, providerModels]) => (
+          <div key={provider}>
+            <h3 className="mb-2 text-13 font-medium capitalize text-ink">{provider}</h3>
+            <div className="flex flex-col gap-3">
+              {providerModels.map((model) => (
+                <div
+                  key={model.model}
+                  className="rounded-control border border-line p-4 text-13"
+                >
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <span className="font-mono font-medium text-ink">{model.model}</span>
+                    <span className="text-12 text-ink-soft">
+                      {formatCost(model.input_cost_per_1m)} in /{" "}
+                      {formatCost(model.output_cost_per_1m)} out
+                    </span>
+                  </div>
+                  <p className="mt-2 text-12 text-ink-soft">
+                    Prompt family: <span className="font-medium text-ink">{model.model_card.family}</span>
+                    {model.model_card.is_small_variant && " (small variant)"}
+                    {" — "}
+                    {model.model_card.description}
+                  </p>
+                  <ul className="mt-2 flex flex-wrap gap-2">
+                    {model.model_card.rules
+                      .filter((rule) => rule.will_apply)
+                      .map((rule) => (
+                        <li
+                          key={rule.name}
+                          className="rounded-full bg-beam-soft px-2 py-1 text-12 text-beam"
+                          title={rule.description}
+                        >
+                          {rule.name.replace(/_/g, " ")}
+                        </li>
+                      ))}
+                    {model.model_card.rules.every((rule) => !rule.will_apply) && (
+                      <li className="text-12 text-ink-soft">No transform rules apply.</li>
+                    )}
+                  </ul>
+                </div>
+              ))}
+            </div>
+          </div>
+        ))}
       </CardContent>
     </Card>
   );

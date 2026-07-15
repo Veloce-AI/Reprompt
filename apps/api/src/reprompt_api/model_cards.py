@@ -37,13 +37,14 @@ class FamilyCardOut(BaseModel):
     rules: list[TransformRuleOut]
 
 
-@router.get("/{model:path}")
-def get_model_card(model: str) -> FamilyCardOut:
-    """Get transform rules for a target model.
+def build_family_card(model: str) -> FamilyCardOut:
+    """Resolve a target model to its family card, transform rules, and
+    which of those rules will actually fire for it.
 
-    Returns the resolved model family, its versioned rule set, and which rules
-    will actually apply to this specific model (based on size detection).
-    Never raises: falls back gracefully to generic family for unrecognized models.
+    Never raises: falls back gracefully to generic family for unrecognized
+    models. Extracted from the route below so other routers (e.g.
+    ``settings.py``'s "configured models" section) can reuse the exact same
+    resolution logic without an internal HTTP round-trip.
 
     Parameters
     ----------
@@ -83,3 +84,9 @@ def get_model_card(model: str) -> FamilyCardOut:
         is_small_variant=small,
         rules=rules_out,
     )
+
+
+@router.get("/{model:path}")
+def get_model_card(model: str) -> FamilyCardOut:
+    """Get transform rules for a target model. See :func:`build_family_card`."""
+    return build_family_card(model)

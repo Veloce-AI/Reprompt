@@ -58,6 +58,8 @@ from reprompt_api import models
 from reprompt_api.auth import get_current_user
 from reprompt_api.crypto import EncryptionNotConfigured, encrypt
 from reprompt_api.db import get_db
+from reprompt_api.migrations import CURATED_MODELS, ModelOption, _to_option
+from reprompt_api.model_cards import FamilyCardOut, build_family_card
 
 router = APIRouter(prefix="/settings", tags=["settings"])
 
@@ -274,3 +276,75 @@ def delete_api_key(
         raise HTTPException(status_code=404, detail=f"API key {key_id} not found")
     db.delete(row)
     db.commit()
+
+
+# ---------------------------------------------------------------------------
+# Configured models — what a workspace can actually target, right now
+# ---------------------------------------------------------------------------
+#
+# Was empty/minimal before this section: Settings only ever showed the raw
+# BYOK key CRUD table (provider name + last four), never *what those keys
+# actually unlock* - the same curated model list and model-card (prompt
+# family/transform rules) info already built for the migration wizard's
+# model picker (see model_cards.py, migrations.py's CURATED_MODELS), but
+# never surfaced anywhere the user could see it without first stepping into
+# a specific pipeline's migration wizard. This reuses both wholesale - no
+# new model registry, no new provider-onboarding flow, just visibility.
+
+
+class ConfiguredModelOut(BaseModel):
+    model: str
+    provider: str | None
+    input_cost_per_1m: float | None
+    output_cost_per_1m: float | None
+    max_input_tokens: int | None
+    max_output_tokens: int | None
+    supports_json_mode: bool
+    supports_function_calling: bool
+    requires_api_key: bool
+    model_card: FamilyCardOut
+
+
+def _to_configured_model_out(option: ModelOption) -> ConfiguredModelOut:
+    return ConfiguredModelOut(
+        model=option.model,
+        provider=option.provider,
+        input_cost_per_1m=option.input_cost_per_1m,
+        output_cost_per_1m=option.output_cost_per_1m,
+        max_input_tokens=option.max_input_tokens,
+        max_output_tokens=option.max_output_tokens,
+        supports_json_mode=option.supports_json_mode,
+        supports_function_calling=option.supports_function_calling,
+        requires_api_key=option.requires_api_key,
+        model_card=build_family_card(option.model),
+    )
+
+
+@router.get("/models", response_model=list[ConfiguredModelOut])
+def list_configured_models(
+    current_user: models.User = Depends(get_current_user), db: Session = Depends(get_db)
+) -> list[ConfiguredModelOut]:
+    """Every curated model this workspace can actually target right now:
+    every model that needs no API key (local/self-hosted, e.g. Ollama) plus
+    every model whose provider has a BYOK key configured for this workspace.
+    Each entry carries its model-card info (prompt family + which transform
+    rules will apply) so a user can see *how* their prompt will be rewritten
+    for that target without opening a migration wizard first.
+    """
+    workspace = _get_workspace_or_500(db, current_user)
+    configured_providers = {
+        row.provider
+        for row in db.scalars(
+            select(models.WorkspaceApiKey).where(
+                models.WorkspaceApiKey.workspace_id == workspace.id
+            )
+        ).all()
+    }
+
+    options = [_to_option(model) for model in CURATED_MODELS]
+    available = [
+        option
+        for option in options
+        if not option.requires_api_key or option.provider in configured_providers
+    ]
+    return [_to_configured_model_out(option) for option in available]

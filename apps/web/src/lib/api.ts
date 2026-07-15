@@ -367,6 +367,29 @@ export function listApiKeys(): Promise<ApiKeyOut[]> {
   return request<ApiKeyOut[]>("/settings/api-keys", { headers: authHeaders() });
 }
 
+// ConfiguredModel mirrors apps/api's settings.ConfiguredModelOut - every
+// curated model this workspace can actually target right now (no-key-
+// required local/self-hosted models, plus any model whose provider has a
+// BYOK key configured), each carrying its model-card info (see
+// ModelCardInfo below) so Settings can show *how* a prompt gets rewritten
+// for that target without opening a migration wizard first.
+export interface ConfiguredModel {
+  model: string;
+  provider: string | null;
+  input_cost_per_1m: number | null;
+  output_cost_per_1m: number | null;
+  max_input_tokens: number | null;
+  max_output_tokens: number | null;
+  supports_json_mode: boolean;
+  supports_function_calling: boolean;
+  requires_api_key: boolean;
+  model_card: ModelCardInfo;
+}
+
+export function listConfiguredModels(): Promise<ConfiguredModel[]> {
+  return request<ConfiguredModel[]>("/settings/models", { headers: authHeaders() });
+}
+
 export function addApiKey(provider: string, apiKey: string): Promise<ApiKeyOut> {
   return request<ApiKeyOut>("/settings/api-keys", {
     method: "POST",

@@ -1,24 +1,18 @@
 import { useState, useEffect } from "react";
-import { Link, useNavigate, useParams } from "@tanstack/react-router";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import {
   ApiError,
   createMigration,
-  getMigrationStatus,
   getModelCard,
   getPipelineDag,
   listModelOptions,
-  startMigration,
   type MigrationOut,
   type ModelCardInfo,
 } from "@/lib/api";
-import { AppShell } from "@/components/app-shell";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
-import { MigrationRunBar } from "@/components/migration-run-bar";
-import { PipelineCanvas } from "@/components/pipeline-canvas";
 
 type WizardStep = "target-model" | "budget" | "confirm";
 
@@ -59,9 +53,25 @@ function formatTokens(value: number | null): string {
   return value == null ? "Unknown" : value.toLocaleString();
 }
 
-export default function NewMigration() {
-  const { pipelineId } = useParams({ from: "/pipelines/$pipelineId/migrations/new" });
-  const pid = Number(pipelineId);
+/**
+ * The migration wizard's create-a-migration half, extracted from the old
+ * standalone `/pipelines/$pipelineId/migrations/new` route (see
+ * DEV_TRACKER.md's "Phase 1 — Unified pipeline workspace") so it can be
+ * rendered as the Migrations tab of pipeline-workspace.tsx when no
+ * Migration exists yet for this pipeline. Unchanged from the original route
+ * component except: `pipelineId` arrives as a prop instead of `useParams`,
+ * there's no `<AppShell>`/header/back-link (the workspace supplies one
+ * shared header), and instead of rendering `<MigrationSuccessScreen>`
+ * itself on success it calls `onCreated` — the tab container
+ * (pipeline-workspace.tsx's MigrationsTab) decides what to render next.
+ */
+export function NewMigrationWizard({
+  pipelineId,
+  onCreated,
+}: {
+  pipelineId: number;
+  onCreated: (migration: MigrationOut) => void;
+}) {
   const [step, setStep] = useState<WizardStep>("target-model");
   const [selectedModels, setSelectedModels] = useState<Set<string>>(new Set());
   const [budget, setBudget] = useState("");
@@ -69,12 +79,12 @@ export default function NewMigration() {
   const [modelCards, setModelCards] = useState<Record<string, ModelCardInfo | null>>({});
 
   const dagQuery = useQuery({
-    queryKey: ["pipeline-dag", pid],
-    queryFn: () => getPipelineDag(pid),
+    queryKey: ["pipeline-dag", pipelineId],
+    queryFn: () => getPipelineDag(pipelineId),
   });
   const modelsQuery = useQuery({
-    queryKey: ["model-options", pid],
-    queryFn: () => listModelOptions(pid),
+    queryKey: ["model-options", pipelineId],
+    queryFn: () => listModelOptions(pipelineId),
   });
 
   // Fetch model card info for each available model
@@ -105,12 +115,22 @@ export default function NewMigration() {
 
   const migrationMutation = useMutation({
     mutationFn: () =>
-      createMigration(pid, {
+      createMigration(pipelineId, {
         target_model_config: { models: [...selectedModels] },
         budget: Number(budget),
         parity_threshold: Number(parityThresholdPercent) / 100,
       }),
   });
+
+  useEffect(() => {
+    if (migrationMutation.isSuccess && migrationMutation.data) {
+      onCreated(migrationMutation.data);
+    }
+    // onCreated is expected to be referentially stable enough for this
+    // effect's purposes (it just swaps local state in the parent) - only
+    // re-fire when the mutation itself actually succeeds.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [migrationMutation.isSuccess, migrationMutation.data]);
 
   const budgetNumber = Number(budget);
   const parityNumber = Number(parityThresholdPercent);
@@ -124,28 +144,14 @@ export default function NewMigration() {
     parityNumber >= 0 &&
     parityNumber <= 100;
 
+  // Parent switches to <MigrationSuccessScreen> as soon as onCreated fires -
+  // render nothing in the meantime rather than a flash of the wizard.
   if (migrationMutation.isSuccess) {
-    return (
-      <MigrationSuccessScreen
-        migration={migrationMutation.data}
-        pipelineId={pipelineId}
-      />
-    );
+    return null;
   }
 
   return (
-    <AppShell>
-    <div className="p-8">
-      <Link
-        to="/pipelines/$pipelineId"
-        params={{ pipelineId }}
-        className="text-13 text-ink-soft hover:text-ink"
-      >
-        ← Pipeline canvas
-      </Link>
-      <h1 className="font-display text-28 font-semibold leading-display text-ink">
-        New migration
-      </h1>
+    <div>
       <p className="mt-1 text-14 text-ink-soft">
         Pick a target model, set a budget and parity threshold, then run the migration.
       </p>
@@ -420,132 +426,5 @@ export default function NewMigration() {
         </Card>
       )}
     </div>
-      </AppShell>
   );
 }
-
-const STATUS_LABELS: Record<string, string> = {
-  pending: "Pending",
-  running: "Running",
-  completed: "Completed",
-  failed: "Failed",
-  stopped_early: "Stopped early",
-};
-
-const STATUS_VARIANTS: Record<string, "outline" | "pass" | "fail" | "neutral"> = {
-  pending: "outline",
-  running: "neutral",
-  completed: "pass",
-  failed: "fail",
-  stopped_early: "neutral",
-};
-
-function MigrationSuccessScreen({
-  migration,
-  pipelineId,
-}: {
-  migration: MigrationOut;
-  pipelineId: string;
-}) {
-  const pid = Number(pipelineId);
-  const navigate = useNavigate();
-  const [started, setStarted] = useState(false);
-
-  const startMutation = useMutation({
-    mutationFn: () => startMigration(pid, migration.id),
-    onSuccess: () => setStarted(true),
-  });
-
-  const statusQuery = useQuery({
-    queryKey: ["migration-status", pid, migration.id],
-    queryFn: () => getMigrationStatus(pid, migration.id),
-    enabled: started,
-    refetchInterval: (query) => {
-      const s = query.state.data?.status;
-      return s === "running" ? 2000 : false;
-    },
-  });
-
-  const status = statusQuery.data;
-  const isRunning = status?.status === "running";
-  const isTerminal = status && ["completed", "failed", "stopped_early"].includes(status.status);
-
-  return (
-    <AppShell>
-      <div className="p-8">
-        <h1 className="font-display text-28 font-semibold leading-display text-ink">
-          New migration
-        </h1>
-        <Card className="mt-6">
-          <CardContent className="p-8">
-            <div className="mb-4 flex items-center gap-2 text-14 font-medium text-ink">
-              <span>Migration #{migration.id} created</span>
-              <Badge variant={STATUS_VARIANTS[status?.status ?? "pending"]}>
-                {STATUS_LABELS[status?.status ?? "pending"]}
-              </Badge>
-            </div>
-
-            {!started && (
-              <>
-                <p className="mb-6 max-w-[640px] text-14 text-ink-soft">
-                  Migration saved. Make sure all rubrics are approved, then start the optimizer below.
-                </p>
-                {startMutation.isError && (
-                  <p className="mb-4 text-13 text-parity-fail" role="alert">
-                    {startMutation.error instanceof ApiError
-                      ? startMutation.error.message
-                      : "Failed to start migration."}
-                  </p>
-                )}
-                <div className="flex gap-3">
-                  <Button
-                    variant="primary"
-                    onClick={() => startMutation.mutate()}
-                    disabled={startMutation.isPending}
-                  >
-                    {startMutation.isPending ? "Starting…" : "Start migration"}
-                  </Button>
-                  <Button
-                    variant="secondary"
-                    onClick={() => navigate({ to: "/pipelines/$pipelineId", params: { pipelineId } })}
-                  >
-                    Back to pipeline canvas
-                  </Button>
-                </div>
-              </>
-            )}
-
-            {started && (
-              <div className="mt-2">
-                <MigrationRunBar
-                  status={status}
-                  isConnecting={!isTerminal && !isRunning && statusQuery.isLoading}
-                />
-
-                {(isRunning || isTerminal) && (
-                  <div className="mt-4 h-[420px] overflow-hidden rounded-card border border-line">
-                    <PipelineCanvas
-                      pipelineId={pid}
-                      stageStates={status?.stage_states}
-                      runningSubstep={status?.progress_substep}
-                    />
-                  </div>
-                )}
-
-                <div className="mt-6">
-                  <Button
-                    variant="secondary"
-                    onClick={() => navigate({ to: "/pipelines/$pipelineId", params: { pipelineId } })}
-                  >
-                    Back to pipeline canvas
-                  </Button>
-                </div>
-              </div>
-            )}
-          </CardContent>
-        </Card>
-      </div>
-    </AppShell>
-  );
-}
-

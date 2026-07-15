@@ -1,5 +1,4 @@
-import { useState } from "react";
-import { Link, useParams } from "@tanstack/react-router";
+import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   approveAllRubrics,
@@ -19,15 +18,23 @@ import {
   type DeterministicCheckLike,
   type JudgeCriterionLike,
 } from "@/lib/rubric-format";
-import { AppShell } from "@/components/app-shell";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 
-export default function RubricReview() {
-  const { pipelineId } = useParams({ from: "/pipelines/$pipelineId/rubrics" });
-  const pid = Number(pipelineId);
+/**
+ * The rubric review screen's body, extracted from the old standalone
+ * `/pipelines/$pipelineId/rubrics` route (see DEV_TRACKER.md's "Phase 1 —
+ * Unified pipeline workspace") so it can be rendered as the Rubrics tab of
+ * `pipeline-workspace.tsx`. Everything below is unchanged from the original
+ * route component except: `pipelineId` arrives as a prop instead of
+ * `useParams` (this is no longer its own route), the route's own
+ * `<AppShell>`/header/back-link are gone (the workspace supplies one shared
+ * header), and each stage's Card now carries `id={rubric-${stage_id}}` so
+ * the canvas tab's rubric drawer can deep-link + scroll to it.
+ */
+export function RubricReviewPanel({ pipelineId }: { pipelineId: number }) {
   const queryClient = useQueryClient();
 
   const [model, setModel] = useState(() => localStorage.getItem("reprompt_rubric_model") ?? "");
@@ -43,22 +50,34 @@ export default function RubricReview() {
     isError,
     error,
   } = useQuery({
-    queryKey: ["rubrics", pid],
-    queryFn: () => listRubrics(pid),
+    queryKey: ["rubrics", pipelineId],
+    queryFn: () => listRubrics(pipelineId),
   });
 
   const { data: dag } = useQuery({
-    queryKey: ["dag", pid],
-    queryFn: () => getPipelineDag(pid),
+    queryKey: ["dag", pipelineId],
+    queryFn: () => getPipelineDag(pipelineId),
   });
 
   const approveAllMutation = useMutation({
-    mutationFn: () => approveAllRubrics(pid),
-    onSuccess: (updated) => queryClient.setQueryData(["rubrics", pid], updated),
+    mutationFn: () => approveAllRubrics(pipelineId),
+    onSuccess: (updated) => queryClient.setQueryData(["rubrics", pipelineId], updated),
   });
 
   const allStages = dag ? Object.values(dag.stages) : [];
   const allApproved = (rubrics ?? []).length > 0 && (rubrics ?? []).every((r) => r.approved);
+
+  // Deep-link support: the canvas tab's rubric drawer's "View full rubric →"
+  // link switches to this tab and sets window.location.hash to
+  // `rubric-${stage_id}` (see pipeline-workspace.tsx) - once rubrics have
+  // loaded and the matching card exists in the DOM, scroll it into view.
+  useEffect(() => {
+    if (!rubrics) return;
+    const hash = window.location.hash.replace("#", "");
+    if (!hash) return;
+    const el = document.getElementById(hash);
+    el?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }, [rubrics]);
 
   async function handleGenerateAll() {
     const trimmedModel = model.trim();
@@ -75,7 +94,7 @@ export default function RubricReview() {
       const results: RubricOut[] = [];
       await Promise.all(
         allStages.map(async (stage) => {
-          const rubric = await generateRubric(pid, stage.id, trimmedModel);
+          const rubric = await generateRubric(pipelineId, stage.id, trimmedModel);
           results.push(rubric);
           setGeneratingCompleted((c) => c + 1);
           setGeneratingActiveIds((prev) => {
@@ -83,7 +102,7 @@ export default function RubricReview() {
             next.delete(stage.id);
             return next;
           });
-          queryClient.setQueryData(["rubrics", pid], [...results]);
+          queryClient.setQueryData(["rubrics", pipelineId], [...results]);
         })
       );
     } catch (err) {
@@ -96,20 +115,9 @@ export default function RubricReview() {
   }
 
   return (
-    <AppShell>
-    <div className="p-8">
+    <div>
       <div className="mb-2 flex items-start justify-between">
         <div>
-          <Link
-            to="/pipelines/$pipelineId"
-            params={{ pipelineId }}
-            className="text-13 text-ink-soft hover:text-ink"
-          >
-            ← Pipeline canvas
-          </Link>
-          <h1 className="font-display text-28 font-semibold leading-display text-ink">
-            Rubric review
-          </h1>
           <p className="mt-1 text-14 text-ink-soft">
             Review and edit each stage&apos;s checklist before running a migration.
           </p>
@@ -213,14 +221,13 @@ export default function RubricReview() {
           <StageRubricCard
             key={rubric.id}
             rubric={rubric}
-            pipelineId={pid}
+            pipelineId={pipelineId}
             model={model}
             isActive={generatingAll && generatingActiveIds.has(rubric.stage_id)}
           />
         ))}
       </div>
     </div>
-    </AppShell>
   );
 }
 
@@ -259,7 +266,10 @@ function StageRubricCard({
   });
 
   return (
-    <Card className={isActive ? "ring-2 ring-beam/40 transition-shadow duration-300" : "transition-shadow duration-300"}>
+    <Card
+      id={`rubric-${rubric.stage_id}`}
+      className={isActive ? "ring-2 ring-beam/40 transition-shadow duration-300" : "transition-shadow duration-300"}
+    >
       <CardHeader className="flex flex-row items-center justify-between space-y-0">
         <div className="flex items-center gap-3">
           {isActive && <span className="h-2 w-2 animate-pulse rounded-full bg-beam" />}

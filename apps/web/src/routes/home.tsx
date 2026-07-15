@@ -106,6 +106,7 @@ export default function Home() {
                   navigate({
                     to: "/pipelines/$pipelineId",
                     params: { pipelineId: String(pipeline.id) },
+                    search: { tab: "canvas" },
                   })
                 }
               >

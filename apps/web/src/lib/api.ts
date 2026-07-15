@@ -85,6 +85,21 @@ export function listPipelines(): Promise<PipelineSummary[]> {
   return request<PipelineSummary[]>("/pipelines");
 }
 
+export interface PipelineUpdate {
+  name: string;
+}
+
+export function updatePipeline(
+  pipelineId: number,
+  update: PipelineUpdate
+): Promise<PipelineSummary> {
+  return request<PipelineSummary>(`/pipelines/${pipelineId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(update),
+  });
+}
+
 export function listRubrics(pipelineId: number): Promise<RubricOut[]> {
   return request<RubricOut[]>(`/pipelines/${pipelineId}/rubrics`);
 }

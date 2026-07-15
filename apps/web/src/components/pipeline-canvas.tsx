@@ -22,6 +22,11 @@ export interface PipelineCanvasProps {
    * `progress_substep` while it's running. */
   runningSubstep?: StagePhase | null;
   className?: string;
+  /** Called with a stage's DB id when its node is clicked — used by
+   * pipeline-workspace.tsx's Canvas tab to open the stage's rubric drawer.
+   * Omit for the static/read-only or migration-run embeds, which don't
+   * need node interaction. */
+  onNodeClick?: (stageId: number) => void;
 }
 
 /**
@@ -30,7 +35,13 @@ export interface PipelineCanvasProps {
  * the migration run screen (with `stageStates`, polled live — see Phase 2 /
  * DEV_TRACKER.md "Live DAG/run status view").
  */
-export function PipelineCanvas({ pipelineId, stageStates, runningSubstep, className }: PipelineCanvasProps) {
+export function PipelineCanvas({
+  pipelineId,
+  stageStates,
+  runningSubstep,
+  className,
+  onNodeClick,
+}: PipelineCanvasProps) {
   const { data, isLoading, isError, error } = useQuery({
     queryKey: ["pipeline-dag", pipelineId],
     queryFn: () => getPipelineDag(pipelineId),
@@ -91,6 +102,7 @@ export function PipelineCanvas({ pipelineId, stageStates, runningSubstep, classN
         nodeTypes={nodeTypes}
         fitView
         proOptions={{ hideAttribution: true }}
+        onNodeClick={onNodeClick ? (_event, node) => onNodeClick(Number(node.id)) : undefined}
       >
         <Background />
         <Controls />

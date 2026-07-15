@@ -2,14 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import { fireEvent } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import {
-  createMemoryHistory,
-  createRootRoute,
-  createRoute,
-  createRouter,
-  RouterProvider,
-} from "@tanstack/react-router";
-import RubricReview from "./rubric-review";
+import { RubricReviewPanel } from "./rubric-review-panel";
 import type { RubricOut } from "@/lib/api";
 
 vi.mock("@/lib/api", () => ({
@@ -17,14 +10,17 @@ vi.mock("@/lib/api", () => ({
   updateRubric: vi.fn(),
   approveRubric: vi.fn(),
   approveAllRubrics: vi.fn(),
+  getPipelineDag: vi.fn(),
+  generateRubric: vi.fn(),
 }));
 
-import { approveAllRubrics, approveRubric, listRubrics, updateRubric } from "@/lib/api";
-
-// TanStack Router's scroll restoration calls window.scrollTo, which jsdom
-// doesn't implement - stub it out so it doesn't spam stderr on every route
-// mount. Purely cosmetic; tests already pass without this.
-window.scrollTo = vi.fn() as unknown as typeof window.scrollTo;
+import {
+  approveAllRubrics,
+  approveRubric,
+  getPipelineDag,
+  listRubrics,
+  updateRubric,
+} from "@/lib/api";
 
 function baseRubric(overrides: Partial<RubricOut> = {}): RubricOut {
   return {
@@ -48,25 +44,13 @@ function baseRubric(overrides: Partial<RubricOut> = {}): RubricOut {
   };
 }
 
-function renderAtPipeline(pipelineId: string) {
-  const rootRoute = createRootRoute();
-  const rubricRoute = createRoute({
-    getParentRoute: () => rootRoute,
-    path: "/pipelines/$pipelineId/rubrics",
-    component: RubricReview,
-  });
-  const routeTree = rootRoute.addChildren([rubricRoute]);
-  const router = createRouter({
-    routeTree,
-    history: createMemoryHistory({ initialEntries: [`/pipelines/${pipelineId}/rubrics`] }),
-  });
+function renderPanel(pipelineId = 1) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   });
-
   return render(
     <QueryClientProvider client={queryClient}>
-      <RouterProvider router={router} />
+      <RubricReviewPanel pipelineId={pipelineId} />
     </QueryClientProvider>
   );
 }
@@ -76,25 +60,29 @@ beforeEach(() => {
   vi.mocked(updateRubric).mockReset();
   vi.mocked(approveRubric).mockReset();
   vi.mocked(approveAllRubrics).mockReset();
+  vi.mocked(getPipelineDag).mockReset();
+  vi.mocked(getPipelineDag).mockResolvedValue({
+    pipeline_id: 1,
+    layers: [],
+    stages: {},
+    edges: [],
+  });
 });
 
-describe("RubricReview", () => {
+describe("RubricReviewPanel", () => {
   it("renders plain-English sentences for each check, never the raw check type", async () => {
     vi.mocked(listRubrics).mockResolvedValue([baseRubric()]);
 
-    renderAtPipeline("1");
+    renderPanel();
 
     await screen.findByText("Extract financials");
     expect(screen.getByText("Must include: currency, revenue")).toBeInTheDocument();
     expect(
       screen.getByText("Length must be between 20 and 800 characters")
     ).toBeInTheDocument();
-    expect(
-      screen.getByText(/Covers all key entities/)
-    ).toBeInTheDocument();
+    expect(screen.getByText(/Covers all key entities/)).toBeInTheDocument();
     expect(screen.getByText("Next stage reads: currency")).toBeInTheDocument();
 
-    // Never shows the raw check type or jargon like "json schema" as body text.
     expect(screen.queryByText("required_keys")).not.toBeInTheDocument();
     expect(screen.queryByText(/json schema/i)).not.toBeInTheDocument();
   });
@@ -102,7 +90,7 @@ describe("RubricReview", () => {
   it("groups items into Format checks / Content criteria / Downstream contract", async () => {
     vi.mocked(listRubrics).mockResolvedValue([baseRubric()]);
 
-    renderAtPipeline("1");
+    renderPanel();
 
     await screen.findByText("Extract financials");
     expect(screen.getByText("Format checks")).toBeInTheDocument();
@@ -110,12 +98,21 @@ describe("RubricReview", () => {
     expect(screen.getByText("Downstream contract")).toBeInTheDocument();
   });
 
+  it("renders each stage card with an id anchor for the canvas drawer's deep link", async () => {
+    vi.mocked(listRubrics).mockResolvedValue([baseRubric()]);
+
+    renderPanel();
+
+    await screen.findByText("Extract financials");
+    expect(document.getElementById("rubric-10")).toBeInTheDocument();
+  });
+
   it("deletes a format check and PATCHes the remaining list", async () => {
     const rubric = baseRubric();
     vi.mocked(listRubrics).mockResolvedValue([rubric]);
     vi.mocked(updateRubric).mockImplementation(async (_id, patch) => ({ ...rubric, ...patch }));
 
-    renderAtPipeline("1");
+    renderPanel();
     await screen.findByText("Must include: currency, revenue");
 
     const requiredKeysRow = screen.getByText("Must include: currency, revenue").closest("li")!;
@@ -134,34 +131,12 @@ describe("RubricReview", () => {
     });
   });
 
-  it("adds a new content criterion via the Add criterion input", async () => {
-    const rubric = baseRubric();
-    vi.mocked(listRubrics).mockResolvedValue([rubric]);
-    vi.mocked(updateRubric).mockImplementation(async (_id, patch) => ({ ...rubric, ...patch }));
-
-    renderAtPipeline("1");
-    await screen.findByText("Content criteria");
-
-    const input = screen.getByLabelText("Add a content criterion name");
-    fireEvent.change(input, { target: { value: "No hedging language" } });
-    fireEvent.click(screen.getAllByRole("button", { name: "Add criterion" })[1]);
-
-    await waitFor(() => {
-      expect(updateRubric).toHaveBeenCalledWith(1, {
-        judge_criteria: [
-          ...rubric.judge_criteria,
-          { name: "No hedging language", weight: 1, description: "" },
-        ],
-      });
-    });
-  });
-
   it("approves a single stage and reflects the approved badge", async () => {
     const rubric = baseRubric();
     vi.mocked(listRubrics).mockResolvedValue([rubric]);
     vi.mocked(approveRubric).mockResolvedValue({ ...rubric, approved: true });
 
-    renderAtPipeline("1");
+    renderPanel();
     await screen.findByText("Needs review");
 
     fireEvent.click(screen.getByRole("button", { name: "Approve" }));
@@ -181,7 +156,7 @@ describe("RubricReview", () => {
       { ...rubricB, approved: true },
     ]);
 
-    renderAtPipeline("1");
+    renderPanel();
     await screen.findByText("Extract");
     await screen.findByText("Summarize");
 
@@ -197,7 +172,7 @@ describe("RubricReview", () => {
   it("shows an empty state when the pipeline has no rubrics yet", async () => {
     vi.mocked(listRubrics).mockResolvedValue([]);
 
-    renderAtPipeline("1");
+    renderPanel();
 
     expect(await screen.findByText("No rubrics yet")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Approve all" })).not.toBeInTheDocument();

@@ -1409,3 +1409,91 @@ is unaffected; this is purely informational UI.
   "Remaining plan") — it is *not* built yet, so don't assume
   `budget_usd=None` works anywhere in Phases 1-6 above; that was a
   mismatch an earlier build spec incorrectly assumed already existed.
+
+## Phase 1 — Unified pipeline workspace [DONE — 2026-07-15]
+
+A separate frontend-shape track, independent of the optimizer phase
+numbering above (same relationship as "Phase D(a)" — parallel work, not a
+continuation of Phase 6). Replaced the three previously-separate screens
+(`/pipelines/$id` canvas, `/pipelines/$id/rubrics`,
+`/pipelines/$id/migrations/new`) with one route,
+`/pipelines/$id?tab=canvas|data|rubrics|migrations`, tab state living in the
+URL search param. No changes to `packages/core`, the optimizer loop, judge,
+mutator, or anything under `packages/core/src/reprompt_core/optimizer/`.
+
+**Backend** — `apps/api/src/reprompt_api/pipelines.py`:
+- New `PATCH /pipelines/{pipeline_id}` endpoint (`update_pipeline`, body
+  `{name: str}`, same PATCH-whole-resource pattern as
+  `settings.py`'s `update_workspace_settings`) — powers the workspace
+  header's click-to-edit-inline pipeline name. Returns the updated
+  `PipelineSummary`; 404s for an unknown pipeline, 422s for an empty name
+  (`Field(min_length=1)`).
+- `tests/test_pipelines.py`: 3 new tests (rename + persists, empty-name
+  422, unknown-pipeline 404).
+
+**Frontend**:
+- `apps/web/src/router.tsx`: `pipelineWorkspaceRoute` replaces the old
+  `pipelineDetailRoute`, with `validateSearch` defaulting `tab` to
+  `"canvas"` for anything missing/unrecognized. The two old paths
+  (`/pipelines/$id/rubrics`, `/pipelines/$id/migrations/new`) are now
+  `beforeLoad`-only stub routes that `redirect()` into the matching
+  `?tab=` on the new route — no bookmarked/shared link breaks.
+- `apps/web/src/routes/pipeline-workspace.tsx` (new): persistent header
+  (click-to-edit-inline name, `PATCH /pipelines/{id}` via
+  `updatePipeline` in `api.ts`) + tab bar (Canvas · Data · Rubrics ·
+  Migrations) + body switching on the `tab` search param. Also owns the
+  canvas tab's stage-rubric drawer (`StageRubricDrawer`, built on the
+  existing `apps/web/src/components/ui/drawer.tsx` — a vaul-based
+  primitive that already existed, not built new): fetches
+  `listRubrics(pipelineId)` and filters by `stage_id` (no new endpoint),
+  shows format checks/content criteria plus an inline Approve button
+  (reuses `approveRubric`), and a "View full rubric →" link that switches
+  to the Rubrics tab and sets `window.location.hash = "rubric-${stage_id}"`.
+- `apps/web/src/components/pipeline-canvas.tsx`: added optional
+  `onNodeClick?: (stageId: number) => void` prop, wired to React Flow's own
+  `onNodeClick`. Omitted (as before) by the read-only canvas embed inside
+  `MigrationSuccessScreen` — only the workspace's Canvas tab passes it.
+- `apps/web/src/components/rubric-review-panel.tsx` (new, extracted from
+  the deleted `routes/rubric-review.tsx`): identical logic, `pipelineId`
+  now arrives as a prop instead of `useParams` (no longer its own route),
+  no more of its own `<AppShell>`/header/back-link. Each stage's `Card`
+  now carries `id={rubric-${stage_id}}`, and a `useEffect` scrolls to
+  `window.location.hash` once rubrics load — this is what makes the
+  drawer's "View full rubric →" deep link land on the right card.
+- `apps/web/src/components/new-migration-wizard.tsx` +
+  `migration-success-screen.tsx` (new, extracted from the deleted
+  `routes/new-migration.tsx`): the wizard now calls an `onCreated`
+  callback instead of rendering the success screen itself; the success
+  screen takes an `onBackToCanvas` callback (switches tabs) instead of
+  navigating away, and initializes its `started` state from
+  `migration.status !== "pending"` so a migration discovered already-running
+  (not just one freshly created this session) shows its live run state
+  immediately.
+- `pipeline-workspace.tsx`'s `MigrationsTab` decides wizard vs. success
+  screen by calling the pre-existing `GET /pipelines/{id}/migrations`
+  (`listMigrations` — already existed, no new endpoint needed): empty list
+  → wizard; otherwise → success screen for the most recent migration (or
+  whichever one was just created this session, tracked in local state so
+  there's no flicker waiting on the list query to refetch).
+- Deleted: `routes/pipeline-detail.tsx`, `routes/rubric-review.tsx` (+
+  test), `routes/new-migration.tsx` (+ test) — fully replaced by the above.
+
+**Tests**:
+- `apps/api`: 131 passed (128 baseline + 3 new for `PATCH /pipelines/{id}`).
+- `apps/web`: 85 passed (77 baseline − 11 from the two deleted route test
+  files + 19 new across `rubric-review-panel.test.tsx`,
+  `new-migration-wizard.test.tsx`, and `pipeline-workspace.test.tsx`),
+  clean `npx tsc --noEmit`, clean `npx vite build`.
+- `packages/core`: untouched — confirmed via `git status` (no files under
+  `packages/core` appear in the diff).
+
+**What a user sees**: opening any pipeline now lands on one page with a
+tab bar (Canvas · Data · Rubrics · Migrations) instead of three separate
+screens reached by different buttons/links. Clicking the pipeline name in
+the header turns it into an editable text field. Clicking a stage node on
+the Canvas tab opens a right-side drawer with that stage's rubric and an
+Approve button, without leaving the canvas; "View full rubric →" jumps to
+the full editor on the Rubrics tab, scrolled to that exact stage. Any old
+`/rubrics` or `/migrations/new` link still works, landing on the right tab.
+The Data tab currently just says "Coming soon" (Phase 3, not part of this
+work).

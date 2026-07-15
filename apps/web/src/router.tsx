@@ -1,10 +1,8 @@
-import { createRouter, createRoute, createRootRoute, Outlet } from "@tanstack/react-router";
+import { createRouter, createRoute, createRootRoute, Outlet, redirect } from "@tanstack/react-router";
 import Home from "./routes/home";
 import DevKit from "./routes/dev-kit";
 import PipelinesImport from "./routes/pipelines-import";
-import PipelineDetail from "./routes/pipeline-detail";
-import RubricReview from "./routes/rubric-review";
-import NewMigration from "./routes/new-migration";
+import PipelineWorkspace, { WORKSPACE_TABS, type WorkspaceTab } from "./routes/pipeline-workspace";
 import Login from "./routes/login";
 import AuthVerify from "./routes/auth-verify";
 import Settings from "./routes/settings";
@@ -32,22 +30,52 @@ const pipelinesImportRoute = createRoute({
   component: PipelinesImport,
 });
 
-const pipelineDetailRoute = createRoute({
+// Tab state lives in the URL, not local component state, so switching tabs
+// is a normal navigation (back/forward, bookmarking, and the redirect stubs
+// below all just work). Falls back to "canvas" for a missing/unrecognized
+// value rather than erroring - a stale bookmark or a manually-edited URL
+// should still land somewhere sensible.
+function validateWorkspaceSearch(search: Record<string, unknown>): { tab: WorkspaceTab } {
+  const raw = typeof search.tab === "string" ? search.tab : undefined;
+  const tab = (WORKSPACE_TABS as readonly string[]).includes(raw ?? "")
+    ? (raw as WorkspaceTab)
+    : "canvas";
+  return { tab };
+}
+
+const pipelineWorkspaceRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/pipelines/$pipelineId",
-  component: PipelineDetail,
+  validateSearch: validateWorkspaceSearch,
+  component: PipelineWorkspace,
 });
 
-const rubricReviewRoute = createRoute({
+// Old standalone screens, now tabs of the unified workspace (see
+// DEV_TRACKER.md's "Phase 1 — Unified pipeline workspace"). These paths
+// have no component of their own anymore - any bookmarked/shared link to
+// them just redirects into the matching tab, so nothing breaks.
+const rubricReviewRedirectRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/pipelines/$pipelineId/rubrics",
-  component: RubricReview,
+  beforeLoad: ({ params }) => {
+    throw redirect({
+      to: "/pipelines/$pipelineId",
+      params,
+      search: { tab: "rubrics" },
+    });
+  },
 });
 
-const newMigrationRoute = createRoute({
+const newMigrationRedirectRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/pipelines/$pipelineId/migrations/new",
-  component: NewMigration,
+  beforeLoad: ({ params }) => {
+    throw redirect({
+      to: "/pipelines/$pipelineId",
+      params,
+      search: { tab: "migrations" },
+    });
+  },
 });
 
 const loginRoute = createRoute({
@@ -84,9 +112,9 @@ const routeTree = rootRoute.addChildren([
   homeRoute,
   devKitRoute,
   pipelinesImportRoute,
-  pipelineDetailRoute,
-  rubricReviewRoute,
-  newMigrationRoute,
+  pipelineWorkspaceRoute,
+  rubricReviewRedirectRoute,
+  newMigrationRedirectRoute,
   loginRoute,
   authVerifyRoute,
   settingsRoute,

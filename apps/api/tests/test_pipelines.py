@@ -199,6 +199,35 @@ def test_get_dag_for_unknown_pipeline_returns_404(client: TestClient) -> None:
     assert response.status_code == 404
 
 
+def test_patch_pipeline_renames_and_returns_updated_summary(client: TestClient) -> None:
+    upload_response = _upload(client, _diamond_trace_file())
+    pipeline_id = upload_response.json()["pipeline_id"]
+
+    response = client.patch(f"/pipelines/{pipeline_id}", json={"name": "Renamed Pipeline"})
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["id"] == pipeline_id
+    assert body["name"] == "Renamed Pipeline"
+    assert body["stage_count"] == 4
+
+    # Persisted, not just echoed back.
+    listed = client.get("/pipelines").json()
+    assert listed[0]["name"] == "Renamed Pipeline"
+
+
+def test_patch_pipeline_rejects_empty_name(client: TestClient) -> None:
+    upload_response = _upload(client, _diamond_trace_file())
+    pipeline_id = upload_response.json()["pipeline_id"]
+
+    response = client.patch(f"/pipelines/{pipeline_id}", json={"name": ""})
+    assert response.status_code == 422
+
+
+def test_patch_pipeline_for_unknown_pipeline_returns_404(client: TestClient) -> None:
+    response = client.patch("/pipelines/999999", json={"name": "Doesn't matter"})
+    assert response.status_code == 404
+
+
 def test_import_minimal_stage_record_persists_null_tokens_and_latency(
     client: TestClient, session_factory: sessionmaker
 ) -> None:

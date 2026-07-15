@@ -40,6 +40,10 @@ class PipelineSummary(BaseModel):
     benchmark_query_count: int
 
 
+class PipelineUpdate(BaseModel):
+    name: str = Field(min_length=1, max_length=255)
+
+
 class DagLayer(BaseModel):
     stage_ids: list[int]
 
@@ -133,6 +137,41 @@ def list_pipelines(db: Session = Depends(get_db)) -> list[PipelineSummary]:
             )
         )
     return summaries
+
+
+@router.patch("/{pipeline_id}", response_model=PipelineSummary)
+def update_pipeline(
+    pipeline_id: int, update: PipelineUpdate, db: Session = Depends(get_db)
+) -> PipelineSummary:
+    """Rename a pipeline — used by the unified workspace header's
+    click-to-edit-inline name field (apps/web's pipeline-workspace.tsx).
+    Same PATCH-whole-resource pattern as settings.py's update_workspace_settings.
+    """
+    pipeline = db.get(
+        models.Pipeline,
+        pipeline_id,
+        options=[
+            selectinload(models.Pipeline.stages),
+            selectinload(models.Pipeline.benchmark_sets).selectinload(
+                models.BenchmarkSet.traces
+            ),
+        ],
+    )
+    if pipeline is None:
+        raise HTTPException(status_code=404, detail=f"Pipeline {pipeline_id} not found")
+
+    pipeline.name = update.name
+    db.commit()
+    db.refresh(pipeline)
+
+    query_count = sum(len(bs.traces) for bs in pipeline.benchmark_sets)
+    return PipelineSummary(
+        id=pipeline.id,
+        name=pipeline.name,
+        stage_count=len(pipeline.stages),
+        models_used=sorted({s.model for s in pipeline.stages}),
+        benchmark_query_count=query_count,
+    )
 
 
 @router.get("/{pipeline_id}/dag", response_model=DagResponse)

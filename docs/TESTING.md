@@ -152,22 +152,31 @@ causes a later `alembic upgrade head` to fail).
 ```
 /                                      Pipelines home
 /pipelines/import                      Import wizard (3 steps)
-/pipelines/$pipelineId                 Pipeline canvas (React Flow DAG)
-/pipelines/$pipelineId/rubrics         Rubric review (screen 4)
-/pipelines/$pipelineId/migrations/new  New migration wizard (screen 5)
+/pipelines/$pipelineId?tab=canvas      Pipeline workspace — Canvas tab (default, React Flow DAG)
+/pipelines/$pipelineId?tab=data        Pipeline workspace — Data tab ("Coming soon" placeholder, Phase 3)
+/pipelines/$pipelineId?tab=rubrics     Pipeline workspace — Rubrics tab (screen 4)
+/pipelines/$pipelineId?tab=migrations  Pipeline workspace — Migrations tab (screen 5)
 /login                                 Request a magic link
 /auth/verify?token=...                 Exchange a magic link for a session
 /settings                              Workspace name + BYOK API keys
 /dev/kit                               Design system reference (not a product screen)
 ```
 
+**The old three-route shape** (`/pipelines/$id`, `/pipelines/$id/rubrics`,
+`/pipelines/$id/migrations/new` as separate screens) was replaced 2026-07-15
+by the single unified workspace above — see DEV_TRACKER.md's "Phase 1 —
+Unified pipeline workspace". `/pipelines/$id/rubrics` and
+`/pipelines/$id/migrations/new` still work as URLs (any old bookmark or
+shared link) but now just redirect into the matching tab of
+`/pipelines/$id` — they render nothing of their own anymore.
+
 **The real click-path** through the product as built so far:
 
 ```
 /  →  (drop a trace file)  →  /pipelines/import
    →  (validate, continue)  →  DAG preview  →  "View pipeline canvas"
-   →  /pipelines/$id        →  "Review rubrics"  →  /pipelines/$id/rubrics
-                             →  "New migration"   →  /pipelines/$id/migrations/new
+   →  /pipelines/$id (Canvas tab)  →  click "Rubrics" tab  →  ?tab=rubrics
+                                    →  click "Migrations" tab  →  ?tab=migrations
 ```
 
 Auth and Settings are a separate, currently-unconnected flow — nothing
@@ -197,16 +206,46 @@ calling a milestone done.
 5. Back at `/`, the table now shows the imported pipeline (not the empty
    state) with correct stage count, model badges, benchmark query count.
 
-### 3.2 Rubric review (screen 4)
+### 3.1b Unified pipeline workspace (tabs, inline rename, rubric drawer)
+
+Added 2026-07-15 — see DEV_TRACKER.md's "Phase 1 — Unified pipeline
+workspace". Covers the persistent header/tab bar that now wraps the Canvas,
+Data, Rubrics, and Migrations screens, plus the canvas's new node-click
+drawer.
+
+1. On `/pipelines/$id`, click directly on the pipeline name in the header →
+   it turns into a text input. Change it, press Enter (or click away) →
+   confirm it saves (`PATCH /pipelines/{id}`) and the header shows the new
+   name after the input closes. Press Escape while editing → confirm it
+   discards the draft instead of saving.
+2. Click each of the four tab buttons (Canvas · Data · Rubrics ·
+   Migrations) → confirm the URL's `?tab=` query param changes to match and
+   the body below swaps — the header and tab bar itself never re-render/flash.
+3. The Data tab shows a plain "Coming soon" panel — that's expected, the
+   real dashboard is a separate later phase, not a bug.
+4. On the Canvas tab, click any stage node → a drawer slides in from the
+   right showing that stage's rubric (format checks + content criteria) and
+   an "Approve" button. Approving from the drawer updates the badge in
+   place without closing the drawer or navigating away.
+5. In the drawer, click "View full rubric →" → the workspace switches to
+   the Rubrics tab and scrolls straight to that stage's card (each card has
+   an anchor id — no other card should end up at the top of the viewport
+   for even a frame first).
+6. Visit `/pipelines/$id/rubrics` or `/pipelines/$id/migrations/new`
+   directly (typed URL or an old bookmark) → confirm each redirects to
+   `/pipelines/$id?tab=rubrics` / `?tab=migrations` respectively, landing on
+   the right tab with the right tab button visually active.
+
+### 3.2 Rubric review (Rubrics tab, screen 4)
 
 1. Either seed rubrics for the imported pipeline via the dev-only script
    (`cd apps/api && uv run python -m reprompt_api.seed_rubrics
    --pipeline-id <id>`), **or** use the real generator now built into the
-   screen itself: enter a model name (e.g. `openai/gpt-4o`) in the field at
-   the top of `/pipelines/$pipelineId/rubrics` and click "Generate all
+   tab itself: enter a model name (e.g. `openai/gpt-4o`) in the field at
+   the top of `/pipelines/$pipelineId?tab=rubrics` and click "Generate all
    rubrics" — needs a real BYOK key configured for that model's provider
    (see §3.4 below), makes one real LLM call per stage.
-2. From the canvas, click "Review rubrics" → each stage shows three
+2. From the canvas, click the "Rubrics" tab → each stage shows three
    grouped sections: Format checks, Content criteria, Downstream contract
    — all in plain English (no raw JSON/schema shown to the reviewer).
 3. Edit a `required_keys` or `length_bounds` check inline, save, reload,
@@ -214,9 +253,9 @@ calling a milestone done.
 4. Approve one stage, then "Approve all" → confirm every stage shows
    approved.
 
-### 3.3 New migration wizard (screen 5)
+### 3.3 New migration wizard (Migrations tab, screen 5)
 
-1. From the canvas, click "New migration" → step 1 shows the model picker
+1. From the canvas, click the "Migrations" tab → step 1 shows the model picker
    with cost/context-window/JSON-mode info per model (including at least
    one local/no-key model like an `ollama/...` entry, which should show
    `requires_key: false`) and, next to each model option, its model-card
@@ -245,6 +284,14 @@ calling a milestone done.
    optimizer sub-step signal", see `DEV_TRACKER.md`). Finished stages turn
    green, a failed/budget-stopped stage turns red with the reason shown in
    the run bar above the canvas.
+7. Click "Back to pipeline canvas" from the run screen → confirm it just
+   switches the tab bar back to Canvas (`?tab=canvas`), not a full page
+   navigation away from the workspace.
+8. Switch to another tab and back to Migrations (or reload the page while
+   on `?tab=migrations`) → confirm you land straight back on this same
+   run/success screen (`GET /pipelines/{id}/migrations` finding the
+   existing `Migration` row), not the wizard again — the wizard only shows
+   when a pipeline has no `Migration` yet.
 
 ### 3.4 Auth + Settings (M5)
 

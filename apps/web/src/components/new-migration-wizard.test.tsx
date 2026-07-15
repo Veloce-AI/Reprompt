@@ -2,14 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import { fireEvent } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import {
-  createMemoryHistory,
-  createRootRoute,
-  createRoute,
-  createRouter,
-  RouterProvider,
-} from "@tanstack/react-router";
-import NewMigration from "./new-migration";
+import { NewMigrationWizard } from "./new-migration-wizard";
 import type { DagResponse, ModelOption, ModelCardInfo } from "@/lib/api";
 
 vi.mock("@/lib/api", async () => {
@@ -24,10 +17,6 @@ vi.mock("@/lib/api", async () => {
 });
 
 import { createMigration, getPipelineDag, listModelOptions, getModelCard } from "@/lib/api";
-
-// TanStack Router's scroll restoration calls window.scrollTo, which jsdom
-// doesn't implement - stub it out (same pattern as rubric-review.test.tsx).
-window.scrollTo = vi.fn() as unknown as typeof window.scrollTo;
 
 function baseDag(): DagResponse {
   return {
@@ -82,38 +71,6 @@ function baseModels(): ModelOption[] {
   ];
 }
 
-function renderAtPipeline(pipelineId: string) {
-  const rootRoute = createRootRoute();
-  const route = createRoute({
-    getParentRoute: () => rootRoute,
-    path: "/pipelines/$pipelineId/migrations/new",
-    component: NewMigration,
-  });
-  const routeTree = rootRoute.addChildren([route]);
-  const router = createRouter({
-    routeTree,
-    history: createMemoryHistory({
-      initialEntries: [`/pipelines/${pipelineId}/migrations/new`],
-    }),
-  });
-  const queryClient = new QueryClient({
-    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
-  });
-
-  return render(
-    <QueryClientProvider client={queryClient}>
-      <RouterProvider router={router} />
-    </QueryClientProvider>
-  );
-}
-
-beforeEach(() => {
-  vi.mocked(getPipelineDag).mockReset();
-  vi.mocked(listModelOptions).mockReset();
-  vi.mocked(createMigration).mockReset();
-  vi.mocked(getModelCard).mockReset();
-});
-
 function baseModelCard(family: string): ModelCardInfo {
   return {
     family,
@@ -131,12 +88,30 @@ function baseModelCard(family: string): ModelCardInfo {
   };
 }
 
-describe("NewMigration wizard", () => {
+function renderWizard(onCreated: (m: unknown) => void) {
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+  });
+  return render(
+    <QueryClientProvider client={queryClient}>
+      <NewMigrationWizard pipelineId={1} onCreated={onCreated as never} />
+    </QueryClientProvider>
+  );
+}
+
+beforeEach(() => {
+  vi.mocked(getPipelineDag).mockReset();
+  vi.mocked(listModelOptions).mockReset();
+  vi.mocked(createMigration).mockReset();
+  vi.mocked(getModelCard).mockReset();
+});
+
+describe("NewMigrationWizard", () => {
   it("disables Continue until at least one model is checked", async () => {
     vi.mocked(getPipelineDag).mockResolvedValue(baseDag());
     vi.mocked(listModelOptions).mockResolvedValue(baseModels());
 
-    renderAtPipeline("1");
+    renderWizard(vi.fn());
 
     await screen.findByLabelText("gpt-4o-mini");
     expect(
@@ -151,7 +126,7 @@ describe("NewMigration wizard", () => {
     ).toBeEnabled();
   });
 
-  it("walks through all three steps and creates a migration with multi-model config", async () => {
+  it("walks through all three steps and calls onCreated with the new migration", async () => {
     vi.mocked(getPipelineDag).mockResolvedValue(baseDag());
     vi.mocked(listModelOptions).mockResolvedValue(baseModels());
     vi.mocked(createMigration).mockResolvedValue({
@@ -172,7 +147,8 @@ describe("NewMigration wizard", () => {
       stage_states: {},
     });
 
-    renderAtPipeline("1");
+    const onCreated = vi.fn();
+    renderWizard(onCreated);
 
     // Step 1: check both models
     await screen.findByLabelText("gpt-4o-mini");
@@ -202,14 +178,16 @@ describe("NewMigration wizard", () => {
       });
     });
 
-    await screen.findByText(/Migration #42 created/);
+    await waitFor(() => {
+      expect(onCreated).toHaveBeenCalledWith(expect.objectContaining({ id: 42 }));
+    });
   });
 
   it("shows a validation hint and blocks continue for a non-positive budget", async () => {
     vi.mocked(getPipelineDag).mockResolvedValue(baseDag());
     vi.mocked(listModelOptions).mockResolvedValue(baseModels());
 
-    renderAtPipeline("1");
+    renderWizard(vi.fn());
     await screen.findByLabelText("gpt-4o-mini");
     fireEvent.click(screen.getByLabelText("gpt-4o-mini"));
     fireEvent.click(
@@ -236,16 +214,14 @@ describe("NewMigration wizard", () => {
       return Promise.reject(new Error("Not found"));
     });
 
-    renderAtPipeline("1");
+    renderWizard(vi.fn());
     await screen.findByLabelText("gpt-4o-mini");
 
-    // Wait for model card to fetch and display (should have at least one heading)
     await waitFor(() => {
       const headings = screen.getAllByText("Model transform rules");
       expect(headings.length).toBeGreaterThan(0);
     });
 
-    // Verify the rule is displayed (both models should show the rule)
     const rules = screen.getAllByText(/test_rule/);
     expect(rules.length).toBeGreaterThanOrEqual(1);
     const descriptions = screen.getAllByText(/A test rule/);

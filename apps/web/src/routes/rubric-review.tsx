@@ -494,6 +494,7 @@ function JudgeCriteriaSection({
 }) {
   const [editingIndex, setEditingIndex] = useState<number | null>(null);
   const [newName, setNewName] = useState("");
+  const [newDescription, setNewDescription] = useState("");
 
   function deleteAt(index: number) {
     onChange(criteria.filter((_, i) => i !== index));
@@ -507,8 +508,9 @@ function JudgeCriteriaSection({
   function addFromInput() {
     const name = newName.trim();
     if (!name) return;
-    onChange([...criteria, { name, weight: 1, description: "" }]);
+    onChange([...criteria, { name, weight: 1, description: newDescription.trim() }]);
     setNewName("");
+    setNewDescription("");
   }
 
   return (
@@ -548,17 +550,28 @@ function JudgeCriteriaSection({
         ))}
         {criteria.length === 0 && <li className="text-13 text-ink-soft">No content criteria yet.</li>}
       </ul>
-      <div className="mt-3 flex gap-2">
-        <Input
-          placeholder="e.g. Covers all key entities"
-          aria-label="Add a content criterion"
-          value={newName}
-          onChange={(e) => setNewName(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && addFromInput()}
-        />
-        <Button variant="secondary" onClick={addFromInput}>
-          Add criterion
-        </Button>
+      <div className="mt-3 space-y-2">
+        <div className="flex gap-2">
+          <Input
+            placeholder="Criterion name (e.g. Covers all key entities)"
+            aria-label="Add a content criterion name"
+            value={newName}
+            onChange={(e) => setNewName(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && addFromInput()}
+          />
+        </div>
+        <div className="flex gap-2">
+          <Input
+            placeholder="Description — what should the judge look for? (e.g. Output mentions all entities from the input)"
+            aria-label="Add a content criterion description"
+            value={newDescription}
+            onChange={(e) => setNewDescription(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && addFromInput()}
+          />
+          <Button variant="secondary" onClick={addFromInput}>
+            Add criterion
+          </Button>
+        </div>
       </div>
     </section>
   );

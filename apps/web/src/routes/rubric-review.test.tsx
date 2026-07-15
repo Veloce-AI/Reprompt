@@ -142,7 +142,7 @@ describe("RubricReview", () => {
     renderAtPipeline("1");
     await screen.findByText("Content criteria");
 
-    const input = screen.getByLabelText("Add a content criterion");
+    const input = screen.getByLabelText("Add a content criterion name");
     fireEvent.change(input, { target: { value: "No hedging language" } });
     fireEvent.click(screen.getAllByRole("button", { name: "Add criterion" })[1]);
 

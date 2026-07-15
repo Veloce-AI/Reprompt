@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { Link, useNavigate, useParams } from "@tanstack/react-router";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import {
@@ -10,22 +10,12 @@ import {
   startMigration,
   type MigrationOut,
   type ModelOption,
-  type StageInfo,
 } from "@/lib/api";
 import { AppShell } from "@/components/app-shell";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
-import { Select } from "@/components/ui/select";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
 
 type WizardStep = "target-model" | "budget" | "confirm";
 
@@ -70,8 +60,7 @@ export default function NewMigration() {
   const { pipelineId } = useParams({ from: "/pipelines/$pipelineId/migrations/new" });
   const pid = Number(pipelineId);
   const [step, setStep] = useState<WizardStep>("target-model");
-  const [defaultModel, setDefaultModel] = useState("");
-  const [overrides, setOverrides] = useState<Record<string, string>>({});
+  const [selectedModels, setSelectedModels] = useState<Set<string>>(new Set());
   const [budget, setBudget] = useState("");
   const [parityThresholdPercent, setParityThresholdPercent] = useState("95");
 
@@ -84,37 +73,19 @@ export default function NewMigration() {
     queryFn: () => listModelOptions(pid),
   });
 
-  const stages: StageInfo[] = useMemo(() => {
-    if (!dagQuery.data) return [];
-    return Object.values(dagQuery.data.stages).sort((a, b) => a.id - b.id);
-  }, [dagQuery.data]);
-
-  const modelByName = useMemo(() => {
-    const map = new Map<string, ModelOption>();
-    for (const option of modelsQuery.data ?? []) map.set(option.model, option);
-    return map;
-  }, [modelsQuery.data]);
-
-  function setOverride(stageId: number, model: string) {
-    setOverrides((prev) => {
-      const next = { ...prev };
-      if (model === "") {
-        delete next[String(stageId)];
-      } else {
-        next[String(stageId)] = model;
-      }
+  function toggleModel(model: string) {
+    setSelectedModels((prev) => {
+      const next = new Set(prev);
+      if (next.has(model)) next.delete(model);
+      else next.add(model);
       return next;
     });
-  }
-
-  function effectiveModel(stageId: number): string {
-    return overrides[String(stageId)] || defaultModel;
   }
 
   const migrationMutation = useMutation({
     mutationFn: () =>
       createMigration(pid, {
-        target_model_config: { default: defaultModel, stages: overrides },
+        target_model_config: { models: [...selectedModels] },
         budget: Number(budget),
         parity_threshold: Number(parityThresholdPercent) / 100,
       }),
@@ -122,7 +93,7 @@ export default function NewMigration() {
 
   const budgetNumber = Number(budget);
   const parityNumber = Number(parityThresholdPercent);
-  const canContinueFromTargetModel = defaultModel.trim().length > 0;
+  const canContinueFromTargetModel = selectedModels.size > 0;
   const canContinueFromBudget =
     budget.trim() !== "" &&
     Number.isFinite(budgetNumber) &&
@@ -131,8 +102,6 @@ export default function NewMigration() {
     Number.isFinite(parityNumber) &&
     parityNumber >= 0 &&
     parityNumber <= 100;
-
-  const overrideCount = Object.keys(overrides).length;
 
   if (migrationMutation.isSuccess) {
     return (
@@ -190,9 +159,9 @@ export default function NewMigration() {
         })}
       </ol>
 
-      {dagQuery.isLoading && (
+      {modelsQuery.isLoading && (
         <p className="text-14 text-ink-soft" role="status">
-          Loading pipeline stages…
+          Loading models…
         </p>
       )}
       {dagQuery.isError && (
@@ -201,114 +170,69 @@ export default function NewMigration() {
         </p>
       )}
 
-      {step === "target-model" && dagQuery.data && (
+      {step === "target-model" && (
         <Card>
           <CardContent className="space-y-6 p-8">
             <div>
-              <label htmlFor="default-model" className="mb-2 block text-13 font-medium text-ink">
-                Default target model
-              </label>
-              <p className="mb-2 text-12 text-ink-soft">
-                Applied to every stage unless you override it below.
+              <h2 className="mb-1 text-13 font-medium text-ink">Target models</h2>
+              <p className="mb-4 text-12 text-ink-soft">
+                Select one or more models. The optimizer will try each model per stage and keep the best-scoring result.
               </p>
-              <Select
-                id="default-model"
-                value={defaultModel}
-                onChange={(e) => setDefaultModel(e.target.value)}
-                disabled={modelsQuery.isLoading}
-              >
-                <option value="" disabled>
-                  {modelsQuery.isLoading ? "Loading models…" : "Select a model"}
-                </option>
-                {(modelsQuery.data ?? []).map((option) => (
-                  <option key={option.model} value={option.model}>
-                    {option.model}
-                  </option>
-                ))}
-              </Select>
-              {!canContinueFromTargetModel && (
-                <p className="mt-2 text-12 text-ink-soft">
-                  Select a default model to continue.
-                </p>
-              )}
-              {defaultModel && modelByName.has(defaultModel) && (
-                <ModelFacts option={modelByName.get(defaultModel)!} model={defaultModel} />
-              )}
-            </div>
-
-            <div>
-              <h2 className="mb-2 text-13 font-medium text-ink">Per-stage overrides</h2>
-              <p className="mb-3 text-12 text-ink-soft">
-                Optional - leave a stage on "Use default" to migrate it to the default model above.
-                {overrideCount > 0 &&
-                  ` ${overrideCount} stage${overrideCount === 1 ? "" : "s"} overridden.`}
-              </p>
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Stage</TableHead>
-                    <TableHead>Current model</TableHead>
-                    <TableHead>Target model</TableHead>
-                    <TableHead>Cost / 1M tokens</TableHead>
-                    <TableHead>Context window</TableHead>
-                    <TableHead>JSON mode</TableHead>
-                    <TableHead>Prompt rewrite</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {stages.map((stage) => {
-                    const effective = effectiveModel(stage.id);
-                    const facts = modelByName.get(effective);
-                    const family = effective ? resolveFamily(effective) : null;
+              {modelsQuery.isLoading ? (
+                <p className="text-13 text-ink-soft">Loading available models…</p>
+              ) : (
+                <div className="grid grid-cols-2 gap-3">
+                  {(modelsQuery.data ?? []).map((option) => {
+                    const checked = selectedModels.has(option.model);
+                    const family = resolveFamily(option.model);
                     return (
-                      <TableRow key={stage.id}>
-                        <TableCell className="font-medium text-ink">{stage.name}</TableCell>
-                        <TableCell className="font-mono text-ink-soft">{stage.model}</TableCell>
-                        <TableCell>
-                          <Select
-                            aria-label={`Target model for ${stage.name}`}
-                            value={overrides[String(stage.id)] ?? ""}
-                            onChange={(e) => setOverride(stage.id, e.target.value)}
-                          >
-                            <option value="">
-                              Use default{defaultModel ? ` (${defaultModel})` : ""}
-                            </option>
-                            {(modelsQuery.data ?? []).map((option) => (
-                              <option key={option.model} value={option.model}>
-                                {option.model}
-                              </option>
-                            ))}
-                          </Select>
-                        </TableCell>
-                        <TableCell className="font-mono tabular-nums">
-                          {facts ? formatCostPer1M(facts.input_cost_per_1m) : "—"}
-                        </TableCell>
-                        <TableCell className="font-mono tabular-nums">
-                          {facts ? formatTokens(facts.max_input_tokens) : "—"}
-                        </TableCell>
-                        <TableCell>
-                          {facts ? (
-                            <Badge variant={facts.supports_json_mode ? "pass" : "outline"}>
-                              {facts.supports_json_mode ? "Supported" : "Not supported"}
-                            </Badge>
-                          ) : (
-                            "—"
+                      <label
+                        key={option.model}
+                        className={
+                          "flex cursor-pointer items-start gap-3 rounded-control border p-4 transition-colors " +
+                          (checked ? "border-beam bg-beam-soft/40" : "border-line hover:border-beam/40")
+                        }
+                      >
+                        <input
+                          type="checkbox"
+                          aria-label={option.model}
+                          className="mt-0.5 accent-beam"
+                          checked={checked}
+                          onChange={() => toggleModel(option.model)}
+                        />
+                        <div className="min-w-0">
+                          <p className="font-mono text-13 font-medium text-ink">{option.model}</p>
+                          {option.provider && (
+                            <p className="text-12 text-ink-soft capitalize">{option.provider}</p>
                           )}
-                        </TableCell>
-                        <TableCell>
-                          {family ? (
-                            <span className="text-12 text-ink-soft">
-                              <Badge variant="neutral">{family}</Badge>
-                            </span>
-                          ) : (
-                            "—"
-                          )}
-                        </TableCell>
-                      </TableRow>
+                          <p className="mt-1 text-12 text-ink-soft">
+                            {formatCostPer1M(option.input_cost_per_1m)} in /{" "}
+                            {formatCostPer1M(option.output_cost_per_1m)} out per 1M tokens
+                          </p>
+                          <p className="mt-1 text-12 text-ink-soft">
+                            Context: {formatTokens(option.max_input_tokens)} tokens
+                          </p>
+                          <div className="mt-2 flex flex-wrap gap-1">
+                            {option.supports_json_mode && (
+                              <Badge variant="pass">JSON mode</Badge>
+                            )}
+                            {option.supports_function_calling && (
+                              <Badge variant="pass">Tool use</Badge>
+                            )}
+                            {!option.requires_api_key && (
+                              <Badge variant="neutral">No API key</Badge>
+                            )}
+                            <Badge variant="neutral">{FAMILY_TRANSFORM_LABELS[family]}</Badge>
+                          </div>
+                        </div>
+                      </label>
                     );
                   })}
-                </TableBody>
-              </Table>
+                </div>
+              )}
+              {!canContinueFromTargetModel && !modelsQuery.isLoading && (
+                <p className="mt-3 text-12 text-ink-soft">Select at least one model to continue.</p>
+              )}
             </div>
 
             <div className="flex justify-end">
@@ -395,25 +319,17 @@ export default function NewMigration() {
         <Card>
           <CardContent className="space-y-6 p-8">
             <div>
-              <h2 className="mb-2 text-13 font-medium text-ink">Target model</h2>
-              <p className="text-14 text-ink">
-                Default: <span className="font-mono">{defaultModel}</span>
+              <h2 className="mb-2 text-13 font-medium text-ink">Target models</h2>
+              <ul className="space-y-1">
+                {[...selectedModels].map((model) => (
+                  <li key={model} className="font-mono text-13 text-ink">
+                    {model}
+                  </li>
+                ))}
+              </ul>
+              <p className="mt-2 text-12 text-ink-soft">
+                The optimizer will try each model per stage and keep the best-scoring result.
               </p>
-              {overrideCount === 0 ? (
-                <p className="mt-1 text-13 text-ink-soft">No per-stage overrides.</p>
-              ) : (
-                <ul className="mt-2 space-y-1">
-                  {Object.entries(overrides).map(([stageId, model]) => {
-                    const stage = stages.find((s) => s.id === Number(stageId));
-                    return (
-                      <li key={stageId} className="text-13 text-ink">
-                        {stage?.name ?? `Stage ${stageId}`}:{" "}
-                        <span className="font-mono">{model}</span>
-                      </li>
-                    );
-                  })}
-                </ul>
-              )}
             </div>
 
             <div>
@@ -626,40 +542,3 @@ function MigrationSuccessScreen({
   );
 }
 
-function ModelFacts({ option, model }: { option: ModelOption; model: string }) {
-  const family = resolveFamily(model);
-  return (
-    <div className="mt-3 flex flex-wrap gap-4 rounded-control border border-line bg-beam-soft/40 p-3 text-12 text-ink-soft">
-      <span>
-        Cost / 1M tokens:{" "}
-        <span className="font-mono text-ink">
-          {formatCostPer1M(option.input_cost_per_1m)} in / {formatCostPer1M(option.output_cost_per_1m)} out
-        </span>
-      </span>
-      <span>
-        Context window:{" "}
-        <span className="font-mono text-ink">{formatTokens(option.max_input_tokens)}</span>
-      </span>
-      <span>
-        JSON mode:{" "}
-        <Badge variant={option.supports_json_mode ? "pass" : "outline"}>
-          {option.supports_json_mode ? "Supported" : "Not supported"}
-        </Badge>
-      </span>
-      <span>
-        Tool use:{" "}
-        <Badge variant={option.supports_function_calling ? "pass" : "outline"}>
-          {option.supports_function_calling ? "Supported" : "Not supported"}
-        </Badge>
-      </span>
-      <span>
-        Prompt rewrite:{" "}
-        <span className="text-ink">
-          <Badge variant="neutral">{family}</Badge>{" "}
-          {FAMILY_TRANSFORM_LABELS[family]}
-        </span>
-      </span>
-      {!option.requires_api_key && <Badge variant="neutral">No API key required</Badge>}
-    </div>
-  );
-}

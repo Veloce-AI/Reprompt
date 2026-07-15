@@ -132,8 +132,7 @@ export interface ModelOption {
 }
 
 export interface TargetModelConfig {
-  default: string;
-  stages: Record<string, string>;
+  models: string[];
 }
 
 export interface MigrationCreate {

@@ -88,7 +88,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from reprompt_core.budget import BudgetTracker
 from reprompt_core.deterministic import DeterministicCheck, evaluate_deterministic_checks, parse_deterministic_checks
 from reprompt_core.embedding import embedding_similarity
-from reprompt_core.judge import judge_pairwise
+from reprompt_core.judge import JudgeResponseError, JudgeResult, judge_pairwise, judge_single_pass
 from reprompt_core.llm.client import LLMResponse
 from reprompt_core.llm.model_card import apply_model_card_transform
 from reprompt_core.optimizer.mutator import (
@@ -126,10 +126,17 @@ calls (plus the mutation call itself) — kept small by default so a
 migration's cost stays predictable; BudgetTracker.is_exhausted remains the
 authoritative hard stop regardless of this default."""
 
-DEFAULT_MAX_REFINE_ROUNDS = 1
+DEFAULT_MAX_REFINE_ROUNDS = 3
 """Prism-only. Bounds how many critique-then-refine rounds run before the
 final full sweep. See ``_optimize_stage_prism`` and ``DEV_TRACKER.md``'s
-"Loop & harness engineering discipline" section."""
+"Loop & harness engineering discipline" section. Raised from 1 to 3 as part
+of the Phase 1 quality fixes (see ``DEV_TRACKER.md``'s dated Phase 1
+section) — at 1, the round loop below could only ever execute once, which
+made the plateau-detection logic (``candidate_baseline``/``PLATEAU_EPSILON``)
+dead code: there was never a second round to compare a candidate's score
+against. The plateau check plus ``budget.is_exhausted`` already bound the
+cost of unhelpful further rounds, so this is safe to raise without a new
+cost-control mechanism."""
 
 PLATEAU_EPSILON = 0.02
 """Prism-only. If a round's cheap-score improvement over the previous
@@ -137,6 +144,18 @@ round is below this, stop refining that candidate early even if
 ``max_refine_rounds`` would allow another round — see ``DEV_TRACKER.md``'s
 early-stopping-on-plateau design note (same 0-1 scale as every other score
 in this codebase)."""
+
+NEAR_DUPLICATE_SIMILARITY_THRESHOLD = 0.97
+"""Prism and simple both. A new mutation/refinement variant whose embedding
+similarity (:func:`reprompt_core.embedding.embedding_similarity` — local,
+free, no API key) to an already-kept candidate exceeds this is dropped as a
+near-duplicate before it can consume a full sweep slot — see
+``_is_near_duplicate`` and ``DEV_TRACKER.md``'s Phase 1 quality-fixes note.
+0.97 is deliberately high: this must only catch genuinely near-identical
+rewrites (differing by a sentence or two), not merely similar-topic
+variants — mutation is supposed to produce real diversity (see
+``mutator.py``'s system prompt), and this check exists to catch wasted
+sweep slots, not to second-guess the mutator's own diversity."""
 
 _MAX_MUTATION_EXAMPLES = 5
 """How many benchmark examples are shown to the mutator model for context
@@ -185,7 +204,12 @@ class StageAttempt(BaseModel):
     prompt_variant: str
     params: dict[str, Any]
     format_mode: str
-    scores: dict[str, float | None]
+    scores: dict[str, float | bool | None] = Field(
+        description="Deterministic/judge/embedding/final component scores (see run_sweep_for_stage), "
+        "plus judge_disagreement/judge_low_confidence (float|bool|None, set only when a real judge "
+        "call ran — see judge.JudgeResult.disagreement/low_confidence and DEV_TRACKER.md's Phase 1 "
+        "quality-fixes note on why these are now plumbed through instead of computed then discarded).",
+    )
     cost_usd: float
     latency_ms: float
     few_shot_examples: list[dict[str, Any]] | None = Field(
@@ -278,6 +302,31 @@ def _example_dict(example: MutationExample | dict[str, Any]) -> dict[str, Any]:
     return example
 
 
+def _is_near_duplicate(candidate: str, existing: Sequence[str]) -> bool:
+    """True if ``candidate``'s embedding similarity to any prompt text in
+    ``existing`` exceeds :data:`NEAR_DUPLICATE_SIMILARITY_THRESHOLD`.
+
+    Dedup before this check was exact-string-match only (``if variant not in
+    prompt_candidates``) — two near-identical mutation/refinement variants
+    (differing by a sentence) would each still consume a full sweep slot.
+    This is a small, local, no-cost check (bge-m3 runs locally, no API key)
+    run before a new variant is added to the candidate set. Never raises —
+    an empty candidate/existing string has no well-defined embedding
+    (:func:`~reprompt_core.embedding.embedding_similarity` raises
+    ``ValueError`` for that), which is treated as "not a duplicate" here
+    rather than propagated, since an empty variant is already a degenerate
+    case the downstream sweep will simply score poorly on its own.
+    """
+    for other in existing:
+        try:
+            similarity = embedding_similarity(other, candidate)
+        except ValueError:
+            continue
+        if similarity > NEAR_DUPLICATE_SIMILARITY_THRESHOLD:
+            return True
+    return False
+
+
 # ---------------------------------------------------------------------------
 # Shared sweep/score/select — reused by both the in-house and the
 # PromptWizard backend (reprompt_core.optimizer.promptwizard). Only *how
@@ -368,6 +417,8 @@ def run_sweep_for_stage(
             judge_score: float | None = None
             judge_cost = 0.0
             judge_latency = 0.0
+            judge_disagreement: float | None = None
+            judge_low_confidence: bool | None = None
             if should_run and judge_criteria:
                 try:
                     judge_result = judge_pairwise(
@@ -377,6 +428,8 @@ def run_sweep_for_stage(
                     judge_score = judge_result.overall_score
                     judge_cost = judge_result.cost_usd or 0.0
                     judge_latency = judge_result.latency_ms
+                    judge_disagreement = judge_result.disagreement
+                    judge_low_confidence = judge_result.low_confidence
                 except Exception as exc:  # noqa: BLE001 - a failed judge call degrades the score, doesn't abort
                     logger.warning(
                         "Judge call failed for stage %s candidate %s: %s",
@@ -410,6 +463,8 @@ def run_sweep_for_stage(
                     "judge": composite.judge_score,
                     "embedding_sim": composite.embedding_score,
                     "final": composite.final_score,
+                    "judge_disagreement": judge_disagreement,
+                    "judge_low_confidence": judge_low_confidence,
                 },
                 cost_usd=total_cost,
                 latency_ms=total_latency,
@@ -471,7 +526,7 @@ def _optimize_stage_simple(
         )
         budget.record_spend(mutation.cost_usd or 0.0, candidate_id=f"stage-{stage_input.stage_id}-mutation")
         for variant in mutation.variants:
-            if variant not in prompt_candidates:
+            if variant not in prompt_candidates and not _is_near_duplicate(variant, prompt_candidates):
                 prompt_candidates.append(variant)
     except PromptMutationError as exc:
         logger.warning(
@@ -575,13 +630,15 @@ def _optimize_stage_prism(
         )
         budget.record_spend(mutation.cost_usd or 0.0, candidate_id=f"stage-{stage_input.stage_id}-mutation")
         for variant in mutation.variants:
-            if variant not in prompt_candidates:
+            if variant not in prompt_candidates and not _is_near_duplicate(variant, prompt_candidates):
                 prompt_candidates.append(variant)
     except PromptMutationError as exc:
         logger.warning(
             "Prompt mutation failed for stage %s (%s): %s — continuing with the original prompt only.",
             stage_input.stage_id, stage_input.stage_name, exc,
         )
+
+    judge_criteria = stage_input.rubric.get("judge_criteria") or []
 
     # Steps 2-4: bounded critique/refine rounds, with plateau early-stopping
     # (see DEV_TRACKER.md's "Loop & harness engineering discipline" #1).
@@ -603,7 +660,7 @@ def _optimize_stage_prism(
         if budget.is_exhausted or not candidates_to_rank:
             break
 
-        ranked: list[tuple[str, float, CompositeScore]] = []
+        ranked: list[tuple[str, float, CompositeScore, str | None]] = []
         for prompt_text in candidates_to_rank:
             if budget.is_exhausted:
                 break
@@ -612,7 +669,7 @@ def _optimize_stage_prism(
                 call=call, budget=budget,
             )
             if composite is not None:
-                ranked.append((prompt_text, cheap_score, composite))
+                ranked.append((prompt_text, cheap_score, composite, candidate_output))
 
         if not ranked:
             break
@@ -621,21 +678,65 @@ def _optimize_stage_prism(
         weakest = ranked[:2]
 
         next_round_candidates: list[str] = []
-        for prompt_text, cheap_score, composite in weakest:
+        for prompt_text, cheap_score, composite, candidate_output in weakest:
             baseline = candidate_baseline.get(prompt_text)
             if baseline is not None and (cheap_score - baseline) < PLATEAU_EPSILON:
                 continue  # this lineage's last refinement didn't help enough - stop refining it further
 
             if budget.is_exhausted:
                 break
+
+            # Fix (Phase 1 quality fixes): run one real, single-pass judge
+            # call on this weakest candidate before critiquing it, so the
+            # critique reasons against the judge's actual per-criterion
+            # feedback (the largest term in DEFAULT_WEIGHTS - see scoring.py)
+            # instead of always being told "the judge was not run", which is
+            # what happened when this cheap-score ranking pass's own
+            # judge_score=None was the only signal ever threaded into
+            # critique_and_refine. Bounded cost: at most one extra judge
+            # call per weakest candidate per round (<=2 per round), no swap
+            # (judge_single_pass, not judge_pairwise - the swap's bias-
+            # cancelling value is saved for the final, persisted sweep score).
+            judge_result: JudgeResult | None = None
+            if judge_criteria and candidate_output is not None and not budget.is_exhausted:
+                try:
+                    judge_result = judge_single_pass(
+                        benchmark_output, candidate_output, judge_criteria,
+                        model=judge_model, input=example_input,
+                    )
+                    budget.record_spend(
+                        judge_result.cost_usd or 0.0, candidate_id=f"stage-{stage_input.stage_id}-critique-judge"
+                    )
+                except JudgeResponseError as exc:
+                    failed_cost = exc.response.cost_usd if exc.response is not None else 0.0
+                    budget.record_spend(
+                        failed_cost or 0.0, candidate_id=f"stage-{stage_input.stage_id}-critique-judge"
+                    )
+                    logger.warning(
+                        "Judge call failed during Prism critique ranking for stage %s (%s): %s — "
+                        "critiquing without judge reasoning.",
+                        stage_input.stage_id, stage_input.stage_name, exc,
+                    )
+                except Exception as exc:  # noqa: BLE001 - transport failure, degrade gracefully, no cost to record
+                    logger.warning(
+                        "Judge call failed during Prism critique ranking for stage %s (%s): %s — "
+                        "critiquing without judge reasoning.",
+                        stage_input.stage_id, stage_input.stage_name, exc,
+                    )
+
             try:
                 refinement = critique_and_refine(
                     prompt_text, composite, limited_examples, stage_input.rubric, stage_input.target_model,
-                    call=call, mutator_model=mutator_model,
+                    call=call, mutator_model=mutator_model, judge_result=judge_result,
                 )
                 budget.record_spend(refinement.cost_usd or 0.0, candidate_id=f"stage-{stage_input.stage_id}-refine")
                 refined = refinement.variants[0]
-                if refined not in prompt_candidates and refined not in refined_variants:
+                already_kept = prompt_candidates + refined_variants
+                if (
+                    refined not in prompt_candidates
+                    and refined not in refined_variants
+                    and not _is_near_duplicate(refined, already_kept)
+                ):
                     refined_variants.append(refined)
                     candidate_baseline[refined] = cheap_score  # must beat the parent's score to refine again
                     next_round_candidates.append(refined)

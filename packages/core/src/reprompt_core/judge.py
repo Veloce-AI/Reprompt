@@ -91,6 +91,7 @@ __all__ = [
     "JudgeResult",
     "JudgeResponseError",
     "judge_pairwise",
+    "judge_single_pass",
     "DEFAULT_JUDGE_TEMPERATURE",
     "DEFAULT_DISAGREEMENT_THRESHOLD",
 ]
@@ -180,7 +181,18 @@ class JudgeResponseError(Exception):
     *reaching* the model; this is about the model answering off-schema once
     reached. Errors raised by :func:`reprompt_core.llm.client.complete`
     itself are not caught here and propagate to the caller unchanged.
+
+    ``response``, when available, is the raw (unusable-content) LLMResponse
+    that triggered this error — carried through so a caller that still wants
+    to record real spend on a failed call (``budget.record_spend()`` must
+    happen regardless of usability, per this codebase's harness-discipline
+    rule) can read ``exc.response.cost_usd`` without this module needing its
+    own budget-tracking concept.
     """
+
+    def __init__(self, message: str, *, response: llm_client.LLMResponse | None = None) -> None:
+        super().__init__(message)
+        self.response = response
 
 
 def _coerce_criteria(judge_criteria: Sequence[JudgeCriterion | dict[str, Any]]) -> list[JudgeCriterion]:
@@ -286,7 +298,8 @@ def _run_judge_call(
     except (ValidationError, ValueError) as exc:
         raise JudgeResponseError(
             f"Judge model '{model}' returned a response that doesn't match the "
-            f"expected JSON schema: {exc}. Raw content: {response.content!r}"
+            f"expected JSON schema: {exc}. Raw content: {response.content!r}",
+            response=response,
         ) from exc
 
     by_normalized_name = {j.name.strip().lower(): j for j in parsed.criteria}
@@ -294,7 +307,8 @@ def _run_judge_call(
     if missing:
         raise JudgeResponseError(
             f"Judge model '{model}' did not return a score for criterion/criteria: "
-            f"{', '.join(missing)}."
+            f"{', '.join(missing)}.",
+            response=response,
         )
 
     scores = {c.name: by_normalized_name[c.name.strip().lower()] for c in criteria}
@@ -398,4 +412,85 @@ def judge_pairwise(
         low_confidence=disagreement > disagreement_threshold,
         cost_usd=cost_usd,
         latency_ms=response_a.latency_ms + response_b.latency_ms,
+    )
+
+
+def judge_single_pass(
+    benchmark_output: str,
+    candidate_output: str,
+    judge_criteria: Sequence[JudgeCriterion | dict[str, Any]],
+    *,
+    model: str,
+    input: str | dict[str, Any] | None = None,  # noqa: A002 - mirrors StageRecord.input naming
+    temperature: float = DEFAULT_JUDGE_TEMPERATURE,
+    timeout: float | None = None,
+) -> JudgeResult:
+    """One judge call, deliberately skipping the position-swap :func:`judge_pairwise`
+    does (see that function's module-docstring section on why the swap exists).
+
+    For call sites that want real judge signal cheaply and don't need — or
+    can't yet justify — the swap's extra call, e.g. Prism's critique-ranking
+    pass (``_optimize_stage_prism`` in ``optimizer/loop.py``): that pass
+    already deliberately skips the judge entirely for cheap-scoring every
+    candidate (see that function's step 2), but wants one real judge opinion
+    on just the 1-2 weakest candidates before critiquing them, without
+    doubling that cost via a swap whose bias-cancelling value only matters
+    for a *persisted* score (the final full sweep's own :func:`judge_pairwise`
+    call remains the source of truth there).
+
+    Since there is only one ordering, ``disagreement`` is always ``0.0`` and
+    ``low_confidence`` is always ``False`` — there is nothing to disagree
+    with. Callers that need the disagreement signal should use
+    :func:`judge_pairwise` instead.
+
+    Retries once on a malformed/off-schema response before raising
+    :class:`JudgeResponseError` — mirrors ``optimizer/mutator.py``'s
+    retry-once-on-malformed-JSON convention, applied here since this is a new
+    call site (unlike :func:`judge_pairwise`'s two calls, which have no
+    retry policy of their own today). Real spend from a failed first attempt
+    is still recoverable via ``JudgeResponseError.response.cost_usd`` — the
+    caller is responsible for calling ``budget.record_spend()`` in that case,
+    same as every other call site's harness-discipline rule.
+    """
+    criteria = _coerce_criteria(judge_criteria)
+
+    try:
+        scores, response = _run_judge_call(
+            model, criteria, benchmark_output, candidate_output, input,
+            benchmark_first=True, temperature=temperature, timeout=timeout,
+        )
+    except JudgeResponseError:
+        # One corrective retry, same convention as every other new call site.
+        # If this also fails, the exception (with its own `.response` for
+        # cost accounting) propagates to the caller unchanged.
+        scores, response = _run_judge_call(
+            model, criteria, benchmark_output, candidate_output, input,
+            benchmark_first=True, temperature=temperature, timeout=timeout,
+        )
+
+    judgments = [
+        CriterionJudgment(
+            name=c.name,
+            weight=c.weight,
+            score=scores[c.name].score,
+            reasoning=scores[c.name].reasoning.strip(),
+            order_disagreement=0.0,
+        )
+        for c in criteria
+    ]
+
+    weight_total = sum(c.weight for c in criteria)
+    if weight_total > 0:
+        overall_score = sum(j.score * j.weight for j in judgments) / weight_total
+    else:
+        overall_score = sum(j.score for j in judgments) / len(judgments)
+
+    return JudgeResult(
+        overall_score=overall_score,
+        criteria=judgments,
+        model=response.model,
+        disagreement=0.0,
+        low_confidence=False,
+        cost_usd=response.cost_usd,
+        latency_ms=response.latency_ms,
     )

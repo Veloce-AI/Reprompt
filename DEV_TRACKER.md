@@ -8,15 +8,16 @@ accurate so anyone (human or AI) can pick this up cold without
 re-deriving context. Read `START_HERE.md` first if you haven't — it
 points here plus the rest of the docs in reading order.
 
-Last updated: 2026-07-14.
+Last updated: 2026-07-15.
 
 ## Current state (one paragraph)
 
 Two optimizer strategies exist in `packages/core/src/reprompt_core/optimizer/`:
 **simple** (one-shot: mutate the prompt once via one LLM call, then run
 the param/format sweep) and **Prism** (multi-round: mutate → cheap-score →
-critique the weak ones → refine → sweep again → full-score → select, plus
-optional few-shot example selection). Both are 100% in-house code — no
+critique the weak ones (now with real judge signal — see the dated Phase 1
+quality-fixes section below) → refine → sweep again → full-score → select,
+plus optional few-shot example selection). Both are 100% in-house code — no
 vendored source, no new dependencies, both call the engine's own
 `llm/client.py` so both work with any provider (OpenAI/Anthropic/Gemini/
 self-hosted) uniformly. `run_optimizer(..., strategy="simple"|"prism")`
@@ -24,15 +25,20 @@ selects between them; `apps/api` reads this from `OPTIMIZER_STRATEGY`
 (see `apps/api/.env.example`).
 
 **Done and test-verified**: Phase 0 (cleanup), the DB/credential
-groundwork, Phase 1 (`mutator.py`'s `critique_and_refine`/
+groundwork, the original Phase 1 (`mutator.py`'s `critique_and_refine`/
 `select_few_shot_examples`), Phase 2 (`loop.py`'s strategy dispatch and
-`_optimize_stage_prism`), Phase 3 (`packages/core` tests), and **Phase 4 +
+`_optimize_stage_prism`), Phase 3 (`packages/core` tests), **Phase 4 +
 4b** (`apps/api` wiring — merged via PR #3/#4 from an external
 contributor, `shreychechani`, reviewed and tested before merge — see
 "PR #3/#4 review notes" below for what changed vs. this file's original
-Phase 4 spec and one real gap found). **Not started**: Phase 6 (final
-end-to-end manual verification), the `target_model` tracking fix (see
-below).
+Phase 4 spec and one real gap found), and a dated **"Phase 1 — Prism
+optimizer quality fixes [DONE — 2026-07-15]"** section (below, right after
+this paragraph) — a separate audit's 6 findings against the already-shipped
+Prism engine (most notably: the critique loop was judge-blind, and
+`max_refine_rounds=1` made the plateau early-stopping logic dead code),
+`packages/core` only, `264 passed, 21 skipped` after. **Not started**:
+Phase 6 (final end-to-end manual verification), the `target_model` tracking
+fix (see below).
 
 Full **Refract → Reprompt** rename completed 2026-07-14: both Python
 packages (`refract_core`→`reprompt_core`, `refract_api`→`reprompt_api`,
@@ -67,6 +73,148 @@ easy to reintroduce if the lineage-tracking reasoning isn't kept in mind.
 fine in light mode but hasn't been checked/tuned for dark mode yet. A
 more distinctive monogram direction was explored and parked (not lost —
 worth revisiting, just not now).
+
+## Phase 1 — Prism optimizer quality fixes [DONE — 2026-07-15]
+
+A separate audit pass (not one of the phases 0-6 above — a later, independent
+review of the already-shipped Prism engine) found six real quality issues in
+`packages/core/src/reprompt_core/optimizer/` and the modules it leans on
+(`judge.py`, `scoring.py`, `embedding.py`). All six addressed in this pass,
+`packages/core` only (no `apps/api`/`apps/web` changes — those were
+explicitly out of scope, being worked in parallel on a different worktree).
+Ran against this worktree's own clean baseline first (`254 passed, 21
+skipped` — the 21 skips are environment-only: no `Sample Queries` fixtures,
+no `NVIDIA_NIM_API_KEY`, no local Ollama server in this checkout; this
+worktree's baseline is *not* the `273 passed, 2 skipped` figure quoted
+elsewhere in this file for a fuller dev environment — same code, different
+local environment, worth knowing if you hit this again). Final:
+**264 passed, 21 skipped** (254 + the 10 new tests below, same 21
+environment-only skips, unrelated to this work).
+
+1. **Critique loop was judge-blind.** `_optimize_stage_prism`'s ranking
+   pass (`_cheap_score_candidate`) deliberately never runs the judge (by
+   design — it's the *cheap* pass), but `critique_and_refine` was then
+   always told "AI judge was not run for this candidate" — even though the
+   judge is `DEFAULT_WEIGHTS.judge=0.45`, the *largest* weight in the real
+   composite score (`scoring.py`), bigger than deterministic (0.25) and
+   embedding (0.30) combined with neither. The critique loop was optimizing
+   against a signal that structurally excluded the dominant one. Fixed by
+   adding `judge.judge_single_pass()` — one real judge call, no
+   position-swap (the swap's bias-cancelling value is reserved for the
+   *persisted* score from the final full sweep's `judge_pairwise` call) —
+   run on each of a round's weakest 1-2 candidates right before critiquing
+   them, with its per-criterion `reasoning` text threaded into
+   `critique_and_refine` (new optional `judge_result: JudgeResult | None`
+   param) and rendered by `_format_score_feedback` in `mutator.py`. Chose
+   "pass `JudgeResult` alongside `CompositeScore`" over "extend
+   `CompositeScore` with a reasoning field" — keeps `CompositeScore`'s shape
+   (used broadly, including by `apps/api`'s `Candidate.scores`) untouched.
+   Follows the same harness discipline as every other call site: retry-once
+   on malformed JSON (new, since `judge_pairwise`/`_run_judge_call` didn't
+   already have a retry policy — added `JudgeResponseError.response`, the
+   raw failed `LLMResponse`, so a caller can still recover its cost for
+   `budget.record_spend()` even on a failed attempt), a typed exception,
+   and a `try/except` in `loop.py` that degrades to "critique without judge
+   reasoning" rather than aborting the stage. Cost is bounded: at most one
+   extra judge call per weakest candidate per round (≤2 per round) — ranking
+   itself is unchanged and still judge-free.
+   Files: `packages/core/src/reprompt_core/judge.py` (new
+   `judge_single_pass()`, `JudgeResponseError.response`),
+   `packages/core/src/reprompt_core/optimizer/mutator.py`
+   (`_format_score_feedback`/`_build_critique_messages`/`critique_and_refine`
+   all gained an optional `judge_result` parameter),
+   `packages/core/src/reprompt_core/optimizer/loop.py`
+   (`_optimize_stage_prism`'s critique/refine block, ~line 686-731).
+
+2. **`max_refine_rounds=1` made plateau early-stopping dead code.** The
+   plateau check (`candidate_baseline`/`PLATEAU_EPSILON`, see this file's
+   own "Loop & harness engineering discipline" section above) needs a
+   *second* round to compare a refined candidate's new score against — at
+   the old default of 1, `_optimize_stage_prism`'s round loop
+   (`for _round_num in range(max_refine_rounds)`) could only ever execute
+   once, so the comparison could never happen. Fixed by raising
+   `DEFAULT_MAX_REFINE_ROUNDS` from 1 to 3
+   (`packages/core/src/reprompt_core/optimizer/loop.py`). The existing
+   plateau check plus `budget.is_exhausted` already bound the cost of
+   unhelpful further rounds, so no new cost-control mechanism was needed.
+   `test_prism_plateau_early_stop` (pre-existing) already passed
+   `max_refine_rounds=3` explicitly, so it wasn't relying on the old
+   default and needed no changes — confirmed it still passes. Added two new
+   tests: `test_prism_default_max_refine_rounds_is_three` (the constant
+   itself) and `test_prism_default_rounds_engages_all_three_rounds_when_improving`
+   (an end-to-end demonstration, using the default with no
+   `max_refine_rounds` override, that all 3 rounds actually execute when
+   each round's cheap_score clears `PLATEAU_EPSILON` over its parent's
+   baseline — 6 critique calls total, 2 per round × 3 rounds).
+
+3. **"Weakest-2 gets refined" heuristic — confirmed correct, no code
+   change.** The heuristic itself (`ranked[:2]`) was never the bug; Fix 1
+   above (the judge-blind ranking feeding *into* it) was. No action needed
+   here beyond this note.
+
+4. **Judge disagreement/low_confidence computed then discarded.**
+   `judge.py`'s position-swap design (`judge_pairwise`) already computed
+   `JudgeResult.disagreement`/`low_confidence` to flag an unreliable
+   judgment, but `run_sweep_for_stage` only ever read
+   `judge_result.overall_score` — the disagreement signal never survived
+   onto anything persisted. Fixed by adding two keys,
+   `"judge_disagreement"` and `"judge_low_confidence"`, to the `scores`
+   dict `run_sweep_for_stage` builds for each `StageAttempt` (only set —
+   non-`None` — when a real judge call actually ran and succeeded). Pure
+   plumbing, no new LLM calls. `StageAttempt.scores`'s type widened from
+   `dict[str, float | None]` to `dict[str, float | bool | None]` to fit the
+   new boolean value — a `packages/core`-only type change; `apps/api`
+   persists this dict as an opaque JSON blob, so this doesn't require any
+   change on that side to keep working at runtime.
+   File: `packages/core/src/reprompt_core/optimizer/loop.py`,
+   `run_sweep_for_stage` (~line 366-419) and the `StageAttempt` model
+   definition (~line 178-196).
+
+5. **`num_prompt_variants=3` — confirmed as the wrong lever, left
+   unchanged.** Raising it would scale the expensive full-sweep stage
+   linearly; Fix 2 (more refine rounds) was the correct lever for more
+   exploration. No code change.
+
+6. **No near-duplicate filtering on mutations.** Dedup was exact-string-
+   match only (`if variant not in prompt_candidates`) — two near-identical
+   mutation/refinement variants (differing by a sentence) would each still
+   consume a full, real sweep slot. Fixed by adding `_is_near_duplicate()`
+   in `loop.py`, using `embedding.embedding_similarity` (already local/free,
+   no API key — bge-m3) to compare a candidate variant against every
+   already-kept candidate before it's added; dropped if similarity exceeds
+   the new named constant `NEAR_DUPLICATE_SIMILARITY_THRESHOLD = 0.97`
+   (deliberately high — must only catch genuinely near-identical rewrites,
+   not merely similar-topic variants, since real diversity across variants
+   is the mutator's whole point). Applied at all three places a new
+   variant/refinement gets added to a candidate set: `_optimize_stage_simple`'s
+   mutation loop, `_optimize_stage_prism`'s round-1 mutation loop, and
+   `_optimize_stage_prism`'s refined-variant loop.
+
+**Tests added** (10 total, all passing; see file:line above for where each
+fix landed):
+- `packages/core/tests/test_judge.py`: 3 new tests for `judge_single_pass`
+  (one call not two, retry-once-on-malformed-JSON, raises with recoverable
+  cost after retry also fails).
+- `packages/core/tests/test_optimizer_mutator.py`: 2 new tests for
+  `critique_and_refine`'s `judge_result` parameter (reasoning text reaches
+  the prompt when supplied; falls back to the prior "judge was not run"
+  framing when not).
+- `packages/core/tests/test_optimizer_loop.py`: 5 new tests — real judge
+  call in the critique-ranking pass with reasoning reaching the prompt
+  (Fix 1), the new `DEFAULT_MAX_REFINE_ROUNDS=3` constant and an end-to-end
+  3-round demonstration (Fix 2), `judge_disagreement`/`judge_low_confidence`
+  appearing in `StageAttempt.scores` (Fix 4), near-duplicate mutation
+  filtering (Fix 6).
+
+**One spec/reality drift worth recording**: the audit that produced this
+Phase's spec suggested `run_sweep_for_stage`'s judge call site (~line 373)
+was "around line 377" and `_format_score_feedback` "around line 218-243" —
+both were off by a handful of lines from actual file state at the time this
+work started (harmless; line numbers drift as a file is edited, not a sign
+of a deeper mismatch — the described *behavior* at each site matched
+exactly). No other assumption in the spec (`CompositeScore`'s shape,
+`StageAttempt`'s definition, the plateau test's existing
+`max_refine_rounds=3`, etc.) needed correcting.
 
 ## PR #3/#4 review notes — Phase 4 landed differently than originally spec'd
 

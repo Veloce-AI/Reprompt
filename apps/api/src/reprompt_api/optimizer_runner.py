@@ -28,6 +28,7 @@ from reprompt_core.optimizer.loop import (
     OptimizationResult,
     StageAttempt,
     StageOptimizationInput,
+    StagePhaseEvent,
     run_optimizer,
 )
 
@@ -128,6 +129,16 @@ def _run(db: Session, migration_id: int) -> None:  # noqa: C901
                 migration.progress_total = total_work
             db.commit()
 
+        def on_phase(event: StagePhaseEvent) -> None:
+            # Finer-grained than on_attempt - fires during mutation and each
+            # Prism critique/refine round, not just once per finished attempt.
+            # progress_stage_name is set independently by on_attempt above;
+            # this only tracks the sub-step *within* whatever stage is
+            # currently running. Committed at the same cadence as
+            # progress_stage_name (every write) so a poller sees it live.
+            migration.progress_substep = event.phase
+            db.commit()
+
         budget = BudgetTracker(budget_usd=migration.budget)
         total_cost = 0.0
         any_stopped_early = False
@@ -158,6 +169,7 @@ def _run(db: Session, migration_id: int) -> None:  # noqa: C901
                 strategy=strategy,
                 parity_threshold=migration.parity_threshold,
                 on_attempt=on_attempt,
+                on_phase=on_phase,
             )
 
             total_cost += result.total_cost_usd

@@ -407,6 +407,7 @@ def test_status_reflects_progress_fields(
         migration.progress_stage_name = "Branch A"
         migration.progress_current = 1
         migration.progress_total = 4
+        migration.progress_substep = "critiquing"
         db.commit()
 
     response = client.get(f"/pipelines/{pipeline_id}/migrations/{migration_id}/status")
@@ -416,6 +417,18 @@ def test_status_reflects_progress_fields(
     assert body["progress_stage_name"] == "Branch A"
     assert body["progress_current"] == 1
     assert body["progress_total"] == 4
+    assert body["progress_substep"] == "critiquing"
+
+
+def test_status_progress_substep_defaults_to_none_before_a_run_starts(
+    client: TestClient,
+) -> None:
+    pipeline_id = _upload(client, _diamond_trace_file())
+    migration_id = _create_migration(client, pipeline_id)
+
+    response = client.get(f"/pipelines/{pipeline_id}/migrations/{migration_id}/status")
+    assert response.status_code == 200, response.text
+    assert response.json()["progress_substep"] is None
 
 
 def test_status_reflects_terminal_states(

@@ -524,7 +524,11 @@ function MigrationSuccessScreen({
 
                 {(isRunning || isTerminal) && (
                   <div className="mt-4 h-[420px] overflow-hidden rounded-card border border-line">
-                    <PipelineCanvas pipelineId={pid} stageStates={status?.stage_states} />
+                    <PipelineCanvas
+                      pipelineId={pid}
+                      stageStates={status?.stage_states}
+                      runningSubstep={status?.progress_substep}
+                    />
                   </div>
                 )}
 

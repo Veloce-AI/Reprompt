@@ -2,7 +2,7 @@ import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { ReactFlow, Background, Controls, type Edge } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import { getPipelineDag, type StageRunState } from "@/lib/api";
+import { getPipelineDag, type StagePhase, type StageRunState } from "@/lib/api";
 import { StageNode, type StageFlowNode } from "@/components/stage-node";
 
 const LAYER_X_GAP = 280;
@@ -16,6 +16,11 @@ export interface PipelineCanvasProps {
    * migration's `stage_states` while it's running/just finished to color
    * and pulse the matching nodes. Omit for the static, read-only canvas. */
   stageStates?: Record<string, StageRunState>;
+  /** Live sub-step of whichever stage is currently "running" — a
+   * migration-level field (not per-stage), so it only ever applies to the
+   * one node whose stageStates entry is "running". Pass a migration's
+   * `progress_substep` while it's running. */
+  runningSubstep?: StagePhase | null;
   className?: string;
 }
 
@@ -25,7 +30,7 @@ export interface PipelineCanvasProps {
  * the migration run screen (with `stageStates`, polled live — see Phase 2 /
  * DEV_TRACKER.md "Live DAG/run status view").
  */
-export function PipelineCanvas({ pipelineId, stageStates, className }: PipelineCanvasProps) {
+export function PipelineCanvas({ pipelineId, stageStates, runningSubstep, className }: PipelineCanvasProps) {
   const { data, isLoading, isError, error } = useQuery({
     queryKey: ["pipeline-dag", pipelineId],
     queryFn: () => getPipelineDag(pipelineId),
@@ -35,15 +40,21 @@ export function PipelineCanvas({ pipelineId, stageStates, className }: PipelineC
     if (!data) return { nodes: [] as StageFlowNode[], edges: [] as Edge[] };
 
     const nodes: StageFlowNode[] = data.layers.flatMap((layer, layerIndex) =>
-      layer.stage_ids.map((stageId, rowIndex) => ({
-        id: String(stageId),
-        type: "stage",
-        position: { x: layerIndex * LAYER_X_GAP, y: rowIndex * NODE_Y_GAP },
-        data: {
-          stage: data.stages[String(stageId)],
-          runState: stageStates?.[String(stageId)],
-        },
-      }))
+      layer.stage_ids.map((stageId, rowIndex) => {
+        const runState = stageStates?.[String(stageId)];
+        return {
+          id: String(stageId),
+          type: "stage",
+          position: { x: layerIndex * LAYER_X_GAP, y: rowIndex * NODE_Y_GAP },
+          data: {
+            stage: data.stages[String(stageId)],
+            runState,
+            // progress_substep is migration-level, not per-stage - only
+            // ever attach it to the one node actually "running".
+            substep: runState === "running" ? runningSubstep : undefined,
+          },
+        };
+      })
     );
 
     const edges: Edge[] = data.edges.map((edge) => ({
@@ -54,7 +65,7 @@ export function PipelineCanvas({ pipelineId, stageStates, className }: PipelineC
     }));
 
     return { nodes, edges };
-  }, [data, stageStates]);
+  }, [data, stageStates, runningSubstep]);
 
   if (isLoading) {
     return (

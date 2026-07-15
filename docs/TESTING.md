@@ -221,10 +221,21 @@ calling a milestone done.
 4. Step 3: confirm screen shows the full config correctly, including the
    per-stage override.
 5. Click "Run migration" → **expected**: a real `Migration` row is
-   created (status "pending"), and the UI honestly states the optimizer
-   that would actually run it doesn't exist yet. If you ever see a fake
-   progress bar or "running" animation here, that's a regression — this
-   screen is explicitly not allowed to pretend M3 exists until it does.
+   created and the optimizer actually runs (M3/M4 wiring — Phase 4/4b —
+   landed after this section was first written; the "no fake progress bar"
+   caveat that used to live here is stale and superseded by the live view
+   below). Needs a real BYOK key configured — see `README.md`'s "Getting
+   an AI model API key" section.
+6. While it's running: the pipeline DAG canvas appears live, with the
+   currently-optimizing stage's node pulsing indigo (Phase 2 — "Live
+   DAG/run status view") and, directly under its name, a small sub-step
+   line reading e.g. "Running — critiquing weakest candidates" or
+   "Running — running parameter sweep" that updates roughly every 2s as
+   the optimizer moves through mutation, critique/refine rounds
+   (Prism strategy only), and the final sweep/score pass (Phase A — "Live
+   optimizer sub-step signal", see `DEV_TRACKER.md`). Finished stages turn
+   green, a failed/budget-stopped stage turns red with the reason shown in
+   the run bar above the canvas.
 
 ### 3.4 Auth + Settings (M5)
 

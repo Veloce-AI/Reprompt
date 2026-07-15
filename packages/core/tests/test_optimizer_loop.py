@@ -428,3 +428,63 @@ def test_prism_one_stage_failure_does_not_abort_run(monkeypatch: pytest.MonkeyPa
     # step; both must be recorded as failed, not raised - the run itself
     # must still complete and report on every stage.
     assert all(r.error is not None for r in result.stage_results)
+
+
+# ---------------------------------------------------------------------------
+# on_phase — Phase A live sub-step signal
+# ---------------------------------------------------------------------------
+
+
+def test_simple_strategy_fires_mutating_then_sweeping_then_scoring_on_phase() -> None:
+    call, _captured = _make_call(mutation_variants=["variant A"])
+    budget = BudgetTracker(budget_usd=10.0)
+    phases: list[tuple[int, str]] = []
+
+    run_optimizer(
+        [_stage()], call=call, budget=budget, judge_model=JUDGE_MODEL,
+        strategy="simple", max_sweep_candidates_per_prompt=1, parity_threshold=0.0,
+        on_phase=lambda event: phases.append((event.stage_id, event.phase)),
+    )
+
+    # "simple" never cheap-scores/critiques/refines - only mutate -> sweep -> score,
+    # all for the one stage.
+    assert phases == [(1, "mutating"), (1, "sweeping"), (1, "scoring")]
+
+
+def test_prism_strategy_fires_full_phase_sequence_including_critique_refine_rounds() -> None:
+    call, _captured = _make_call(mutation_variants=["mutated variant"], refined_text="a refined prompt")
+    budget = BudgetTracker(budget_usd=10.0)
+    phases: list[tuple[int, str]] = []
+
+    run_optimizer(
+        [_stage()], call=call, budget=budget, judge_model=JUDGE_MODEL,
+        strategy="prism", max_sweep_candidates_per_prompt=1, parity_threshold=0.0,
+        num_prompt_variants=1, max_refine_rounds=1,
+        on_phase=lambda event: phases.append((event.stage_id, event.phase)),
+    )
+
+    # mutate (round 1) -> [cheap_score -> critique -> refine] x1 round -> sweep -> score.
+    assert phases == [
+        (1, "mutating"),
+        (1, "cheap_scoring"),
+        (1, "critiquing"),
+        (1, "refining"),
+        (1, "sweeping"),
+        (1, "scoring"),
+    ]
+
+
+def test_on_phase_is_optional_and_defaults_to_no_op() -> None:
+    """Existing callers that never pass on_phase must be entirely
+    unaffected - the default is None and nothing inside either strategy
+    should assume it's callable."""
+    call, _captured = _make_call(mutation_variants=["variant A"])
+    budget = BudgetTracker(budget_usd=10.0)
+
+    result = run_optimizer(
+        [_stage()], call=call, budget=budget, judge_model=JUDGE_MODEL,
+        strategy="prism", max_sweep_candidates_per_prompt=1, parity_threshold=0.0,
+        num_prompt_variants=1, max_refine_rounds=1,
+    )
+
+    assert result.stage_results[0].error is None

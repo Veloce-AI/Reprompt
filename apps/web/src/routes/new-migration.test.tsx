@@ -167,6 +167,7 @@ describe("NewMigration wizard", () => {
       progress_stage_name: null,
       progress_current: null,
       progress_total: null,
+      progress_substep: null,
       completed_at: null,
       stage_states: {},
     });

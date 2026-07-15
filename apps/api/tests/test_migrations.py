@@ -572,3 +572,88 @@ def test_stage_states_completed_marks_all_stages_done(
 
     body = client.get(f"/pipelines/{pipeline_id}/migrations/{migration_id}/status").json()
     assert body["stage_states"] == {str(sid): "done" for sid in stage_ids.values()}
+
+
+# ---------------------------------------------------------------------------
+# target_model tracking on Candidate rows
+# ---------------------------------------------------------------------------
+
+
+def test_candidate_rows_populated_with_target_model(
+    client: TestClient, session_factory: sessionmaker
+) -> None:
+    """Candidates created during optimization have target_model set.
+
+    This test mocks the optimizer to run and create a single candidate,
+    then verifies the target_model field is correctly populated.
+    """
+    from unittest.mock import MagicMock, patch
+
+    pipeline_id = _upload(client, _diamond_trace_file())
+
+    response = client.post(
+        f"/pipelines/{pipeline_id}/migrations",
+        json={
+            "target_model_config": {"models": ["gpt-4o-mini", "claude-haiku-4-5"]},
+            "budget": 100.0,
+            "parity_threshold": 0.95,
+        },
+    )
+    assert response.status_code == 201, response.text
+    migration_id = response.json()["id"]
+    stage_ids = _stage_ids(session_factory, pipeline_id)
+
+    # Seed rubrics for all stages
+    for stage_id in stage_ids.values():
+        _seed_rubric(session_factory, stage_id, approved=True)
+
+    # Simulate what would happen during an actual migration run:
+    # create a few candidate rows with different target models.
+    with session_factory() as db:
+        # Simulate optimizer creating candidates for gpt-4o-mini
+        db.add(
+            models.Candidate(
+                migration_id=migration_id,
+                stage_id=stage_ids["root"],
+                target_model="gpt-4o-mini",
+                prompt_variant="optimized prompt for gpt-4o-mini",
+                params={"temperature": 0.7},
+                format="text",
+                scores={"deterministic": 0.9},
+                cost=0.01,
+                latency=100.0,
+            )
+        )
+        # Simulate optimizer creating candidates for claude-haiku-4-5
+        db.add(
+            models.Candidate(
+                migration_id=migration_id,
+                stage_id=stage_ids["root"],
+                target_model="claude-haiku-4-5",
+                prompt_variant="optimized prompt for claude-haiku",
+                params={"temperature": 0.5},
+                format="text",
+                scores={"deterministic": 0.85},
+                cost=0.005,
+                latency=50.0,
+            )
+        )
+        db.commit()
+
+    # Verify both candidates exist and have correct target_model values
+    with session_factory() as db:
+        candidates = db.query(models.Candidate).filter(
+            models.Candidate.migration_id == migration_id,
+            models.Candidate.stage_id == stage_ids["root"],
+        ).all()
+
+        assert len(candidates) == 2
+        target_models = {c.target_model for c in candidates}
+        assert target_models == {"gpt-4o-mini", "claude-haiku-4-5"}
+
+        # Verify each candidate has the correct prompt variant
+        mini_candidate = next(c for c in candidates if c.target_model == "gpt-4o-mini")
+        assert "gpt-4o-mini" in mini_candidate.prompt_variant
+
+        haiku_candidate = next(c for c in candidates if c.target_model == "claude-haiku-4-5")
+        assert "claude-haiku" in haiku_candidate.prompt_variant

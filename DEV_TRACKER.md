@@ -31,14 +31,20 @@ groundwork, the original Phase 1 (`mutator.py`'s `critique_and_refine`/
 4b** (`apps/api` wiring — merged via PR #3/#4 from an external
 contributor, `shreychechani`, reviewed and tested before merge — see
 "PR #3/#4 review notes" below for what changed vs. this file's original
-Phase 4 spec and one real gap found), and a dated **"Phase 1 — Prism
-optimizer quality fixes [DONE — 2026-07-15]"** section (below, right after
-this paragraph) — a separate audit's 6 findings against the already-shipped
-Prism engine (most notably: the critique loop was judge-blind, and
-`max_refine_rounds=1` made the plateau early-stopping logic dead code),
-`packages/core` only, `264 passed, 21 skipped` after. **Not started**:
-Phase 6 (final end-to-end manual verification), the `target_model` tracking
-fix (see below).
+Phase 4 spec and one real gap found), **Phase 2 — Live DAG/run status view
+[DONE — 2026-07-15]**, and a dated **"Phase 1 — Prism optimizer quality
+fixes [DONE — 2026-07-15]"** section (below, right after this paragraph) —
+a separate audit's 6 findings against the already-shipped Prism engine
+(most notably: the critique loop was judge-blind, and `max_refine_rounds=1`
+made the plateau early-stopping logic dead code), `packages/core` only,
+`264 passed, 21 skipped` after. **Phase D(a) — Model-card info in wizard
+[DONE — 2026-07-15]**: new read-only endpoint `GET /model-cards/{model}`
+returns family classification and applicable transform rules as JSON;
+migration wizard model picker now fetches and displays these rules
+human-readable next to each model option. Backend: 122 passed (109 + 13 new).
+Frontend: 68 passed (65 + 3 new), clean typecheck. `packages/core` unaffected,
+`264 passed, 21 skipped` verified unchanged. **Not started**: Phase 6 (final
+end-to-end manual verification), the `target_model` tracking fix (see below).
 
 Full **Refract → Reprompt** rename completed 2026-07-14: both Python
 packages (`refract_core`→`reprompt_core`, `refract_api`→`reprompt_api`,
@@ -1087,6 +1093,52 @@ section for what `prism` does.
       `reprompt.db` that must never be committed), a commit message
       summarizing the phase(s) completed, and `git push origin master`
       left for the user to actually run.
+
+## Phase D(a) — Model-card info in wizard [DONE — 2026-07-15]
+
+Read-only display of model card transform rules in the migration wizard's
+model picker, so users can see what prompt rewrites will be applied to each
+target model's variants. No changes to `packages/core/src/reprompt_core/llm/model_card.py`
+itself (read-only use only); no changes to `migrations.py`, `optimizer_runner.py`,
+or `loop.py` (other agents own those files in parallel worktrees).
+
+**Backend** — `apps/api/src/reprompt_api/model_cards.py` (new):
+- `GET /{model:path}` endpoint (using `path` type to allow "/" in model names
+  like `ollama/llama3`)
+- Returns `FamilyCardOut` schema with resolved family, version, description,
+  `is_small_variant` boolean, and `rules: list[TransformRuleOut]`
+- Each rule includes `name`, `description`, `applies_to` ("all" or "small_only"),
+  and `will_apply` boolean (reflects whether the rule fires for this specific model)
+- Pure in-memory computation, zero DB queries, zero LLM calls
+- Registered in `main.py` via `app.include_router(model_cards_router)`
+- `tests/test_model_cards.py`: 13 tests covering all families, size detection,
+  rule applicability, and public (no-auth) access
+
+**Frontend** — `apps/web/src/routes/new-migration.tsx`:
+- Added `useEffect` to fetch model card for each available model when
+  `modelsQuery.data` loads
+- Model picker now displays a "Model transform rules" info panel below each
+  model's cost/capabilities badges
+- Rules rendered with checkmark (✓) if will apply, strikethrough (—) if not
+- Panel shows rule name and description in human-readable form
+- On fetch error, card silently fails gracefully (no error shown, just no panel)
+- `new-migration.test.tsx`: added mock for `getModelCard`, updated test suite
+  to verify model card display appears with correct rules
+- `src/lib/api.ts`: added `ModelCardInfo` and `TransformRuleInfo` types,
+  `getModelCard(model)` function using URL-safe encoding for model names
+
+**Tests**:
+- `packages/core`: 264 passed, 21 skipped (unaffected — verified clean run)
+- `apps/api`: 122 passed (109 baseline + 13 new)
+- `apps/web`: 68 passed (65 baseline + 3 new), clean `tsc --noEmit`
+
+**What a user sees**: in the migration wizard's "Target models" step, each model
+card now has a small info section below the existing cost/capability badges,
+titled "Model transform rules", listing which prompt transform rules apply to
+this specific model — e.g. "xml_wrap_sections: Wrap recognized labeled sections
+in XML tags" with a checkmark, and "terseify_if_small: Strip hedging... (only
+for small models)" with a strikethrough for a large model. Clicking Continue
+is unaffected; this is purely informational UI.
 
 ## Known constraints to respect while building the above
 

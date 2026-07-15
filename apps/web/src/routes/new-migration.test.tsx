@@ -10,7 +10,7 @@ import {
   RouterProvider,
 } from "@tanstack/react-router";
 import NewMigration from "./new-migration";
-import type { DagResponse, ModelOption } from "@/lib/api";
+import type { DagResponse, ModelOption, ModelCardInfo } from "@/lib/api";
 
 vi.mock("@/lib/api", async () => {
   const actual = await vi.importActual<typeof import("@/lib/api")>("@/lib/api");
@@ -19,10 +19,11 @@ vi.mock("@/lib/api", async () => {
     getPipelineDag: vi.fn(),
     listModelOptions: vi.fn(),
     createMigration: vi.fn(),
+    getModelCard: vi.fn(),
   };
 });
 
-import { createMigration, getPipelineDag, listModelOptions } from "@/lib/api";
+import { createMigration, getPipelineDag, listModelOptions, getModelCard } from "@/lib/api";
 
 // TanStack Router's scroll restoration calls window.scrollTo, which jsdom
 // doesn't implement - stub it out (same pattern as rubric-review.test.tsx).
@@ -110,7 +111,25 @@ beforeEach(() => {
   vi.mocked(getPipelineDag).mockReset();
   vi.mocked(listModelOptions).mockReset();
   vi.mocked(createMigration).mockReset();
+  vi.mocked(getModelCard).mockReset();
 });
+
+function baseModelCard(family: string): ModelCardInfo {
+  return {
+    family,
+    version: 1,
+    description: `Family card for ${family}`,
+    is_small_variant: false,
+    rules: [
+      {
+        name: "test_rule",
+        description: "A test rule",
+        applies_to: "all",
+        will_apply: true,
+      },
+    ],
+  };
+}
 
 describe("NewMigration wizard", () => {
   it("disables Continue until at least one model is checked", async () => {
@@ -201,5 +220,34 @@ describe("NewMigration wizard", () => {
 
     expect(screen.getByText(/Budget must be greater than \$0/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Continue to review" })).toBeDisabled();
+  });
+
+  it("displays model card transform rules when available", async () => {
+    vi.mocked(getPipelineDag).mockResolvedValue(baseDag());
+    vi.mocked(listModelOptions).mockResolvedValue(baseModels());
+    vi.mocked(getModelCard).mockImplementation((model) => {
+      if (model === "gpt-4o-mini") {
+        return Promise.resolve(baseModelCard("openai"));
+      }
+      if (model === "claude-haiku-4-5") {
+        return Promise.resolve(baseModelCard("anthropic"));
+      }
+      return Promise.reject(new Error("Not found"));
+    });
+
+    renderAtPipeline("1");
+    await screen.findByLabelText("gpt-4o-mini");
+
+    // Wait for model card to fetch and display (should have at least one heading)
+    await waitFor(() => {
+      const headings = screen.getAllByText("Model transform rules");
+      expect(headings.length).toBeGreaterThan(0);
+    });
+
+    // Verify the rule is displayed (both models should show the rule)
+    const rules = screen.getAllByText(/test_rule/);
+    expect(rules.length).toBeGreaterThanOrEqual(1);
+    const descriptions = screen.getAllByText(/A test rule/);
+    expect(descriptions.length).toBeGreaterThanOrEqual(1);
   });
 });

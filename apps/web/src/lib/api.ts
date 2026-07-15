@@ -141,6 +141,12 @@ export interface MigrationCreate {
   parity_threshold: number;
 }
 
+// "idle" | "running" | "done" | "failed" — see
+// apps/api/src/reprompt_api/migrations.py's `_compute_stage_states` for the
+// derivation rule. Keyed by stage DB id as a string, matching the DAG
+// canvas's React Flow node ids (String(stage.id)).
+export type StageRunState = "idle" | "running" | "done" | "failed";
+
 export interface MigrationOut {
   id: number;
   pipeline_id: number;
@@ -155,6 +161,7 @@ export interface MigrationOut {
   progress_current: number | null;
   progress_total: number | null;
   completed_at: string | null;
+  stage_states: Record<string, StageRunState>;
 }
 
 export function listModelOptions(pipelineId: number): Promise<ModelOption[]> {

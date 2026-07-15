@@ -8,7 +8,7 @@ accurate so anyone (human or AI) can pick this up cold without
 re-deriving context. Read `START_HERE.md` first if you haven't — it
 points here plus the rest of the docs in reading order.
 
-Last updated: 2026-07-14.
+Last updated: 2026-07-15.
 
 ## Current state (one paragraph)
 
@@ -67,6 +67,91 @@ easy to reintroduce if the lineage-tracking reasoning isn't kept in mind.
 fine in light mode but hasn't been checked/tuned for dark mode yet. A
 more distinctive monogram direction was explored and parked (not lost —
 worth revisiting, just not now).
+
+## Phase 2 — Live DAG/run status view [DONE — 2026-07-15]
+
+Built on top of Phase 4/4b's polling `GET .../status` endpoint — no new
+concurrency, no new DB columns, `packages/core` untouched throughout (a
+separate agent was working there in a parallel worktree at the same time).
+
+**Backend** — `apps/api/src/reprompt_api/migrations.py`:
+- `MigrationOut.stage_states: dict[str, str]` (new field, `_compute_stage_states`
+  helper just above `_to_out`) — a derived `{stage_id (as string) ->
+  "idle"|"running"|"done"|"failed"}` map, computed fresh on every read from
+  the same `status`/`progress_stage_name` fields `optimizer_runner.py` already
+  writes sequentially. Stage order reused as-is from `optimizer_runner._run`'s
+  own query (`Stage` filtered by `pipeline_id`, ordered by `id`) — no second
+  ordering invented. Rule: stages before the current `progress_stage_name` =
+  `"done"`, the matching stage = `"running"` (`"failed"` if
+  `status == "failed"`, `"done"` if `status == "stopped_early"` since that
+  stage had already gotten at least one attempt before the budget hard-stop),
+  stages after = `"idle"`; `status == "completed"` short-circuits to all
+  `"done"`; before anything starts (`progress_stage_name` still `None`), all
+  `"idle"`. `_to_out` now takes `db` (needs it to query stage order) — every
+  call site updated.
+- Keys are the stage's DB id as a string (`str(stage.id)`), matching the DAG
+  canvas's React Flow node ids (`String(stageId)` in the frontend) so the
+  frontend can index `stage_states` directly by node id with no translation.
+- Tests: `apps/api/tests/test_migrations.py` — 5 new cases (`test_stage_states_*`):
+  all-idle before a run starts, mid-run done/running/idle split, terminal
+  `failed` (current stage marked `"failed"`), terminal `stopped_early`
+  (current stage marked `"done"`), terminal `completed` (all `"done"`).
+
+**Frontend**:
+- `apps/web/src/components/pipeline-canvas.tsx` (new) — extracted the React
+  Flow DAG-building logic (nodes/edges from `getPipelineDag`) out of
+  `pipeline-detail.tsx` into a shared `PipelineCanvas` component taking an
+  optional `stageStates` prop, so both the static pipeline-canvas screen and
+  the live migration-run view render the exact same DAG component rather than
+  two divergent copies. `apps/web/src/routes/pipeline-detail.tsx` now just
+  wraps it (unchanged behavior, confirmed via the same `pnpm test` pass).
+- `apps/web/src/components/stage-node.tsx` — `StageNodeData` gained an
+  optional `runState?: StageRunState`. Renders a small state dot + a
+  `border-2` card color: idle = hairline (`border-line`), running =
+  `border-beam` + a `bg-beam animate-pulse` dot (same pulsing-dot vocabulary
+  already used for the "Optimizing…" indicator in `new-migration.tsx`, not a
+  new animation), done = `border-parity-pass`/`bg-parity-pass`, failed =
+  `border-parity-fail`/`bg-parity-fail` — reusing `tokens.css`'s existing
+  parity semantic colors and `--beam` accent, no new tokens added. No
+  `@keyframes` needed — Tailwind's built-in `animate-pulse` utility (already
+  in use elsewhere) covers the "running" pulse.
+- `apps/web/src/components/migration-run-bar.tsx` (new) — slim status strip:
+  a status dot + label (pulsing while running), "N / M stages" + a progress
+  bar while running, `total_cost_usd` ("Cost so far") whenever the backend
+  has set it, and the `stop_reason` in `--parity-fail` text for a
+  `failed`/`stopped_early` terminal state.
+- `apps/web/src/routes/new-migration.tsx`'s `MigrationSuccessScreen` — the
+  existing 2s `refetchInterval` poll (`useQuery` on `getMigrationStatus`,
+  stops once `status !== "running"`) is unchanged; its old inline
+  numeric-only progress block was replaced with `<MigrationRunBar
+  status={status} .../>` followed by `<PipelineCanvas pipelineId={pid}
+  stageStates={status?.stage_states} />` once the run is `running` or
+  terminal — starting a migration now shows the live-colored DAG, not just a
+  "3 of 7" counter.
+- `apps/web/src/lib/api.ts` — `MigrationOut.stage_states` and the new
+  `StageRunState` type added to match the backend response.
+
+**What a user actually sees**: after clicking "Start migration," the wizard's
+success screen now shows a slim status bar (pulsing dot + which stage is
+optimizing + stage count + cost-so-far once available) directly above the
+pipeline's DAG canvas, with each stage node's border/dot live-updating every
+~2s as the run progresses — indigo pulsing while a stage is being optimized,
+green once done, red if that stage's the one a failure or budget hard-stop
+landed on. On completion every node turns green; on a budget/error stop, the
+run-bar surfaces the plain-English `stop_reason` in red beneath the bar.
+
+**Verified**: `cd apps/api && uv run pytest -q` → 109 passed (104 baseline +
+5 new `stage_states` tests). `cd apps/web && npx tsc --noEmit` → clean.
+`cd apps/web && pnpm test` → 69 passed (65 baseline + 4 new `StageNode`
+runState tests). `packages/core` not touched (confirmed via `git status`
+before commit — only `apps/api`/`apps/web` files changed).
+
+**Explicitly out of scope, not built**: rubric generation still has no live
+view (it's a synchronous blocking call with no run object to poll — needs
+its own deferred async-rubric-gen phase first, per the task brief). No new
+concurrency was introduced — stages still run strictly sequentially
+server-side, this phase only makes that existing sequential progress
+*visible* in real time.
 
 ## PR #3/#4 review notes — Phase 4 landed differently than originally spec'd
 

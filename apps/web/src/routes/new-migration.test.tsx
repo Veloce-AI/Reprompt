@@ -149,6 +149,7 @@ describe("NewMigration wizard", () => {
       progress_current: null,
       progress_total: null,
       completed_at: null,
+      stage_states: {},
     });
 
     renderAtPipeline("1");

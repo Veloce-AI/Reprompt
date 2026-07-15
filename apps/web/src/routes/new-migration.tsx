@@ -15,6 +15,8 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
+import { MigrationRunBar } from "@/components/migration-run-bar";
+import { PipelineCanvas } from "@/components/pipeline-canvas";
 
 type WizardStep = "target-model" | "budget" | "confirm";
 
@@ -416,10 +418,6 @@ function MigrationSuccessScreen({
   const status = statusQuery.data;
   const isRunning = status?.status === "running";
   const isTerminal = status && ["completed", "failed", "stopped_early"].includes(status.status);
-  const progressPercent =
-    status?.progress_current != null && status?.progress_total != null && status.progress_total > 0
-      ? Math.round((status.progress_current / status.progress_total) * 100)
-      : null;
 
   return (
     <AppShell>
@@ -467,61 +465,16 @@ function MigrationSuccessScreen({
             )}
 
             {started && (
-              <div className="mt-2 max-w-[560px]">
-                {isRunning && (
-                  <>
-                    <div className="mb-3 flex items-center justify-between">
-                      <div className="flex items-center gap-2">
-                        <span className="h-2 w-2 animate-pulse rounded-full bg-beam" />
-                        <span className="text-13 font-medium text-ink">
-                          {status?.progress_stage_name
-                            ? `Optimizing: ${status.progress_stage_name}`
-                            : "Starting optimizer…"}
-                        </span>
-                      </div>
-                      {progressPercent !== null && (
-                        <span className="text-13 tabular-nums text-ink-soft">
-                          {status?.progress_current} / {status?.progress_total}
-                        </span>
-                      )}
-                    </div>
-                    <div className="mb-4 h-1.5 overflow-hidden rounded-full bg-line">
-                      <div
-                        className="h-full rounded-full bg-beam transition-all duration-700 ease-out"
-                        style={{ width: `${progressPercent ?? 0}%` }}
-                      />
-                    </div>
-                  </>
-                )}
+              <div className="mt-2">
+                <MigrationRunBar
+                  status={status}
+                  isConnecting={!isTerminal && !isRunning && statusQuery.isLoading}
+                />
 
-                {isTerminal && (
-                  <div className="space-y-2">
-                    {status?.status === "completed" && (
-                      <p className="text-14 text-ink">
-                        Optimization complete.{" "}
-                        {status.total_cost_usd != null && (
-                          <span className="text-ink-soft">
-                            Total cost:{" "}
-                            <span className="font-mono text-ink">
-                              ${status.total_cost_usd.toFixed(4)}
-                            </span>
-                          </span>
-                        )}
-                      </p>
-                    )}
-                    {(status?.status === "failed" || status?.status === "stopped_early") && (
-                      <p className="text-14 text-ink">
-                        {status.status === "stopped_early" ? "Stopped early" : "Failed"}
-                        {status.stop_reason && (
-                          <span className="text-ink-soft"> — {status.stop_reason}</span>
-                        )}
-                      </p>
-                    )}
+                {(isRunning || isTerminal) && (
+                  <div className="mt-4 h-[420px] overflow-hidden rounded-card border border-line">
+                    <PipelineCanvas pipelineId={pid} stageStates={status?.stage_states} />
                   </div>
-                )}
-
-                {!isTerminal && !isRunning && statusQuery.isLoading && (
-                  <p className="text-13 text-ink-soft">Connecting…</p>
                 )}
 
                 <div className="mt-6">

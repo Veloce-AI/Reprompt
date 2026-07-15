@@ -102,7 +102,7 @@ def _upload(client: TestClient, trace_file: TraceFile) -> int:
 
 
 def _stage_ids(session_factory: sessionmaker, pipeline_id: int) -> dict[str, int]:
-    """source_id -> db id, for building per-stage overrides in tests."""
+    """source_id -> db id, used for seeding rubrics in start/status tests."""
     with session_factory() as db:
         stages = db.query(models.Stage).filter(models.Stage.pipeline_id == pipeline_id).all()
         return {s.source_id: s.id for s in stages}
@@ -147,13 +147,13 @@ def test_list_model_options_unknown_pipeline_returns_404(client: TestClient) -> 
 # ---------------------------------------------------------------------------
 
 
-def test_create_migration_bulk_only_config(client: TestClient) -> None:
+def test_create_migration_single_model(client: TestClient) -> None:
     pipeline_id = _upload(client, _diamond_trace_file())
 
     response = client.post(
         f"/pipelines/{pipeline_id}/migrations",
         json={
-            "target_model_config": {"default": "gpt-4o-mini"},
+            "target_model_config": {"models": ["gpt-4o-mini"]},
             "budget": 25.0,
             "parity_threshold": 0.9,
         },
@@ -161,11 +161,27 @@ def test_create_migration_bulk_only_config(client: TestClient) -> None:
     assert response.status_code == 201, response.text
     body = response.json()
     assert body["pipeline_id"] == pipeline_id
-    assert body["target_model_config"] == {"default": "gpt-4o-mini", "stages": {}}
+    assert body["target_model_config"] == {"models": ["gpt-4o-mini"]}
     assert body["budget"] == 25.0
     assert body["parity_threshold"] == 0.9
     assert body["status"] == "pending"
     assert isinstance(body["id"], int)
+
+
+def test_create_migration_multi_model_config(client: TestClient) -> None:
+    pipeline_id = _upload(client, _diamond_trace_file())
+
+    response = client.post(
+        f"/pipelines/{pipeline_id}/migrations",
+        json={
+            "target_model_config": {"models": ["gpt-4o-mini", "claude-haiku-4-5"]},
+            "budget": 50.0,
+            "parity_threshold": 0.95,
+        },
+    )
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body["target_model_config"] == {"models": ["gpt-4o-mini", "claude-haiku-4-5"]}
 
 
 def test_create_migration_defaults_parity_threshold_to_95_percent(client: TestClient) -> None:
@@ -173,76 +189,20 @@ def test_create_migration_defaults_parity_threshold_to_95_percent(client: TestCl
 
     response = client.post(
         f"/pipelines/{pipeline_id}/migrations",
-        json={"target_model_config": {"default": "gpt-4o-mini"}, "budget": 10.0},
+        json={"target_model_config": {"models": ["gpt-4o-mini"]}, "budget": 10.0},
     )
     assert response.status_code == 201, response.text
     assert response.json()["parity_threshold"] == 0.95
 
 
-def test_create_migration_with_per_stage_overrides(
-    client: TestClient, session_factory: sessionmaker
-) -> None:
-    pipeline_id = _upload(client, _diamond_trace_file())
-    stage_ids = _stage_ids(session_factory, pipeline_id)
-
-    response = client.post(
-        f"/pipelines/{pipeline_id}/migrations",
-        json={
-            "target_model_config": {
-                "default": "gpt-4o-mini",
-                "stages": {str(stage_ids["b"]): "claude-haiku-4-5"},
-            },
-            "budget": 50.0,
-            "parity_threshold": 0.95,
-        },
-    )
-    assert response.status_code == 201, response.text
-    body = response.json()
-    assert body["target_model_config"] == {
-        "default": "gpt-4o-mini",
-        "stages": {str(stage_ids["b"]): "claude-haiku-4-5"},
-    }
-
-
-def test_create_migration_rejects_stage_override_from_different_pipeline(
-    client: TestClient, session_factory: sessionmaker
-) -> None:
-    pipeline_a = _upload(client, _diamond_trace_file())
-    pipeline_b = _upload(client, _diamond_trace_file())
-    stage_ids_b = _stage_ids(session_factory, pipeline_b)
-
-    response = client.post(
-        f"/pipelines/{pipeline_a}/migrations",
-        json={
-            "target_model_config": {
-                "default": "gpt-4o-mini",
-                "stages": {str(stage_ids_b["root"]): "claude-haiku-4-5"},
-            },
-            "budget": 50.0,
-        },
-    )
-    assert response.status_code == 422
-    detail = response.json()["detail"]
-    assert str(stage_ids_b["root"]) in detail
-    assert f"pipeline {pipeline_a}" in detail
-
-    # Nothing was persisted.
-    listing = client.get(f"/pipelines/{pipeline_a}/migrations").json()
-    assert listing == []
-
-
-def test_create_migration_rejects_unknown_stage_id(client: TestClient) -> None:
+def test_create_migration_rejects_empty_models_list(client: TestClient) -> None:
     pipeline_id = _upload(client, _diamond_trace_file())
 
     response = client.post(
         f"/pipelines/{pipeline_id}/migrations",
-        json={
-            "target_model_config": {"default": "gpt-4o-mini", "stages": {"999999": "gpt-4o"}},
-            "budget": 10.0,
-        },
+        json={"target_model_config": {"models": []}, "budget": 10.0},
     )
     assert response.status_code == 422
-    assert "999999" in response.json()["detail"]
 
 
 def test_create_migration_rejects_zero_or_negative_budget(client: TestClient) -> None:
@@ -251,7 +211,7 @@ def test_create_migration_rejects_zero_or_negative_budget(client: TestClient) ->
     for bad_budget in (0, -5.0):
         response = client.post(
             f"/pipelines/{pipeline_id}/migrations",
-            json={"target_model_config": {"default": "gpt-4o-mini"}, "budget": bad_budget},
+            json={"target_model_config": {"models": ["gpt-4o-mini"]}, "budget": bad_budget},
         )
         assert response.status_code == 422
 
@@ -263,7 +223,7 @@ def test_create_migration_rejects_out_of_range_parity_threshold(client: TestClie
         response = client.post(
             f"/pipelines/{pipeline_id}/migrations",
             json={
-                "target_model_config": {"default": "gpt-4o-mini"},
+                "target_model_config": {"models": ["gpt-4o-mini"]},
                 "budget": 10.0,
                 "parity_threshold": bad_threshold,
             },
@@ -271,20 +231,10 @@ def test_create_migration_rejects_out_of_range_parity_threshold(client: TestClie
         assert response.status_code == 422
 
 
-def test_create_migration_rejects_blank_default_model(client: TestClient) -> None:
-    pipeline_id = _upload(client, _diamond_trace_file())
-
-    response = client.post(
-        f"/pipelines/{pipeline_id}/migrations",
-        json={"target_model_config": {"default": ""}, "budget": 10.0},
-    )
-    assert response.status_code == 422
-
-
 def test_create_migration_unknown_pipeline_returns_404(client: TestClient) -> None:
     response = client.post(
         "/pipelines/999999/migrations",
-        json={"target_model_config": {"default": "gpt-4o-mini"}, "budget": 10.0},
+        json={"target_model_config": {"models": ["gpt-4o-mini"]}, "budget": 10.0},
     )
     assert response.status_code == 404
 
@@ -308,7 +258,7 @@ def test_list_migrations_returns_created_migrations_in_order(client: TestClient)
     for budget in (10.0, 20.0):
         client.post(
             f"/pipelines/{pipeline_id}/migrations",
-            json={"target_model_config": {"default": "gpt-4o-mini"}, "budget": budget},
+            json={"target_model_config": {"models": ["gpt-4o-mini"]}, "budget": budget},
         )
 
     response = client.get(f"/pipelines/{pipeline_id}/migrations")
@@ -328,7 +278,7 @@ def test_list_migrations_does_not_include_other_pipelines(client: TestClient) ->
 
     client.post(
         f"/pipelines/{pipeline_a}/migrations",
-        json={"target_model_config": {"default": "gpt-4o-mini"}, "budget": 10.0},
+        json={"target_model_config": {"models": ["gpt-4o-mini"]}, "budget": 10.0},
     )
 
     listing_b = client.get(f"/pipelines/{pipeline_b}/migrations").json()
@@ -343,7 +293,7 @@ def test_list_migrations_does_not_include_other_pipelines(client: TestClient) ->
 def _create_migration(client: TestClient, pipeline_id: int) -> int:
     response = client.post(
         f"/pipelines/{pipeline_id}/migrations",
-        json={"target_model_config": {"default": "gpt-4o-mini"}, "budget": 10.0},
+        json={"target_model_config": {"models": ["gpt-4o-mini"]}, "budget": 10.0},
     )
     assert response.status_code == 201, response.text
     return response.json()["id"]

@@ -86,10 +86,12 @@ class ModelOption(BaseModel):
 
 
 class TargetModelConfig(BaseModel):
-    """See module docstring for the full shape note."""
+    """List of target models the optimizer will try per stage, keeping the
+    best-scoring result. Replaces the old single-default + per-stage-override
+    shape — backward-compat reading of the old shape is handled in
+    ``optimizer_runner._get_target_models``."""
 
-    default: str = Field(min_length=1)
-    stages: dict[str, str] = Field(default_factory=dict)
+    models: list[str] = Field(min_length=1)
 
 
 class MigrationCreate(BaseModel):
@@ -190,31 +192,6 @@ def create_migration(
     start anything — see module docstring. Status is always "pending".
     """
     _get_pipeline_or_404(db, pipeline_id)
-
-    stage_overrides = migration_in.target_model_config.stages
-    if stage_overrides:
-        try:
-            override_stage_ids = {int(key) for key in stage_overrides}
-        except ValueError as exc:
-            raise HTTPException(
-                status_code=422,
-                detail="target_model_config.stages keys must be stage ids (numeric strings).",
-            ) from exc
-
-        pipeline_stage_ids = set(
-            db.scalars(
-                select(models.Stage.id).where(models.Stage.pipeline_id == pipeline_id)
-            ).all()
-        )
-        unknown_ids = sorted(override_stage_ids - pipeline_stage_ids)
-        if unknown_ids:
-            raise HTTPException(
-                status_code=422,
-                detail=(
-                    f"target_model_config.stages references stage id(s) "
-                    f"{unknown_ids} which do not belong to pipeline {pipeline_id}."
-                ),
-            )
 
     migration = models.Migration(
         pipeline_id=pipeline_id,

@@ -193,6 +193,32 @@ export function getMigrationStatus(pipelineId: number, migrationId: number): Pro
   return request<MigrationOut>(`/pipelines/${pipelineId}/migrations/${migrationId}/status`);
 }
 
+// ---------------------------------------------------------------------------
+// Model cards (migration wizard): read-only info on model family transforms
+// ---------------------------------------------------------------------------
+//
+// Public, unauthenticated - serves metadata about prompt transforms per model
+// family, so the UI can display what rewriting rules apply to a candidate.
+
+export interface TransformRuleInfo {
+  name: string;
+  description: string;
+  applies_to: "all" | "small_only";
+  will_apply: boolean;
+}
+
+export interface ModelCardInfo {
+  family: string;
+  version: number;
+  description: string;
+  is_small_variant: boolean;
+  rules: TransformRuleInfo[];
+}
+
+export function getModelCard(model: string): Promise<ModelCardInfo> {
+  return request<ModelCardInfo>(`/model-cards/${encodeURIComponent(model).replace(/%2F/g, "/")}`);
+}
+
 export async function importPipeline(file: File): Promise<ImportResult> {
   const formData = new FormData();
   formData.append("file", file);

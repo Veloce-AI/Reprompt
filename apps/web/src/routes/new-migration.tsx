@@ -1,14 +1,16 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Link, useNavigate, useParams } from "@tanstack/react-router";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import {
   ApiError,
   createMigration,
   getMigrationStatus,
+  getModelCard,
   getPipelineDag,
   listModelOptions,
   startMigration,
   type MigrationOut,
+  type ModelCardInfo,
 } from "@/lib/api";
 import { AppShell } from "@/components/app-shell";
 import { Button } from "@/components/ui/button";
@@ -64,6 +66,7 @@ export default function NewMigration() {
   const [selectedModels, setSelectedModels] = useState<Set<string>>(new Set());
   const [budget, setBudget] = useState("");
   const [parityThresholdPercent, setParityThresholdPercent] = useState("95");
+  const [modelCards, setModelCards] = useState<Record<string, ModelCardInfo | null>>({});
 
   const dagQuery = useQuery({
     queryKey: ["pipeline-dag", pid],
@@ -73,6 +76,23 @@ export default function NewMigration() {
     queryKey: ["model-options", pid],
     queryFn: () => listModelOptions(pid),
   });
+
+  // Fetch model card info for each available model
+  useEffect(() => {
+    if (!modelsQuery.data) return;
+    const fetchCards = async () => {
+      const cards: Record<string, ModelCardInfo | null> = {};
+      for (const option of modelsQuery.data) {
+        try {
+          cards[option.model] = await getModelCard(option.model);
+        } catch {
+          cards[option.model] = null;
+        }
+      }
+      setModelCards(cards);
+    };
+    fetchCards();
+  }, [modelsQuery.data]);
 
   function toggleModel(model: string) {
     setSelectedModels((prev) => {
@@ -186,6 +206,7 @@ export default function NewMigration() {
                   {(modelsQuery.data ?? []).map((option) => {
                     const checked = selectedModels.has(option.model);
                     const family = resolveFamily(option.model);
+                    const modelCard = modelCards[option.model];
                     return (
                       <label
                         key={option.model}
@@ -201,7 +222,7 @@ export default function NewMigration() {
                           checked={checked}
                           onChange={() => toggleModel(option.model)}
                         />
-                        <div className="min-w-0">
+                        <div className="min-w-0 flex-1">
                           <p className="font-mono text-13 font-medium text-ink">{option.model}</p>
                           {option.provider && (
                             <p className="text-12 text-ink-soft capitalize">{option.provider}</p>
@@ -225,6 +246,36 @@ export default function NewMigration() {
                             )}
                             <Badge variant="neutral">{FAMILY_TRANSFORM_LABELS[family]}</Badge>
                           </div>
+                          {modelCard && (
+                            <div className="mt-3 space-y-1 rounded bg-ink-soft/5 p-3">
+                              <p className="text-11 font-medium uppercase tracking-wide text-ink-soft">
+                                Model transform rules
+                              </p>
+                              {modelCard.rules.length > 0 ? (
+                                <ul className="space-y-1 text-12 text-ink">
+                                  {modelCard.rules.map((rule) => (
+                                    <li
+                                      key={rule.name}
+                                      className={
+                                        rule.will_apply
+                                          ? "flex items-start gap-1 text-ink"
+                                          : "flex items-start gap-1 text-ink-soft line-through"
+                                      }
+                                    >
+                                      <span className="mt-0.5 flex-shrink-0">
+                                        {rule.will_apply ? "✓" : "—"}
+                                      </span>
+                                      <span>
+                                        <strong>{rule.name}:</strong> {rule.description}
+                                      </span>
+                                    </li>
+                                  ))}
+                                </ul>
+                              ) : (
+                                <p className="text-12 text-ink-soft italic">No transform rules</p>
+                              )}
+                            </div>
+                          )}
                         </div>
                       </label>
                     );

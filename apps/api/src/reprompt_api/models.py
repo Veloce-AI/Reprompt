@@ -353,6 +353,12 @@ class Candidate(Base):
     stage_id: Mapped[int] = mapped_column(
         ForeignKey("stages.id", ondelete="CASCADE"), nullable=False, index=True
     )
+    # The target model this candidate was optimized against. Non-nullable:
+    # every candidate is always produced for a specific target model.
+    # When a migration tries multiple models, this allows tracing which model
+    # produced which candidate (critical for cross-model comparison and
+    # scorecard logic).
+    target_model: Mapped[str] = mapped_column(String(255), nullable=False)
     prompt_variant: Mapped[str] = mapped_column(Text, nullable=False)
     params: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     format: Mapped[str] = mapped_column(String(32), nullable=False)

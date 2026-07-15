@@ -320,13 +320,16 @@ worth knowing before touching `optimizer_runner.py`/`migrations.py` again:
   schema — but note it only reads the old shape's `default`, silently
   dropping any old per-stage `stages` overrides (acceptable: no real
   migrations existed under the old schema yet at merge time).
-- **Real gap, not yet fixed**: neither `StageAttempt` (packages/core) nor
-  `Candidate` (apps/api) records *which* target model produced a given
-  attempt. Once a migration tries multiple models, there's no way to tell
-  from a `Candidate` row which model the winning prompt was actually tuned
-  for. Cheap to fix now (add a `target_model` field to both), will be
-  painful once the Phase 5/scorecard screen is built assuming the current
-  schema. **Next concrete task**, not yet started.
+- **Real gap, now FIXED (2026-07-15)**: `Candidate` (apps/api) now records
+  *which* target model produced a given attempt. Added non-nullable
+  `Candidate.target_model: str` field, Alembic migration
+  `8c4f6d1a3e9b_add_target_model_to_candidates.py`, and wiring in
+  `optimizer_runner.py`'s `on_attempt` callback to pass the current
+  target_model from the loop context. Test: `test_candidate_rows_populated_with_target_model`
+  verifies candidates get correct target_model when migration tries
+  multiple models. Once a migration tries multiple models, each `Candidate`
+  row now explicitly records which model it was tuned for. Enables future
+  scorecard/cross-model comparison logic.
 - Two trivial issues found and fixed directly (not worth a follow-up PR):
   an unused `ModelOption` import in `new-migration.tsx` (real `tsc
   --noEmit` error), and a missing `db.rollback()` in

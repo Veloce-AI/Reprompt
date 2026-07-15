@@ -1,5 +1,5 @@
 <div align="center">
-<img src="docs/logo.svg" width="80" height="80" alt="Reprompt logo" /><br/>
+<img src="docs/logo.svg?v=2" width="80" height="80" alt="Reprompt logo" /><br/>
 
 # Reprompt
 

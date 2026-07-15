@@ -2,10 +2,37 @@ import { Handle, Position, type Node, type NodeProps } from "@xyflow/react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { ParityBeam } from "@/components/parity-beam";
-import type { StageInfo } from "@/lib/api";
+import { cn } from "@/lib/utils";
+import type { StageInfo, StageRunState } from "@/lib/api";
 
-export type StageNodeData = { stage: StageInfo };
+export type StageNodeData = { stage: StageInfo; runState?: StageRunState };
 export type StageFlowNode = Node<StageNodeData, "stage">;
+
+// Same semantic colors ParityBeam/Badge already use for pass/near/fail, plus
+// --beam (the "active/running" accent used elsewhere, e.g. the migration
+// progress dot in new-migration.tsx) for "running" and a plain hairline
+// border for "idle" (nothing has touched this stage yet). No new tokens
+// introduced — this only recombines the existing vocabulary.
+const STATE_BORDER: Record<StageRunState, string> = {
+  idle: "border-line",
+  running: "border-beam",
+  done: "border-parity-pass",
+  failed: "border-parity-fail",
+};
+
+const STATE_DOT: Record<StageRunState, string> = {
+  idle: "bg-ink-soft/40",
+  running: "bg-beam animate-pulse",
+  done: "bg-parity-pass",
+  failed: "bg-parity-fail",
+};
+
+const STATE_LABEL: Record<StageRunState, string> = {
+  idle: "Not started",
+  running: "Running",
+  done: "Done",
+  failed: "Failed",
+};
 
 // Trace format v1.1 makes StageRecord.tokens/latency_ms optional (a trace
 // recorder may not capture them), so the DAG's per-stage averages can come
@@ -25,15 +52,30 @@ function statsLabel(stage: StageInfo): string {
 }
 
 export function StageNode({ data }: NodeProps<StageFlowNode>) {
-  const { stage } = data;
+  const { stage, runState } = data;
 
   return (
-    <Card className="w-56">
+    <Card
+      className={cn(
+        "w-56 border-2 transition-colors duration-base ease-out",
+        runState ? STATE_BORDER[runState] : "border-line"
+      )}
+    >
       <Handle type="target" position={Position.Left} className="!bg-beam" />
       <CardContent className="space-y-2 p-4">
-        <p className="text-14 font-medium text-ink" title={stage.name}>
-          {stage.name}
-        </p>
+        <div className="flex items-center justify-between gap-2">
+          <p className="min-w-0 truncate text-14 font-medium text-ink" title={stage.name}>
+            {stage.name}
+          </p>
+          {runState && (
+            <span
+              role="img"
+              aria-label={`Stage ${STATE_LABEL[runState].toLowerCase()}`}
+              title={STATE_LABEL[runState]}
+              className={cn("h-2 w-2 shrink-0 rounded-full", STATE_DOT[runState])}
+            />
+          )}
+        </div>
         <Badge variant="neutral" className="max-w-full truncate">
           {stage.model}
         </Badge>

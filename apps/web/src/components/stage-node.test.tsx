@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import { render, screen } from "@testing-library/react";
 import { ReactFlowProvider } from "@xyflow/react";
 import { StageNode } from "./stage-node";
-import type { StageInfo } from "@/lib/api";
+import type { StageInfo, StageRunState } from "@/lib/api";
 import type { NodeProps } from "@xyflow/react";
 import type { StageFlowNode } from "./stage-node";
 
@@ -24,10 +24,10 @@ function baseStage(overrides: Partial<StageInfo> = {}): StageInfo {
 // components to attach to. Rather than the full canvas + DAG data flow that
 // pipeline-detail.tsx sets up, build the minimal NodeProps this component
 // actually reads (data) and construct the rest.
-function renderStageNode(stage: StageInfo) {
+function renderStageNode(stage: StageInfo, runState?: StageRunState) {
   const props = {
     id: "1",
-    data: { stage },
+    data: { stage, runState },
     type: "stage",
     selected: false,
     isConnectable: true,
@@ -91,5 +91,36 @@ describe("StageNode", () => {
 
     expect(screen.getByText("Summarize")).toBeInTheDocument();
     expect(screen.getByText("claude-3-5-sonnet-20241022")).toBeInTheDocument();
+  });
+
+  it("renders no state dot and a neutral border when runState is omitted (static canvas)", () => {
+    const { container } = renderStageNode(baseStage());
+
+    // ParityBeam's own no-score indicator is also role="img" — scope to the
+    // stage-state dot specifically via its aria-label prefix.
+    expect(screen.queryByLabelText(/^Stage /)).not.toBeInTheDocument();
+    expect(container.querySelector(".border-line")).toBeInTheDocument();
+  });
+
+  it("pulses the beam-colored dot and border for a running stage", () => {
+    renderStageNode(baseStage(), "running");
+
+    const dot = screen.getByRole("img", { name: "Stage running" });
+    expect(dot.className).toContain("bg-beam");
+    expect(dot.className).toContain("animate-pulse");
+  });
+
+  it("shows a success dot/border for a done stage", () => {
+    renderStageNode(baseStage(), "done");
+
+    const dot = screen.getByRole("img", { name: "Stage done" });
+    expect(dot.className).toContain("bg-parity-pass");
+  });
+
+  it("shows an error dot/border for a failed stage", () => {
+    renderStageNode(baseStage(), "failed");
+
+    const dot = screen.getByRole("img", { name: "Stage failed" });
+    expect(dot.className).toContain("bg-parity-fail");
   });
 });

@@ -114,6 +114,12 @@ class MigrationOut(BaseModel):
     progress_current: int | None = None
     progress_total: int | None = None
     completed_at: datetime.datetime | None = None
+    # Derived, not stored: {stage_id (as string, matching the DAG canvas's
+    # React Flow node ids) -> "idle" | "running" | "done" | "failed"}. See
+    # `_compute_stage_states` for the derivation rule — computed fresh on
+    # every read from the same progress_* fields optimizer_runner.py already
+    # writes sequentially; no new DB columns.
+    stage_states: dict[str, str] = Field(default_factory=dict)
 
 
 def _get_pipeline_or_404(db: Session, pipeline_id: int) -> models.Pipeline:
@@ -144,7 +150,62 @@ def _to_option(model: str) -> ModelOption:
     )
 
 
-def _to_out(migration: models.Migration) -> MigrationOut:
+def _compute_stage_states(
+    db_stages: list[models.Stage], migration: models.Migration
+) -> dict[str, str]:
+    """Derive a per-stage run state from the Migration's existing sequential
+    progress fields — no new DB columns, pure read-time derivation.
+
+    ``db_stages`` must be in the same order optimizer_runner.py iterates them
+    in (``Stage`` ordered by ``id`` — see ``optimizer_runner._run``'s
+    ``db_stages`` query, reused as-is here rather than inventing a second
+    ordering). Keys are the stage's DB id as a string, matching the DAG
+    canvas's React Flow node ids (``String(stage.id)`` in
+    ``pipeline-detail.tsx``).
+
+    Rule: stages before ``progress_stage_name`` = "done", the stage matching
+    it = "running" (or "failed"/"done" once the run is terminal), stages
+    after = "idle". ``status == "completed"`` short-circuits to all "done".
+    Before anything has run (``progress_stage_name`` is still None), every
+    stage is "idle".
+    """
+    if migration.status == "completed":
+        return {str(stage.id): "done" for stage in db_stages}
+
+    if not migration.progress_stage_name:
+        return {str(stage.id): "idle" for stage in db_stages}
+
+    current_index = next(
+        (i for i, s in enumerate(db_stages) if s.name == migration.progress_stage_name),
+        None,
+    )
+
+    states: dict[str, str] = {}
+    for i, stage in enumerate(db_stages):
+        if current_index is None:
+            states[str(stage.id)] = "idle"
+        elif i < current_index:
+            states[str(stage.id)] = "done"
+        elif i == current_index:
+            if migration.status == "failed":
+                states[str(stage.id)] = "failed"
+            elif migration.status == "stopped_early":
+                # The stage the run stopped on already had at least one
+                # attempt recorded before the budget hard-stop fired.
+                states[str(stage.id)] = "done"
+            else:
+                states[str(stage.id)] = "running"
+        else:
+            states[str(stage.id)] = "idle"
+    return states
+
+
+def _to_out(db: Session, migration: models.Migration) -> MigrationOut:
+    db_stages = db.scalars(
+        select(models.Stage)
+        .where(models.Stage.pipeline_id == migration.pipeline_id)
+        .order_by(models.Stage.id)
+    ).all()
     return MigrationOut(
         id=migration.id,
         pipeline_id=migration.pipeline_id,
@@ -159,6 +220,7 @@ def _to_out(migration: models.Migration) -> MigrationOut:
         progress_current=migration.progress_current,
         progress_total=migration.progress_total,
         completed_at=migration.completed_at,
+        stage_states=_compute_stage_states(list(db_stages), migration),
     )
 
 
@@ -203,7 +265,7 @@ def create_migration(
     db.add(migration)
     db.commit()
     db.refresh(migration)
-    return _to_out(migration)
+    return _to_out(db, migration)
 
 
 @router.get("/{pipeline_id}/migrations", response_model=list[MigrationOut])
@@ -214,7 +276,7 @@ def list_migrations(pipeline_id: int, db: Session = Depends(get_db)) -> list[Mig
         .where(models.Migration.pipeline_id == pipeline_id)
         .order_by(models.Migration.id)
     ).all()
-    return [_to_out(migration) for migration in migrations]
+    return [_to_out(db, migration) for migration in migrations]
 
 
 @router.post("/{pipeline_id}/migrations/{migration_id}/start", response_model=MigrationOut)
@@ -264,7 +326,7 @@ def start_migration(
     db.refresh(migration)
 
     background_tasks.add_task(run_optimizer_for_migration, migration.id)
-    return _to_out(migration)
+    return _to_out(db, migration)
 
 
 @router.get("/{pipeline_id}/migrations/{migration_id}/status", response_model=MigrationOut)
@@ -281,4 +343,4 @@ def get_migration_status(
     """
     _get_pipeline_or_404(db, pipeline_id)
     migration = _get_migration_or_404(db, pipeline_id, migration_id)
-    return _to_out(migration)
+    return _to_out(db, migration)

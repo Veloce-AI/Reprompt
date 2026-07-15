@@ -461,3 +461,114 @@ def test_status_unknown_migration_returns_404(client: TestClient) -> None:
     pipeline_id = _upload(client, _diamond_trace_file())
     response = client.get(f"/pipelines/{pipeline_id}/migrations/999999/status")
     assert response.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# stage_states derivation (Phase 2 — live DAG/run status view)
+# ---------------------------------------------------------------------------
+# Diamond pipeline stage order is by DB id (insertion order): root, a, b, join
+# (see optimizer_runner._run's db_stages query — reused as-is by
+# migrations._compute_stage_states).
+
+
+def test_stage_states_all_idle_before_run_starts(
+    client: TestClient, session_factory: sessionmaker
+) -> None:
+    pipeline_id = _upload(client, _diamond_trace_file())
+    migration_id = _create_migration(client, pipeline_id)
+    stage_ids = _stage_ids(session_factory, pipeline_id)
+
+    body = client.get(f"/pipelines/{pipeline_id}/migrations/{migration_id}/status").json()
+    assert body["stage_states"] == {str(sid): "idle" for sid in stage_ids.values()}
+
+
+def test_stage_states_mid_run_marks_done_running_idle(
+    client: TestClient, session_factory: sessionmaker
+) -> None:
+    pipeline_id = _upload(client, _diamond_trace_file())
+    migration_id = _create_migration(client, pipeline_id)
+    stage_ids = _stage_ids(session_factory, pipeline_id)
+
+    with session_factory() as db:
+        migration = db.get(models.Migration, migration_id)
+        migration.status = "running"
+        migration.progress_stage_name = "Branch A"  # source_id "a", 2nd in order
+        migration.progress_current = 2
+        migration.progress_total = 4
+        db.commit()
+
+    body = client.get(f"/pipelines/{pipeline_id}/migrations/{migration_id}/status").json()
+    states = body["stage_states"]
+    assert states[str(stage_ids["root"])] == "done"
+    assert states[str(stage_ids["a"])] == "running"
+    assert states[str(stage_ids["b"])] == "idle"
+    assert states[str(stage_ids["join"])] == "idle"
+
+
+def test_stage_states_failed_marks_current_stage_failed(
+    client: TestClient, session_factory: sessionmaker
+) -> None:
+    pipeline_id = _upload(client, _diamond_trace_file())
+    migration_id = _create_migration(client, pipeline_id)
+    stage_ids = _stage_ids(session_factory, pipeline_id)
+
+    with session_factory() as db:
+        migration = db.get(models.Migration, migration_id)
+        migration.status = "failed"
+        migration.progress_stage_name = "Join"  # last stage
+        migration.progress_current = 4
+        migration.progress_total = 4
+        migration.stop_reason = "No workspace found"
+        db.commit()
+
+    body = client.get(f"/pipelines/{pipeline_id}/migrations/{migration_id}/status").json()
+    states = body["stage_states"]
+    assert states[str(stage_ids["root"])] == "done"
+    assert states[str(stage_ids["a"])] == "done"
+    assert states[str(stage_ids["b"])] == "done"
+    assert states[str(stage_ids["join"])] == "failed"
+
+
+def test_stage_states_stopped_early_marks_current_stage_done(
+    client: TestClient, session_factory: sessionmaker
+) -> None:
+    pipeline_id = _upload(client, _diamond_trace_file())
+    migration_id = _create_migration(client, pipeline_id)
+    stage_ids = _stage_ids(session_factory, pipeline_id)
+
+    with session_factory() as db:
+        migration = db.get(models.Migration, migration_id)
+        migration.status = "stopped_early"
+        migration.progress_stage_name = "Branch B"
+        migration.progress_current = 3
+        migration.progress_total = 4
+        migration.stopped_early = True
+        migration.stop_reason = "budget_exhausted"
+        db.commit()
+
+    body = client.get(f"/pipelines/{pipeline_id}/migrations/{migration_id}/status").json()
+    states = body["stage_states"]
+    assert states[str(stage_ids["root"])] == "done"
+    assert states[str(stage_ids["a"])] == "done"
+    assert states[str(stage_ids["b"])] == "done"
+    assert states[str(stage_ids["join"])] == "idle"
+
+
+def test_stage_states_completed_marks_all_stages_done(
+    client: TestClient, session_factory: sessionmaker
+) -> None:
+    pipeline_id = _upload(client, _diamond_trace_file())
+    migration_id = _create_migration(client, pipeline_id)
+    stage_ids = _stage_ids(session_factory, pipeline_id)
+
+    with session_factory() as db:
+        migration = db.get(models.Migration, migration_id)
+        migration.status = "completed"
+        migration.progress_stage_name = "Join"
+        migration.progress_current = 4
+        migration.progress_total = 4
+        migration.total_cost_usd = 1.23
+        db.commit()
+
+    body = client.get(f"/pipelines/{pipeline_id}/migrations/{migration_id}/status").json()
+    assert body["stage_states"] == {str(sid): "done" for sid in stage_ids.values()}

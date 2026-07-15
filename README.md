@@ -120,6 +120,10 @@ and all you need for local dev; Postgres is optional (see
 `docs/DEVELOPMENT.md` if you specifically want it). Then:
 
 - **First time setup + running it, step by step**: `docs/TESTING.md`
+- **Day to day**: `bash start.sh` opens the backend and frontend each in
+  their own terminal window (closing a window stops that one); `bash
+  stop.sh` stops both from wherever you are, Windows-specific process
+  quirks and all handled for you.
 - **Full technical plan**: `docs/DEVELOPMENT.md`
 - **Detailed, current build status of the optimizer**: `DEV_TRACKER.md`
 - **The exact data format it expects**: `docs/trace-format.md`

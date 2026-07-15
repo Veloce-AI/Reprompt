@@ -160,9 +160,17 @@ export interface MigrationOut {
   progress_stage_name: string | null;
   progress_current: number | null;
   progress_total: number | null;
+  // Live sub-step within progress_stage_name — one of StagePhase below,
+  // null before a run starts. See apps/api's optimizer_runner.py on_phase
+  // closure and packages/core's reprompt_core.optimizer.loop.StagePhase.
+  progress_substep: StagePhase | null;
   completed_at: string | null;
   stage_states: Record<string, StageRunState>;
 }
+
+// Mirrors reprompt_core.optimizer.loop.StagePhase (packages/core) exactly —
+// see stage-node.tsx's SUBSTEP_LABEL for the human-readable mapping.
+export type StagePhase = "mutating" | "cheap_scoring" | "critiquing" | "refining" | "sweeping" | "scoring";
 
 export function listModelOptions(pipelineId: number): Promise<ModelOption[]> {
   return request<ModelOption[]>(`/pipelines/${pipelineId}/models`);

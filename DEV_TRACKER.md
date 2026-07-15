@@ -36,9 +36,14 @@ optimizer quality fixes [DONE — 2026-07-15]"** section (below, right after
 this paragraph) — a separate audit's 6 findings against the already-shipped
 Prism engine (most notably: the critique loop was judge-blind, and
 `max_refine_rounds=1` made the plateau early-stopping logic dead code),
-`packages/core` only, `264 passed, 21 skipped` after. **Not started**:
-Phase 6 (final end-to-end manual verification), the `target_model` tracking
-fix (see below).
+`packages/core` only, `264 passed, 21 skipped` after, and a dated
+**"Phase A — Live optimizer sub-step signal [DONE — 2026-07-15]"** section
+(below) — an `on_phase` callback threaded through the engine so the live
+DAG view (Phase 2, above) can show *which* internal phase a running stage
+is in (e.g. "critiquing weakest candidates"), not just that it's running.
+**Not started**: Phase 6 (final end-to-end manual verification), the
+`target_model` tracking fix (see below — a different agent is picking this
+up in a parallel worktree as of this writing).
 
 Full **Refract → Reprompt** rename completed 2026-07-14: both Python
 packages (`refract_core`→`reprompt_core`, `refract_api`→`reprompt_api`,
@@ -300,6 +305,123 @@ its own deferred async-rubric-gen phase first, per the task brief). No new
 concurrency was introduced — stages still run strictly sequentially
 server-side, this phase only makes that existing sequential progress
 *visible* in real time.
+
+## Phase A — Live optimizer sub-step signal [DONE — 2026-07-15]
+
+The gap Phase 2's live DAG view (above) left open: `on_attempt` only fires
+once per finished, scored sweep attempt, so a "running" stage's node had no
+signal for what was actually happening *inside* it — no distinction between
+"generating variants" and "waiting on a full sweep." Built on top of Phase
+2's `stage_states`/DAG-coloring work, no changes to that mechanism, only
+additive: a new, finer-grained `on_phase` callback alongside the existing
+`on_attempt`.
+
+**Actual phase sequence found in `loop.py`** (confirms the task brief's
+assumption, with one correction — critiquing and refining are two separate
+calls per candidate within the same round, not one merged step): both
+strategies share `run_sweep_for_stage`, which now fires `"sweeping"` once on
+entry and `"scoring"` once the grid is done, right before selection — so
+every strategy ends `sweeping → scoring`. **"simple"**: `mutating` (one
+`generate_prompt_mutations` call) → `sweeping` → `scoring`. **"prism"**:
+`mutating` (round-1 variants) → per round (bounded by `max_refine_rounds`,
+plateau-stopped early per candidate — see the "Loop & harness engineering
+discipline" section above, unchanged by this phase): `cheap_scoring` (the
+judge-free ranking pass) → `critiquing` (the new-in-Phase-1
+`judge_single_pass` call feeding reasoning into critique) → `refining` (the
+`critique_and_refine` call itself) — then, after all rounds, `sweeping` →
+`scoring` → optional few-shot selection (no phase event; it's a single
+targeted call on the already-selected winner, not a distinct stage-wide
+phase).
+
+**`packages/core`** (`packages/core/src/reprompt_core/optimizer/loop.py`):
+- `StagePhase` (`Literal["mutating","cheap_scoring","critiquing","refining","sweeping","scoring"]`)
+  and `StagePhaseEvent` (plain `NamedTuple`: `stage_id: int`, `phase:
+  StagePhase`) — no DB/FastAPI imports, same headless convention as
+  `StageAttempt`.
+- `on_phase: Callable[[StagePhaseEvent], None] | None = None` threaded
+  through `run_optimizer()` → `_optimize_stage_simple`/
+  `_optimize_stage_prism` → `run_sweep_for_stage` — every new parameter
+  defaults to `None` and is a true no-op when omitted, confirmed by
+  `test_on_phase_is_optional_and_defaults_to_no_op`.
+- `run_sweep_for_stage` fires `sweeping`/`scoring` (shared by both
+  strategies, so they can never drift on these two). `_optimize_stage_simple`
+  fires `mutating`. `_optimize_stage_prism` fires `mutating` once (round 1),
+  then `cheap_scoring`/`critiquing`/`refining` once each per round —
+  `refining` specifically only fires for a candidate that actually reaches
+  the `critique_and_refine` call (not for one skipped by the plateau check
+  or a budget hard-stop that lands between `critiquing` and `refining`),
+  via a per-round `refining_phase_fired` flag so it's one event per round,
+  not one per candidate.
+- Tests (3 new, `test_optimizer_loop.py`): the exact phase sequence for
+  "simple" and for "prism" (asserting the full ordered list, not just
+  membership), plus the no-op-safe default. `packages/core`:
+  **267 passed, 21 skipped** (264 + 3 new, same 21 environment-only skips
+  as the Phase 1 quality-fixes baseline).
+
+**`apps/api`**:
+- `models.py`: `Migration.progress_substep: str | None` — new column, right
+  next to `progress_stage_name`. Alembic migration
+  `apps/api/alembic/versions/b8e1c4a7f209_add_migration_progress_substep.py`
+  (new head, `f3a7b1c9d2e4` → `b8e1c4a7f209`), mirroring
+  `f3a7b1c9d2e4_add_base_url_and_migration_progress.py`'s precedent for a
+  single nullable `String` column add via `batch_alter_table`.
+- `optimizer_runner.py`: a new `on_phase` closure alongside the existing
+  `on_attempt`, writing `migration.progress_substep = event.phase` and
+  `db.commit()` at the same cadence as `on_attempt` (every call, not
+  batched) — threaded into the `run_optimizer(...)` call as `on_phase=on_phase`.
+  Deliberately additive/narrow here and in `models.py`/`migrations.py`: a
+  separate agent is working on `target_model` tracking in these same two
+  files in a parallel worktree (see "Real gap, not yet fixed" under "PR
+  #3/#4 review notes" below) — nothing in this phase restructures an
+  existing function, only new fields/params/closures.
+- `migrations.py`: `MigrationOut.progress_substep: str | None` — chosen
+  over folding it into `stage_states`'s values because `progress_substep`
+  is a single migration-level field (only one stage is ever "running" at a
+  time in this sequential engine), so a top-level field is the smaller,
+  more honest diff than making every `stage_states` entry a richer object
+  for a value that's only ever non-null for one of them.
+- Test: `test_status_reflects_progress_fields` extended to assert
+  `progress_substep` round-trips through `GET .../status`, plus a new
+  `test_status_progress_substep_defaults_to_none_before_a_run_starts`.
+  `apps/api`: **110 passed** (109 baseline + 1 new test file-level count;
+  the extended existing test doesn't add a count but the new one does).
+
+**`apps/web`**:
+- `lib/api.ts`: `StagePhase` type (mirrors `packages/core`'s exactly) and
+  `MigrationOut.progress_substep: StagePhase | null`.
+- `components/pipeline-canvas.tsx`: new `runningSubstep?: StagePhase | null`
+  prop — attached only to the one DAG node whose derived `runState` is
+  `"running"` (`progress_substep` is a migration-level field, not
+  per-stage, so it would be misleading to attach it to every node).
+- `components/stage-node.tsx`: `StageNodeData` gained `substep?: StagePhase
+  | null`; a new small `text-beam` line renders under the existing pulsing
+  dot only when `runState === "running" && substep` — human-readable via a
+  new `SUBSTEP_LABEL` map (`mutating` → "Generating prompt variants",
+  `cheap_scoring` → "Ranking candidates", `critiquing` → "Critiquing
+  weakest candidates", `refining` → "Refining prompt", `sweeping` →
+  "Running parameter sweep", `scoring` → "Scoring candidates") — never the
+  raw enum value.
+- `routes/new-migration.tsx`: `<PipelineCanvas runningSubstep={status?.progress_substep} />`
+  added alongside the existing `stageStates` prop.
+- Tests: 4 new in `stage-node.test.tsx` (the label renders while running,
+  every `StagePhase` maps to its human label, no label when not running,
+  no label when running with no substep known yet). Fixed one pre-existing
+  test fixture (`new-migration.test.tsx`) that needed `progress_substep:
+  null` added to satisfy `MigrationOut`'s now-required field.
+  `npx tsc --noEmit` clean. `apps/web`: **73 passed** (69 baseline + 4 new),
+  9 test files.
+
+**What a user actually sees**: while a stage's node is pulsing indigo
+("running") on the live migration screen, a small indigo sub-line now
+appears under the stage name reading e.g. "Running — critiquing weakest
+candidates" or "Running — running parameter sweep," updating roughly every
+poll interval (~2s, same `refetchInterval` Phase 2 already set up) as the
+optimizer moves through mutation, critique/refine rounds (Prism only), and
+the final sweep/score pass for whichever stage is currently active.
+
+**Explicitly out of scope, not touched**: `Candidate`'s schema/`target_model`
+(a different agent's parallel work — see "PR #3/#4 review notes" below);
+the migration wizard's model picker.
 
 ## PR #3/#4 review notes — Phase 4 landed differently than originally spec'd
 

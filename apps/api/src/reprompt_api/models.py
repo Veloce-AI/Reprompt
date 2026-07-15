@@ -333,6 +333,11 @@ class Migration(Base):
     progress_stage_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     progress_current: Mapped[int | None] = mapped_column(Integer, nullable=True)
     progress_total: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # One of reprompt_core.optimizer.loop.StagePhase ("mutating"/"cheap_scoring"/
+    # "critiquing"/"refining"/"sweeping"/"scoring") - the live sub-step within
+    # progress_stage_name, written by optimizer_runner.py's on_phase closure.
+    # Null before a run starts or once it's terminal (mirrors progress_stage_name).
+    progress_substep: Mapped[str | None] = mapped_column(String(32), nullable=True)
     completed_at: Mapped[datetime.datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )

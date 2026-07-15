@@ -3,10 +3,21 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { ParityBeam } from "@/components/parity-beam";
 import { cn } from "@/lib/utils";
-import type { StageInfo, StageRunState } from "@/lib/api";
+import type { StageInfo, StagePhase, StageRunState } from "@/lib/api";
 
-export type StageNodeData = { stage: StageInfo; runState?: StageRunState };
+export type StageNodeData = { stage: StageInfo; runState?: StageRunState; substep?: StagePhase | null };
 export type StageFlowNode = Node<StageNodeData, "stage">;
+
+// Human-readable labels for reprompt_core.optimizer.loop.StagePhase — never
+// render the raw enum value in the UI.
+const SUBSTEP_LABEL: Record<StagePhase, string> = {
+  mutating: "Generating prompt variants",
+  cheap_scoring: "Ranking candidates",
+  critiquing: "Critiquing weakest candidates",
+  refining: "Refining prompt",
+  sweeping: "Running parameter sweep",
+  scoring: "Scoring candidates",
+};
 
 // Same semantic colors ParityBeam/Badge already use for pass/near/fail, plus
 // --beam (the "active/running" accent used elsewhere, e.g. the migration
@@ -52,7 +63,7 @@ function statsLabel(stage: StageInfo): string {
 }
 
 export function StageNode({ data }: NodeProps<StageFlowNode>) {
-  const { stage, runState } = data;
+  const { stage, runState, substep } = data;
 
   return (
     <Card
@@ -76,6 +87,11 @@ export function StageNode({ data }: NodeProps<StageFlowNode>) {
             />
           )}
         </div>
+        {runState === "running" && substep && (
+          <p className="truncate text-12 text-beam" title={SUBSTEP_LABEL[substep]}>
+            Running — {SUBSTEP_LABEL[substep].toLowerCase()}
+          </p>
+        )}
         <Badge variant="neutral" className="max-w-full truncate">
           {stage.model}
         </Badge>

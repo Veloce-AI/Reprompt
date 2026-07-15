@@ -113,6 +113,11 @@ class MigrationOut(BaseModel):
     progress_stage_name: str | None = None
     progress_current: int | None = None
     progress_total: int | None = None
+    # Live sub-step within progress_stage_name - one of
+    # reprompt_core.optimizer.loop.StagePhase ("mutating"/"cheap_scoring"/
+    # "critiquing"/"refining"/"sweeping"/"scoring"), written by
+    # optimizer_runner.py's on_phase closure. Null before a run starts.
+    progress_substep: str | None = None
     completed_at: datetime.datetime | None = None
     # Derived, not stored: {stage_id (as string, matching the DAG canvas's
     # React Flow node ids) -> "idle" | "running" | "done" | "failed"}. See
@@ -219,6 +224,7 @@ def _to_out(db: Session, migration: models.Migration) -> MigrationOut:
         progress_stage_name=migration.progress_stage_name,
         progress_current=migration.progress_current,
         progress_total=migration.progress_total,
+        progress_substep=migration.progress_substep,
         completed_at=migration.completed_at,
         stage_states=_compute_stage_states(list(db_stages), migration),
     )

@@ -81,7 +81,7 @@ import json
 import logging
 import re
 from collections.abc import Callable, Sequence
-from typing import Any, Literal, TypeVar
+from typing import Any, Literal, NamedTuple, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -105,6 +105,7 @@ from reprompt_core.sweep import SweepCandidate, generate_param_format_grid
 __all__ = [
     "StageOptimizationInput",
     "StageAttempt",
+    "StagePhaseEvent",
     "StageResult",
     "OptimizationResult",
     "run_optimizer",
@@ -218,6 +219,33 @@ class StageAttempt(BaseModel):
         "winning candidate — the real benchmark examples selected as few-shot context. Never "
         "populated for non-winning attempts or the 'simple' strategy.",
     )
+
+
+StagePhase = Literal["mutating", "cheap_scoring", "critiquing", "refining", "sweeping", "scoring"]
+"""One stage's internal phase, in the order a run actually moves through
+them (see ``StagePhaseEvent`` and each strategy function's own comments):
+``"simple"`` only ever fires ``mutating`` -> ``sweeping`` -> ``scoring``
+(all three shared with "prism" via ``run_sweep_for_stage``, which is the
+function that fires ``sweeping``/``scoring`` for *both* strategies so they
+can never drift). ``"prism"`` additionally cycles ``cheap_scoring`` ->
+``critiquing`` -> ``refining`` once per critique/refine round (bounded by
+``max_refine_rounds``, see that constant) before its own ``sweeping``/
+``scoring`` pass."""
+
+
+class StagePhaseEvent(NamedTuple):
+    """Fired via the optional ``on_phase`` callback at each phase
+    transition within a stage — finer-grained than ``on_attempt`` (which
+    only fires once per finished, scored sweep attempt and says nothing
+    about what's happening during mutation or a critique/refine round).
+    Plain ``NamedTuple``, no DB/FastAPI imports — same headless-``packages/
+    core`` convention as every other public shape in this module; a caller
+    (``apps/api``'s ``optimizer_runner.py``) turns this into UI-visible
+    progress, this module has no opinion on how it's displayed.
+    """
+
+    stage_id: int
+    phase: StagePhase
 
 
 class StageResult(BaseModel):
@@ -347,6 +375,7 @@ def run_sweep_for_stage(
     parity_threshold: float,
     max_sweep_candidates_per_prompt: int,
     on_attempt: Callable[[StageAttempt], None] | None,
+    on_phase: Callable[[StagePhaseEvent], None] | None = None,
 ) -> StageResult:
     """Run the param/format sweep, scoring, and selection for one stage
     against an already-decided list of candidate prompt texts.
@@ -360,7 +389,15 @@ def run_sweep_for_stage(
     for the rest) — callers should always include the stage's real
     original prompt template as the first entry, even if a mutation step
     failed and it ends up being the *only* entry.
+
+    ``on_phase``, if given, fires ``"sweeping"`` once on entry (this is the
+    shared function both strategies call for their param/format grid pass)
+    and ``"scoring"`` once the grid is done, right before selection — see
+    :class:`StagePhaseEvent`.
     """
+    if on_phase is not None:
+        on_phase(StagePhaseEvent(stage_id=stage_input.stage_id, phase="sweeping"))
+
     example = _example_dict(stage_input.examples[0])
     example_input = example.get("input", {})
     benchmark_output = example["output"]
@@ -473,6 +510,9 @@ def run_sweep_for_stage(
             if on_attempt is not None:
                 on_attempt(attempt)
 
+    if on_phase is not None:
+        on_phase(StagePhaseEvent(stage_id=stage_input.stage_id, phase="scoring"))
+
     if not stage_attempts:
         return StageResult(
             stage_id=stage_input.stage_id,
@@ -512,7 +552,11 @@ def _optimize_stage_simple(
     num_prompt_variants: int,
     max_sweep_candidates_per_prompt: int,
     on_attempt: Callable[[StageAttempt], None] | None,
+    on_phase: Callable[[StagePhaseEvent], None] | None = None,
 ) -> StageResult:
+    if on_phase is not None:
+        on_phase(StagePhaseEvent(stage_id=stage_input.stage_id, phase="mutating"))
+
     prompt_candidates: list[str] = [stage_input.original_prompt_template]
     try:
         mutation = generate_prompt_mutations(
@@ -543,6 +587,7 @@ def _optimize_stage_simple(
         parity_threshold=parity_threshold,
         max_sweep_candidates_per_prompt=max_sweep_candidates_per_prompt,
         on_attempt=on_attempt,
+        on_phase=on_phase,
     )
 
 
@@ -607,6 +652,7 @@ def _optimize_stage_prism(
     max_refine_rounds: int,
     include_few_shot: bool,
     on_attempt: Callable[[StageAttempt], None] | None,
+    on_phase: Callable[[StagePhaseEvent], None] | None = None,
 ) -> StageResult:
     example = _example_dict(stage_input.examples[0])
     example_input = example.get("input", {})
@@ -617,6 +663,9 @@ def _optimize_stage_prism(
     limited_examples = stage_input.examples[:_MAX_MUTATION_EXAMPLES]
 
     # Step 1: generate variants (round 1) - same call as "simple"'s only step.
+    if on_phase is not None:
+        on_phase(StagePhaseEvent(stage_id=stage_input.stage_id, phase="mutating"))
+
     prompt_candidates: list[str] = [stage_input.original_prompt_template]
     try:
         mutation = generate_prompt_mutations(
@@ -660,6 +709,9 @@ def _optimize_stage_prism(
         if budget.is_exhausted or not candidates_to_rank:
             break
 
+        if on_phase is not None:
+            on_phase(StagePhaseEvent(stage_id=stage_input.stage_id, phase="cheap_scoring"))
+
         ranked: list[tuple[str, float, CompositeScore, str | None]] = []
         for prompt_text in candidates_to_rank:
             if budget.is_exhausted:
@@ -677,6 +729,10 @@ def _optimize_stage_prism(
         ranked.sort(key=lambda entry: entry[1])  # ascending - weakest first
         weakest = ranked[:2]
 
+        if on_phase is not None:
+            on_phase(StagePhaseEvent(stage_id=stage_input.stage_id, phase="critiquing"))
+
+        refining_phase_fired = False
         next_round_candidates: list[str] = []
         for prompt_text, cheap_score, composite, candidate_output in weakest:
             baseline = candidate_baseline.get(prompt_text)
@@ -724,6 +780,10 @@ def _optimize_stage_prism(
                         stage_input.stage_id, stage_input.stage_name, exc,
                     )
 
+            if on_phase is not None and not refining_phase_fired:
+                on_phase(StagePhaseEvent(stage_id=stage_input.stage_id, phase="refining"))
+                refining_phase_fired = True
+
             try:
                 refinement = critique_and_refine(
                     prompt_text, composite, limited_examples, stage_input.rubric, stage_input.target_model,
@@ -760,6 +820,7 @@ def _optimize_stage_prism(
         parity_threshold=parity_threshold,
         max_sweep_candidates_per_prompt=max_sweep_candidates_per_prompt,
         on_attempt=on_attempt,
+        on_phase=on_phase,
     )
 
     # Step 6: optional few-shot selection on the winning candidate only.
@@ -798,6 +859,7 @@ def run_optimizer(
     max_refine_rounds: int = DEFAULT_MAX_REFINE_ROUNDS,
     include_few_shot: bool = False,
     on_attempt: Callable[[StageAttempt], None] | None = None,
+    on_phase: Callable[[StagePhaseEvent], None] | None = None,
 ) -> OptimizationResult:
     """Run the M3 optimizer loop across every stage of a migration.
 
@@ -838,6 +900,13 @@ def run_optimizer(
         in the order attempts complete — the caller's hook for progress
         reporting and persistence (e.g. writing a ``Candidate`` row). Not
         called for attempts that failed transport-side (never scored).
+    on_phase:
+        Optional callback invoked at each phase transition *within* a
+        stage — coarser than a per-attempt signal, but fires during
+        mutation and (for "prism") each critique/refine round, which
+        ``on_attempt`` alone says nothing about. See
+        :class:`StagePhaseEvent`. No-op-safe: omitting it changes nothing
+        about how either strategy runs.
 
     Returns
     -------
@@ -867,6 +936,7 @@ def run_optimizer(
                     max_refine_rounds=max_refine_rounds,
                     include_few_shot=include_few_shot,
                     on_attempt=on_attempt,
+                    on_phase=on_phase,
                 )
             else:
                 result = _optimize_stage_simple(
@@ -879,6 +949,7 @@ def run_optimizer(
                     num_prompt_variants=num_prompt_variants,
                     max_sweep_candidates_per_prompt=max_sweep_candidates_per_prompt,
                     on_attempt=on_attempt,
+                    on_phase=on_phase,
                 )
         except Exception as exc:  # noqa: BLE001 - one stage's failure must never abort the whole run
             logger.error("Stage %s failed unexpectedly: %s", stage_input.stage_id, exc, exc_info=True)

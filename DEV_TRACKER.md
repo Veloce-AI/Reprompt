@@ -10,6 +10,15 @@ points here plus the rest of the docs in reading order.
 
 Last updated: 2026-07-16.
 
+**Edit button for inline pipeline rename [DONE — 2026-07-16]**: Added an
+explicit pencil/edit icon button next to the delete icon in the Pipelines
+home list's action-icon area, triggering the same inline-rename behavior
+that already existed via click-on-name. No new rename logic — reuses existing
+`startEditingName` callback and state management. `apps/web` test suite:
+2 new tests (edit button renders per pipeline row, clicking it triggers the
+rename input with correct initial value), final: **99 passed** + clean
+`tsc --noEmit`.
+
 ## Current state (one paragraph)
 
 Two optimizer strategies exist in `packages/core/src/reprompt_core/optimizer/`:

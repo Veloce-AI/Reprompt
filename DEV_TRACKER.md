@@ -81,6 +81,13 @@ existing test extended with two new assertions), `apps/web` 97 passed (93
 **Branding/copy pass — Prism as self-evolving optimizer [DONE — 2026-07-16]**:
 docs/UI copy only, no engine/schema changes — see the dated section below
 for the full list of what changed and why.
+**Phase C — Before/after prompt diff [DONE — 2026-07-16]**: once a
+migration reaches a terminal state, the Migrations tab now shows each
+stage's original prompt against the winning candidate's prompt as a word
+diff, alongside which target model won and its composite score — see the
+dated section below for the full design. Display-only, no new optimizer/
+scoring logic. `apps/api` 154 passed (147 + 7 new), `apps/web` 105 passed
+(93 + 12 new) + clean typecheck, `packages/core` untouched.
 **Not started**: Phase 6 (final end-to-end manual verification).
 
 **Note for future sessions/developers**: each phase above updates
@@ -2203,3 +2210,125 @@ and it disappears from the list immediately.
 **Pipeline CRUD backlog item: fully closed.** Create (import), Read
 (list/DAG/data tab), Update (rename), Delete are all built and tested —
 nothing left open under this item.
+
+## Phase C — Before/after prompt diff [DONE — 2026-07-16]
+
+Another separate, narrow display-only track (parallel work in its own
+worktree, `phase-c`, off the same base commit as `branding`,
+`pipeline-delete`, `model-auto-select`, all needing hand-merging
+afterward) — not a continuation of Phase 6. The gap: `Candidate.
+prompt_variant` (every attempt tried) and `Stage.prompt_template` (the
+original) already existed and were fully populated by the M3 optimizer
+wiring, but nothing ever showed a user the *winning* prompt next to the
+original — a reviewer had no way to see exactly what the optimizer changed
+without reading raw `Candidate` rows out of the DB directly.
+
+**No "winner" flag exists on `Candidate`** — checked `selection.py`
+(`packages/core/src/reprompt_core/selection.py`) and `optimizer_runner.py`'s
+`on_attempt` closure first: `select_best_candidate` picks a winner
+in-memory per stage per target-model run and only its `StageAttempt` (via
+`on_attempt`) gets persisted as a `Candidate` row alongside every other
+non-winning attempt from the sweep — none of them carry a boolean marking
+which one actually won that stage's optimization. What *is* persisted:
+`Candidate.scores` is the full `{"deterministic":, "judge":, "embedding_sim":,
+"final":, "judge_disagreement":, "judge_low_confidence":}` dict `packages/
+core`'s `run_sweep_for_stage` builds (see `reprompt_core.optimizer.loop`
+around its `StageAttempt(...)` construction) — `scores["final"]` is the
+same composite score `select_best_candidate` itself uses to rank
+candidates. So "the winner" is recomputed at read time: highest
+`scores["final"]` among a stage's `Candidate` rows for this migration,
+ties broken by row-insertion order (`Candidate.id` ascending) — the same
+tie-break rule `select_best_candidate` already uses (Python `max()` keeps
+the first element attaining the max), so a recomputed "winner" here always
+agrees with what the optimizer itself picked, not a second competing
+notion of "best." No schema change, no Alembic migration.
+
+**Backend** — `apps/api/src/reprompt_api/migrations.py`:
+- New `GET /pipelines/{pipeline_id}/migrations/{migration_id}/results` →
+  `list[StageResultOut]`, `StageResultOut = {stage_id, stage_name,
+  original_prompt, winning_prompt, winning_model, score}`.
+- **Not gated on `Migration.status` being terminal** (the task's own
+  "your call, document which" — documented here and in the endpoint's own
+  docstring): a stage only appears in the response once it has at least
+  one `Candidate` row for `(migration_id, stage_id)`. For a `pending`
+  migration that's an empty list; for `running`, whichever stages have
+  already finished at least one attempt; for a terminal state, the full
+  per-stage set. This matches every other read endpoint in this router's
+  own "return what's available" contract (e.g. `list_migrations` on an
+  empty pipeline) rather than adding a second, endpoint-specific
+  not-ready-yet error shape. The frontend still only *fetches* this once
+  terminal (see below) since there's nothing worth showing/polling for
+  mid-run, but the endpoint itself doesn't enforce that.
+- `scores.get("final") or 0.0` guards a `Candidate` row saved without a
+  `"final"` key (older/partial data, or a directly-seeded test row) —
+  treated as the worst possible score rather than raising, covered by
+  `test_results_treats_missing_final_score_as_zero`.
+- Tests: 7 new cases in `apps/api/tests/test_migrations.py` — empty before
+  any candidate, picks the highest-`final`-score candidate across multiple
+  target models for one stage (and only includes stages with >=1
+  candidate), missing `"final"` key treated as zero, available for a
+  still-`running` migration, no cross-migration candidate leakage on the
+  same pipeline/stage, unknown migration/pipeline → 404.
+
+**Frontend**:
+- No diff library added — `package.json` untouched (checked first per the
+  task's own "keep it minimal" framing; prompts are short enough that a
+  hand-rolled diff is simpler than vetting/adding a dependency, and it
+  avoids a `package.json`/lockfile merge conflict with the three sibling
+  worktrees). New `apps/web/src/lib/text-diff.ts`: pure `diffWords(before,
+  after) -> DiffOp[]` — whitespace-preserving tokenization + a standard
+  O(n·m) LCS table (prompt-sized inputs, not documents — this is plenty
+  fast) — `DiffOp = {type: "equal"|"insert"|"delete", text: string}`,
+  consecutive same-type tokens coalesced so the renderer emits one `<span>`
+  per changed run, not one per word. Zero React/DOM — unit-tested on its
+  own in `apps/web/src/lib/text-diff.test.ts` (9 cases: identity, isolated
+  single-word change, pure insertion/deletion including empty-string
+  before/after, and two round-trip checks that concatenating equal+insert
+  reproduces `after` exactly and equal+delete reproduces `before` exactly).
+- `apps/web/src/components/migration-success-screen.tsx`: added a
+  `resultsQuery` (`getMigrationResults`, `enabled: isTerminal`) and, when
+  terminal, a **"Results — before / after prompts"** section below the
+  existing Activity log — one card per stage with its name, winning
+  model, score, and the word diff rendered inline (deletions
+  strikethrough in `parity-fail`, insertions highlighted in `parity-pass`
+  — reusing the existing design-token colors the pass/fail `Badge`
+  variants already use, not new arbitrary Tailwind colors). Added as two
+  new functions (`StageResultsSection`, `StageResultCard`) at the bottom
+  of the file, same convention this file already established with
+  `ActivityLogList`/`StageReasoningDrawer` (Phase B) — one file, several
+  small presentational components, not a new file per component.
+- `apps/web/src/lib/api.ts`: additive `StageResultOut` type +
+  `getMigrationResults()`, placed right after `getMigrationStatus`.
+- Tests: 3 new cases in `apps/web/src/components/migration-success-
+  screen.test.tsx` — fetches and renders once terminal (diff spans present,
+  winning model/score shown, correct `pipelineId`/`migrationId` args),
+  does **not** fetch while still `running`, empty-state message when no
+  stage has a candidate yet. Needed a `beforeEach(() =>
+  vi.mocked(getMigrationResults).mockReset())` scoped to just this
+  `describe` block — the file's mocks aren't reset globally between tests
+  (no `beforeEach` at file scope), so a mock call count asserted in one
+  test would otherwise leak into the next; same pattern `data-table.test.
+  tsx`/`new-migration-wizard.test.tsx`/`rubric-review-panel.test.tsx`
+  already use for their own `beforeEach`, just scoped narrower here since
+  the file's *other* (Phase B) tests don't need resetting.
+
+**Verified**: `cd apps/api && uv run pytest -q` → **154 passed** (147
+baseline + 7 new). `cd apps/web && npx tsc --noEmit` → clean. `cd apps/web
+&& npx vitest run` → **105 passed** (93 baseline + 12 new: 9 in
+`text-diff.test.ts`, 3 in `migration-success-screen.test.tsx`), 13 test
+files. `packages/core` untouched and `package.json`/lockfile untouched —
+confirmed via `git status` (only `apps/api/src/reprompt_api/migrations.py`,
+`apps/api/tests/test_migrations.py`, `apps/web/src/lib/api.ts`,
+`apps/web/src/lib/text-diff.ts` (new), `apps/web/src/lib/text-diff.test.ts`
+(new), `apps/web/src/components/migration-success-screen.tsx`,
+`apps/web/src/components/migration-success-screen.test.tsx`, plus this doc
+and `docs/TESTING.md` appear in the diff).
+
+**What a user sees**: once a migration finishes (completed, stopped early,
+or failed), the Migrations tab's run screen gains a "Results — before /
+after prompts" section below the Activity log — one card per stage that
+got at least one attempt, showing the winning target model, its composite
+score, and the original prompt against the winning prompt as an inline
+word diff (struck-through red for removed text, highlighted green for
+added text, unchanged words plain). Nothing to click/expand — it's visible
+as soon as the section renders, no separate "view diff" action.

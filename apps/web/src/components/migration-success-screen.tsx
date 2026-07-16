@@ -1,16 +1,27 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import {
   ApiError,
   getMigrationStatus,
+  getPipelineDag,
   startMigration,
+  type ActivityLogEntry,
   type MigrationOut,
 } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import {
+  DrawerRoot,
+  DrawerContent,
+  DrawerHeader,
+  DrawerTitle,
+  DrawerDescription,
+  DrawerBody,
+} from "@/components/ui/drawer";
 import { MigrationRunBar } from "@/components/migration-run-bar";
 import { PipelineCanvas } from "@/components/pipeline-canvas";
+import { SUBSTEP_LABEL } from "@/components/stage-node";
 
 const STATUS_LABELS: Record<string, string> = {
   pending: "Pending",
@@ -53,6 +64,10 @@ export function MigrationSuccessScreen({
 }) {
   const pid = Number(pipelineId);
   const [started, setStarted] = useState(migration.status !== "pending");
+  // Set only when a *running* stage node is clicked (see onNodeClick below)
+  // — the reasoning drawer only ever has something live to show for the
+  // one stage currently in progress.
+  const [reasoningStageId, setReasoningStageId] = useState<number | null>(null);
 
   const startMutation = useMutation({
     mutationFn: () => startMigration(pid, migration.id),
@@ -69,6 +84,20 @@ export function MigrationSuccessScreen({
       return s === "running" ? 2000 : false;
     },
   });
+
+  // Same queryKey PipelineCanvas itself uses for this pipeline's DAG - reads
+  // from the shared React Query cache (no extra fetch) once PipelineCanvas
+  // below has loaded it. Only used here for human-readable stage names in
+  // the activity log / reasoning drawer.
+  const dagQuery = useQuery({
+    queryKey: ["pipeline-dag", pid],
+    queryFn: () => getPipelineDag(pid),
+    enabled: started,
+  });
+
+  function stageName(stageId: number): string {
+    return dagQuery.data?.stages[String(stageId)]?.name ?? `Stage ${stageId}`;
+  }
 
   const status = statusQuery.data;
   const isRunning = status?.status === "running";
@@ -124,8 +153,20 @@ export function MigrationSuccessScreen({
                   pipelineId={pid}
                   stageStates={status?.stage_states}
                   runningSubstep={status?.progress_substep}
+                  onNodeClick={(stageId) => {
+                    // Only a *running* node has a live reasoning feed to
+                    // show - clicking a done/idle/failed node is a no-op
+                    // here (unlike the static Canvas tab's rubric drawer).
+                    if (status?.stage_states?.[String(stageId)] === "running") {
+                      setReasoningStageId(stageId);
+                    }
+                  }}
                 />
               </div>
+            )}
+
+            {(isRunning || isTerminal) && (
+              <ActivityLogList entries={status?.activity_log ?? null} stageName={stageName} />
             )}
 
             <div className="mt-6">
@@ -136,6 +177,129 @@ export function MigrationSuccessScreen({
           </div>
         )}
       </CardContent>
+
+      <StageReasoningDrawer
+        stageId={reasoningStageId}
+        stageName={reasoningStageId !== null ? stageName(reasoningStageId) : ""}
+        entries={status?.activity_log ?? null}
+        onClose={() => setReasoningStageId(null)}
+      />
     </Card>
+  );
+}
+
+/** One human-readable line for an activity log entry — the real critique
+ * text/judge summary when the phase carried one (see StagePhaseEvent's
+ * docstring in packages/core), otherwise the same human-readable phase
+ * label stage-node.tsx's substep line already uses. Never the raw phase
+ * enum value on its own. */
+function activityLineText(entry: ActivityLogEntry): string {
+  return entry.detail ?? SUBSTEP_LABEL[entry.phase];
+}
+
+/**
+ * Chronological activity log for the whole run, alongside the live DAG —
+ * every on_phase event across every stage, not just the one currently
+ * selected in the reasoning drawer. Newest at the bottom (log/chat
+ * convention) and auto-scrolls as new entries arrive via the existing
+ * 2s status poll — no new polling mechanism introduced.
+ */
+function ActivityLogList({
+  entries,
+  stageName,
+}: {
+  entries: ActivityLogEntry[] | null;
+  stageName: (stageId: number) => string;
+}) {
+  const scrollRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [entries]);
+
+  if (!entries || entries.length === 0) return null;
+
+  return (
+    <div className="mt-4 rounded-card border border-line">
+      <p className="border-b border-line px-4 py-2 text-12 font-medium text-ink-soft">
+        Activity log
+      </p>
+      <div ref={scrollRef} className="max-h-[200px] space-y-1 overflow-y-auto p-4" role="log">
+        {entries.map((entry, i) => (
+          <p key={i} className="font-mono text-12 text-ink-soft">
+            <span className="text-ink">{stageName(entry.stage_id)}</span>: {activityLineText(entry)}
+          </p>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Live reasoning feed (Phase B) — clicking a *running* stage node on the
+ * live DAG opens this, showing the latest real LLM reasoning text
+ * (critique text / judge-reasoning summary) captured for that stage so
+ * far, filtered from the same activity log. Reuses the Drawer primitives
+ * StageRubricDrawer (pipeline-workspace.tsx) already established for
+ * stage-scoped side panels, rather than introducing a new panel component.
+ */
+function StageReasoningDrawer({
+  stageId,
+  stageName,
+  entries,
+  onClose,
+}: {
+  stageId: number | null;
+  stageName: string;
+  entries: ActivityLogEntry[] | null;
+  onClose: () => void;
+}) {
+  const stageEntries = (entries ?? []).filter((e) => e.stage_id === stageId);
+  const latest = stageEntries[stageEntries.length - 1];
+
+  return (
+    <DrawerRoot open={stageId !== null} onOpenChange={(open) => !open && onClose()}>
+      <DrawerContent>
+        <DrawerHeader>
+          <DrawerTitle>{stageName || "Stage reasoning"}</DrawerTitle>
+          <DrawerDescription>Live optimizer reasoning for this stage</DrawerDescription>
+        </DrawerHeader>
+        <DrawerBody>
+          {!latest && (
+            <p className="text-13 text-ink-soft">
+              No reasoning captured for this stage yet — check back in a moment.
+            </p>
+          )}
+          {latest && (
+            <div className="space-y-4">
+              <div>
+                <h3 className="mb-1 text-12 font-medium text-ink">
+                  {SUBSTEP_LABEL[latest.phase]}
+                </h3>
+                <p className="whitespace-pre-wrap text-13 text-ink">{activityLineText(latest)}</p>
+              </div>
+
+              {stageEntries.length > 1 && (
+                <div>
+                  <h3 className="mb-1 text-12 font-medium text-ink">Earlier this run</h3>
+                  <ul className="space-y-1">
+                    {stageEntries
+                      .slice(0, -1)
+                      .reverse()
+                      .map((entry, i) => (
+                        <li key={i} className="text-13 text-ink-soft">
+                          {SUBSTEP_LABEL[entry.phase]}
+                          {entry.detail ? `: ${entry.detail}` : ""}
+                        </li>
+                      ))}
+                  </ul>
+                </div>
+              )}
+            </div>
+          )}
+        </DrawerBody>
+      </DrawerContent>
+    </DrawerRoot>
   );
 }

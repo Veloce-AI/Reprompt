@@ -9,8 +9,10 @@ export type StageNodeData = { stage: StageInfo; runState?: StageRunState; subste
 export type StageFlowNode = Node<StageNodeData, "stage">;
 
 // Human-readable labels for reprompt_core.optimizer.loop.StagePhase — never
-// render the raw enum value in the UI.
-const SUBSTEP_LABEL: Record<StagePhase, string> = {
+// render the raw enum value in the UI. Exported for reuse by the activity
+// log list (migration-success-screen.tsx) — same phase vocabulary, same
+// "never show the raw enum" rule applies there too.
+export const SUBSTEP_LABEL: Record<StagePhase, string> = {
   mutating: "Generating prompt variants",
   cheap_scoring: "Ranking candidates",
   critiquing: "Critiquing weakest candidates",

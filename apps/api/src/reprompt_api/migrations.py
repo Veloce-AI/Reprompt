@@ -118,6 +118,12 @@ class MigrationOut(BaseModel):
     # "critiquing"/"refining"/"sweeping"/"scoring"), written by
     # optimizer_runner.py's on_phase closure. Null before a run starts.
     progress_substep: str | None = None
+    # Chronological {"stage_id", "phase", "detail", "timestamp"} entries -
+    # same polling pattern as progress_substep/stage_states, just a running
+    # list instead of a single latest value. Null before a run starts,
+    # capped at the last 100 entries by optimizer_runner.py's on_phase
+    # closure. See DEV_TRACKER.md's "Phase B" note.
+    activity_log: list[dict] | None = None
     completed_at: datetime.datetime | None = None
     # Derived, not stored: {stage_id (as string, matching the DAG canvas's
     # React Flow node ids) -> "idle" | "running" | "done" | "failed"}. See
@@ -225,6 +231,7 @@ def _to_out(db: Session, migration: models.Migration) -> MigrationOut:
         progress_current=migration.progress_current,
         progress_total=migration.progress_total,
         progress_substep=migration.progress_substep,
+        activity_log=migration.activity_log,
         completed_at=migration.completed_at,
         stage_states=_compute_stage_states(list(db_stages), migration),
     )

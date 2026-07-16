@@ -242,10 +242,22 @@ class StagePhaseEvent(NamedTuple):
     core`` convention as every other public shape in this module; a caller
     (``apps/api``'s ``optimizer_runner.py``) turns this into UI-visible
     progress, this module has no opinion on how it's displayed.
+
+    ``detail``, added for the "live reasoning feed" phase (see
+    ``DEV_TRACKER.md``'s Phase B note): an optional text payload for
+    phases where real LLM-generated reasoning is available at the moment
+    the event fires. Currently only ``"refining"`` (Prism) populates it —
+    with the critique text from :func:`~reprompt_core.optimizer.mutator.critique_and_refine`
+    (falling back to a short judge-reasoning summary if the critique text
+    itself came back empty) — since that's the only phase transition where
+    real free-text reasoning actually exists at fire time. Every other
+    phase/strategy leaves it ``None``; existing callers that only read
+    ``.stage_id``/``.phase`` are unaffected.
     """
 
     stage_id: int
     phase: StagePhase
+    detail: str | None = None
 
 
 class StageResult(BaseModel):
@@ -328,6 +340,18 @@ def _example_dict(example: MutationExample | dict[str, Any]) -> dict[str, Any]:
     if isinstance(example, MutationExample):
         return {"input": example.input, "output": example.output}
     return example
+
+
+def _judge_reasoning_summary(judge_result: JudgeResult | None) -> str | None:
+    """Short human-readable summary of a :class:`~reprompt_core.judge.JudgeResult`
+    for a ``StagePhaseEvent.detail`` payload — the ``"refining"`` phase's
+    fallback when the critique text itself came back empty (see that
+    phase's own comment in ``_optimize_stage_prism``). ``None`` in, ``None``
+    out; never raises."""
+    if judge_result is None or not judge_result.criteria:
+        return None
+    lead = judge_result.criteria[0]
+    return f"AI judge ({judge_result.overall_score:.2f}) — {lead.name}: {lead.reasoning}"
 
 
 def _is_near_duplicate(candidate: str, existing: Sequence[str]) -> bool:
@@ -780,16 +804,26 @@ def _optimize_stage_prism(
                         stage_input.stage_id, stage_input.stage_name, exc,
                     )
 
-            if on_phase is not None and not refining_phase_fired:
-                on_phase(StagePhaseEvent(stage_id=stage_input.stage_id, phase="refining"))
-                refining_phase_fired = True
-
             try:
                 refinement = critique_and_refine(
                     prompt_text, composite, limited_examples, stage_input.rubric, stage_input.target_model,
                     call=call, mutator_model=mutator_model, judge_result=judge_result,
                 )
                 budget.record_spend(refinement.cost_usd or 0.0, candidate_id=f"stage-{stage_input.stage_id}-refine")
+
+                # Fire "refining" only now (not before the call, as before this
+                # phase gained a `detail` payload) — this is the first point in
+                # the round where real critique text actually exists to attach.
+                # Still fires at most once per round (refining_phase_fired),
+                # same as before; if every candidate's critique_and_refine call
+                # in this round fails, the round simply has no "refining" event
+                # instead of one with detail=None - there is nothing to plumb
+                # in that case anyway.
+                if on_phase is not None and not refining_phase_fired:
+                    detail = refinement.critique or _judge_reasoning_summary(judge_result)
+                    on_phase(StagePhaseEvent(stage_id=stage_input.stage_id, phase="refining", detail=detail))
+                    refining_phase_fired = True
+
                 refined = refinement.variants[0]
                 already_kept = prompt_candidates + refined_variants
                 if (

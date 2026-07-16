@@ -474,6 +474,43 @@ def test_prism_strategy_fires_full_phase_sequence_including_critique_refine_roun
     ]
 
 
+def test_prism_refining_phase_event_carries_the_critique_text() -> None:
+    """Phase B: StagePhaseEvent.detail carries the real critique text
+    critique_and_refine produced for the "refining" phase transition - not
+    just a bare phase name. _make_call's critique/refine fake always
+    returns critique="needs work" (see this file's own _make_call)."""
+    call, _captured = _make_call(mutation_variants=["mutated variant"], refined_text="a refined prompt")
+    budget = BudgetTracker(budget_usd=10.0)
+    events: list = []
+
+    run_optimizer(
+        [_stage()], call=call, budget=budget, judge_model=JUDGE_MODEL,
+        strategy="prism", max_sweep_candidates_per_prompt=1, parity_threshold=0.0,
+        num_prompt_variants=1, max_refine_rounds=1,
+        on_phase=lambda event: events.append(event),
+    )
+
+    refining_events = [e for e in events if e.phase == "refining"]
+    assert len(refining_events) == 1
+    assert refining_events[0].detail == "needs work"
+
+    # Every other phase in this run has nothing available to attach, so
+    # detail stays the None default - confirms this is additive, not a
+    # blanket change to every phase.
+    non_refining = [e for e in events if e.phase != "refining"]
+    assert all(e.detail is None for e in non_refining)
+
+
+def test_stage_phase_event_detail_defaults_to_none() -> None:
+    """Backward compatibility: existing callers that only ever built
+    StagePhaseEvent(stage_id=..., phase=...) (positionally or by keyword)
+    still work now that `detail` exists - it's a trailing optional field."""
+    from reprompt_core.optimizer.loop import StagePhaseEvent
+
+    event = StagePhaseEvent(stage_id=1, phase="mutating")
+    assert event.detail is None
+
+
 def test_on_phase_is_optional_and_defaults_to_no_op() -> None:
     """Existing callers that never pass on_phase must be entirely
     unaffected - the default is None and nothing inside either strategy

@@ -40,6 +40,13 @@ __all__ = ["run_optimizer_for_migration"]
 
 logger = logging.getLogger(__name__)
 
+MAX_ACTIVITY_LOG_ENTRIES = 100
+"""Caps Migration.activity_log length - a long migration (many stages *
+target models * critique/refine rounds) fires many on_phase events; without
+a cap the JSON column would grow unbounded. Only the most recent entries
+matter for the live activity-log UI, so older entries are dropped from the
+front as new ones are appended (see on_phase below)."""
+
 
 def run_optimizer_for_migration(migration_id: int) -> None:
     """Background-task entry point.
@@ -137,6 +144,26 @@ def _run(db: Session, migration_id: int) -> None:  # noqa: C901
             # currently running. Committed at the same cadence as
             # progress_stage_name (every write) so a poller sees it live.
             migration.progress_substep = event.phase
+
+            # Phase B: also append to the running activity log - real LLM
+            # reasoning (event.detail, when the phase carries it - see
+            # StagePhaseEvent's docstring in packages/core) previously had
+            # nowhere to land once on_phase returned. Reassigning the whole
+            # list (not .append()) so SQLAlchemy's change-tracking on a JSON
+            # column actually sees the mutation - in-place mutation of a
+            # JSON-mapped list/dict is a well-known SQLAlchemy footgun that
+            # silently no-ops on commit.
+            log = list(migration.activity_log or [])
+            log.append(
+                {
+                    "stage_id": event.stage_id,
+                    "phase": event.phase,
+                    "detail": event.detail,
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                }
+            )
+            migration.activity_log = log[-MAX_ACTIVITY_LOG_ENTRIES:]
+
             db.commit()
 
         budget = BudgetTracker(budget_usd=migration.budget)

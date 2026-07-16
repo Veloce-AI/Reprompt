@@ -56,6 +56,13 @@ see the dated section below for the full design (stage reuse/grow/drift
 rule, new endpoints, "Import new run" drawer). `apps/api` 137 passed (131 +
 6 new), `apps/web` 86 passed (85 + 1 new) + clean typecheck,
 `packages/core` untouched.
+**Phase B — Live reasoning feed + activity log [DONE — 2026-07-16]**: the
+LLM's own critique text (Prism's `critique_and_refine`) and a chronological
+activity log across the whole run are now surfaced in the UI instead of
+being generated then discarded — see the dated section below for the full
+design. `packages/core` 290 passed, 2 skipped (286 + 4 new, additive only),
+`apps/api` 147 passed (143 + 4 new), `apps/web` 93 passed (90 + 3 new) +
+clean typecheck.
 **Not started**: Phase 6 (final end-to-end manual verification).
 
 **Note for future sessions/developers**: each phase above updates
@@ -175,6 +182,152 @@ UI-label naming question for a future pass, not touched here per the
 task's own instruction to leave `pipeline_id`/route params/backend names
 alone. `packages/core` and the optimizer loop untouched (confirmed via
 `git status` before commit).
+
+## Phase B — Live reasoning feed + activity log [DONE — 2026-07-16]
+
+The gap: two real LLM outputs were already being paid for and then thrown
+away. `_optimize_stage_prism`'s `critique_and_refine()` (`mutator.py`)
+generates a `critique: str` explaining why a candidate underperformed and
+what changed — parsed out of the model's JSON response, then discarded;
+only `refined_prompt` survived into `PromptMutationResult`. Separately,
+Phase A's `on_phase` callback only ever carried a bare phase name (e.g.
+`"refining"`), never the reasoning text produced *during* that phase. This
+phase plumbs both through to the UI — purely additive, no optimizer
+decision logic (mutation/critique/refine/sweep/select) touched.
+
+**`packages/core`**:
+- `optimizer/mutator.py`: `PromptMutationResult` gained `critique: str |
+  None = None`. `critique_and_refine` now sets it from the parsed
+  response's `critique` field (empty/whitespace-only normalized to `None`,
+  same convention as every other optional text field in this module).
+  `generate_prompt_mutations` leaves it `None` (no code change needed — it
+  never had a critique to report; a dedicated test
+  (`test_generate_prompt_mutations_critique_is_always_none`) pins this).
+- `optimizer/loop.py`: `StagePhaseEvent` gained `detail: str | None = None`
+  (trailing field, existing `StagePhaseEvent(stage_id=..., phase=...)`
+  call sites everywhere are unaffected). New `_judge_reasoning_summary()`
+  helper builds a short summary from a `JudgeResult` for the case the
+  critique text itself came back empty. In `_optimize_stage_prism`, the
+  `"refining"` phase event is now fired *after* a successful
+  `critique_and_refine()` call (previously fired just before it, since
+  that's the only point in the round where the real critique text actually
+  exists) — `detail=refinement.critique or _judge_reasoning_summary(judge_result)`.
+  Still fires at most once per round (same `refining_phase_fired` guard as
+  before); if every candidate's refinement call in a round fails, that
+  round simply has no `"refining"` event instead of one with `detail=None`
+  — nothing to plumb in that case anyway, and no existing test depends on
+  the old always-fires-even-on-failure timing. `"critiquing"` and every
+  other phase/strategy deliberately keep `detail=None` — nothing real is
+  available to attach at those transition points without moving decision
+  logic around, which was explicitly out of scope.
+- Tests (4 new): `test_optimizer_mutator.py` —
+  `test_critique_and_refine_critique_is_none_when_model_returns_empty_critique_text`,
+  `test_generate_prompt_mutations_critique_is_always_none`, plus the two
+  existing `critique_and_refine` tests extended to assert `.critique`.
+  `test_optimizer_loop.py` — `test_prism_refining_phase_event_carries_the_critique_text`
+  (asserts the `"refining"` event's `.detail` equals the critique text, and
+  that every other phase in the same run keeps `detail=None`),
+  `test_stage_phase_event_detail_defaults_to_none` (backward-compat pin).
+  `packages/core`: **290 passed, 2 skipped** (286 baseline + 4 new, same 2
+  environment-only skips as baseline — confirmed additive).
+
+**`apps/api`**:
+- `models.py`: `Migration.activity_log: list[dict] | None` — new nullable
+  `JSON` column. Alembic migration
+  `apps/api/alembic/versions/d3f7a2c1e5b6_add_migration_activity_log.py`
+  (`450ae8aefaa7` → `d3f7a2c1e5b6`, single head confirmed via `alembic
+  heads` both before and after — see the root-cause section above for why
+  that check matters every time). Verified a full upgrade chain applies
+  cleanly on a fresh SQLite DB.
+- `optimizer_runner.py`: the existing `on_phase` closure (which already
+  writes `Migration.progress_substep`) now also appends
+  `{"stage_id", "phase", "detail", "timestamp"}` to `Migration.activity_log`
+  on every call, capped at the most recent `MAX_ACTIVITY_LOG_ENTRIES = 100`
+  entries (oldest dropped from the front). Reassigns the whole list rather
+  than mutating in place — in-place mutation of a JSON-mapped column is a
+  well-known SQLAlchemy footgun that silently no-ops on commit (nothing to
+  detect the change against).
+- `migrations.py`: `MigrationOut.activity_log: list[dict] | None` exposed
+  in `GET .../status`, same polling pattern as `progress_substep`/
+  `stage_states` — no computation, just what `optimizer_runner.py` last
+  wrote.
+- Tests (4 new): `test_migrations.py` —
+  `test_status_activity_log_defaults_to_none_before_a_run_starts`,
+  `test_status_exposes_activity_log_entries`. New
+  `test_optimizer_runner.py` (no such file existed before this phase) —
+  monkeypatches `reprompt_core.optimizer.loop.run_optimizer` (imported into
+  `optimizer_runner`'s own namespace) with a fake that fires a
+  caller-controlled `StagePhaseEvent` sequence through the real `on_phase`
+  closure, so these tests exercise the actual DB-writing logic without a
+  real LLM call:
+  `test_on_phase_appends_events_to_activity_log`,
+  `test_activity_log_is_capped_at_max_entries_keeping_the_most_recent`
+  (150 events fired, asserts exactly the most recent 100 survive, oldest
+  20 dropped from the front). `apps/api`: **147 passed** (143 baseline + 4
+  new).
+
+**`apps/web`**:
+- `lib/api.ts`: `ActivityLogEntry` interface (mirrors what
+  `optimizer_runner.py` appends) and `MigrationOut.activity_log:
+  ActivityLogEntry[] | null`.
+- `components/stage-node.tsx`: `SUBSTEP_LABEL` (the `StagePhase` →
+  human-readable label map, previously module-private) now exported for
+  reuse by the activity log list — same "never render the raw enum value"
+  rule applies there too.
+- `components/migration-success-screen.tsx`:
+  - New `stageId` click handling on the live `<PipelineCanvas>`: clicking a
+    node only opens the new reasoning drawer when
+    `status.stage_states[stageId] === "running"` — a done/idle/failed node
+    click is a no-op here (unlike the Canvas tab's rubric drawer, which
+    opens for any node).
+  - New `StageReasoningDrawer` — reuses the existing `DrawerRoot`/
+    `DrawerContent`/`DrawerHeader`/`DrawerBody` primitives
+    (`components/ui/drawer.tsx`) `pipeline-workspace.tsx`'s
+    `StageRubricDrawer` already established for stage-scoped side panels,
+    rather than a new panel component. Shows the latest activity log entry
+    for the clicked stage (its human-readable phase label + real detail
+    text if any) plus a collapsed "earlier this run" list of that stage's
+    prior entries.
+  - New `ActivityLogList` — the whole run's activity log below the canvas,
+    one line per entry ("Stage {name}: {detail or phase label}"), newest
+    at the bottom, auto-scrolling via a `scrollTop = scrollHeight` effect
+    keyed on the entries array (same polling cadence as everything else on
+    this screen — no new poll interval introduced). Stage names resolved
+    via a `useQuery` on the same `["pipeline-dag", pid]` key
+    `<PipelineCanvas>` itself already uses, so it reads from the shared
+    React Query cache rather than issuing a second fetch.
+- Tests: new `components/migration-success-screen.test.tsx` (no test file
+  existed for this component before this phase) — 3 tests: the activity
+  log renders stage names + detail/phase-label lines in the right order,
+  clicking a running node opens the drawer with the real critique text,
+  clicking a non-running node is a no-op (drawer never opens). One real
+  gotcha hit and worth recording: Testing Library's default `getByText`
+  only matches an element's *direct* text-node children (not full
+  recursive `textContent`), so it can never match a string split across
+  `<span>{name}</span>: {detail}` markup as one query — waits in these
+  tests use the real DOM `.textContent` (via `waitFor` + `.toContain`)
+  instead of `findByText` on the combined string. Two pre-existing test
+  fixtures (`new-migration-wizard.test.tsx`, `pipeline-workspace.test.tsx`)
+  needed `activity_log: null` added to satisfy `MigrationOut`'s now-required
+  field, same pattern as Phase A's `progress_substep` fixture fix.
+  `apps/web`: **93 passed** (90 baseline + 3 new), clean `tsc --noEmit`.
+
+**What a user actually sees**: on the live migration run screen, clicking
+the currently-pulsing (running) stage node opens a drawer showing the
+optimizer's actual critique of its weakest candidate this round — not just
+"refining prompt" but *why* the candidate scored the way it did and what's
+being changed. Below the DAG, a scrolling activity log shows every phase
+transition across every stage in the run so far, in plain English,
+updating live as the run progresses.
+
+**Explicitly out of scope, not built this phase**: `"critiquing"`/every
+other phase besides `"refining"` still fire with `detail=None` — no
+reasoning text exists at those transition points without restructuring
+where in the round loop they fire, which risked behavior drift for little
+product value (the critique text is the one piece of real, previously-
+discarded reasoning this phase was scoped to surface). No SSE/websocket —
+this still rides the existing ~2s polling `GET .../status` pattern, per
+the codebase's established "poll a status endpoint" convention.
 
 ## Root-cause investigation — "the flow is broken, nothing is working" [FIXED — 2026-07-15]
 

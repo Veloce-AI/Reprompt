@@ -179,6 +179,11 @@ export interface MigrationOut {
   // null before a run starts. See apps/api's optimizer_runner.py on_phase
   // closure and packages/core's reprompt_core.optimizer.loop.StagePhase.
   progress_substep: StagePhase | null;
+  // Chronological on_phase events for this run — see apps/api's
+  // optimizer_runner.py on_phase closure (appends, capped at 100 entries)
+  // and migrations.py's MigrationOut.activity_log. Null before a run
+  // starts. Same polling pattern as progress_substep/stage_states.
+  activity_log: ActivityLogEntry[] | null;
   completed_at: string | null;
   stage_states: Record<string, StageRunState>;
 }
@@ -186,6 +191,19 @@ export interface MigrationOut {
 // Mirrors reprompt_core.optimizer.loop.StagePhase (packages/core) exactly —
 // see stage-node.tsx's SUBSTEP_LABEL for the human-readable mapping.
 export type StagePhase = "mutating" | "cheap_scoring" | "critiquing" | "refining" | "sweeping" | "scoring";
+
+// One entry in MigrationOut.activity_log — mirrors what
+// optimizer_runner.py's on_phase closure appends. `detail` is the real
+// LLM-generated reasoning text (critique text, or a judge-reasoning
+// summary) when the phase transition carried one — see
+// reprompt_core.optimizer.loop.StagePhaseEvent's docstring for which
+// phases populate it (currently just "refining").
+export interface ActivityLogEntry {
+  stage_id: number;
+  phase: StagePhase;
+  detail: string | null;
+  timestamp: string;
+}
 
 export function listModelOptions(pipelineId: number): Promise<ModelOption[]> {
   return request<ModelOption[]>(`/pipelines/${pipelineId}/models`);

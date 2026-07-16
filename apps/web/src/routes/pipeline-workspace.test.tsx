@@ -227,6 +227,7 @@ describe("PipelineWorkspace", () => {
       progress_current: null,
       progress_total: null,
       progress_substep: null,
+      activity_log: null,
       completed_at: null,
       stage_states: {},
     };

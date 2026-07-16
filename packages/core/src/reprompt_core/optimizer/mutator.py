@@ -79,6 +79,13 @@ class PromptMutationResult(BaseModel):
     model: str = Field(description="The model that actually produced the (accepted) variants.")
     cost_usd: float | None = Field(description="Combined cost across the initial call and the retry, if one occurred.")
     latency_ms: float = Field(description="Combined wall-clock latency across the initial call and the retry, if one occurred.")
+    critique: str | None = Field(
+        default=None,
+        description="Why the candidate scored the way it did, in the model's own words — only "
+        "populated by critique_and_refine (which always has something to critique); left None by "
+        "generate_prompt_mutations, which has no prior candidate to critique. Previously computed "
+        "then discarded (only refined_prompt survived) - see DEV_TRACKER.md's Phase B note.",
+    )
 
 
 class PromptMutationError(Exception):
@@ -423,6 +430,7 @@ def critique_and_refine(
         model=resolved_model,
         cost_usd=cost_usd,
         latency_ms=latency_ms,
+        critique=raw_output.critique.strip() or None,
     )
 
 

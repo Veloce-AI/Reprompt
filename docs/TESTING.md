@@ -341,6 +341,21 @@ exclusive to the Rubrics tab.
    optimizer sub-step signal", see `DEV_TRACKER.md`). Finished stages turn
    green, a failed/budget-stopped stage turns red with the reason shown in
    the run bar above the canvas.
+6a. **Click the currently-running (pulsing indigo) stage node** → a drawer
+   opens on the right (same drawer primitive as the Canvas tab's rubric
+   drawer) showing the live reasoning captured for that stage so far — once
+   a Prism critique/refine round completes, this shows the actual critique
+   text (why that candidate scored the way it did and what changed), not
+   just a phase name. Click a done/idle/failed node instead → nothing
+   happens (only a running node has a live reasoning feed to show; see
+   Phase B — "Live reasoning feed + activity log" in `DEV_TRACKER.md`).
+6b. Below the canvas, an **"Activity log"** panel lists every phase
+   transition across every stage so far, one line each — "Stage {name}:
+   {reasoning text or phase label}" — newest at the bottom, auto-scrolling
+   as new entries arrive on the same ~2s poll (no separate polling
+   mechanism). Entries persist across a page reload (`GET .../status`'s
+   `activity_log` field, capped at the most recent 100 entries server-side)
+   and are visible during a run and after it finishes/fails.
 7. Click "Back to pipeline canvas" from the run screen → confirm it just
    switches the tab bar back to Canvas (`?tab=canvas`), not a full page
    navigation away from the workspace.

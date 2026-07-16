@@ -431,6 +431,41 @@ def test_status_progress_substep_defaults_to_none_before_a_run_starts(
     assert response.json()["progress_substep"] is None
 
 
+def test_status_activity_log_defaults_to_none_before_a_run_starts(
+    client: TestClient,
+) -> None:
+    pipeline_id = _upload(client, _diamond_trace_file())
+    migration_id = _create_migration(client, pipeline_id)
+
+    response = client.get(f"/pipelines/{pipeline_id}/migrations/{migration_id}/status")
+    assert response.status_code == 200, response.text
+    assert response.json()["activity_log"] is None
+
+
+def test_status_exposes_activity_log_entries(
+    client: TestClient, session_factory: sessionmaker
+) -> None:
+    """Phase B: optimizer_runner.py's on_phase closure appends
+    {stage_id, phase, detail, timestamp} entries - GET .../status must
+    surface the list verbatim, same polling pattern as progress_substep."""
+    pipeline_id = _upload(client, _diamond_trace_file())
+    migration_id = _create_migration(client, pipeline_id)
+
+    entries = [
+        {"stage_id": 1, "phase": "mutating", "detail": None, "timestamp": "2026-07-16T09:00:00+00:00"},
+        {"stage_id": 1, "phase": "refining", "detail": "needs work", "timestamp": "2026-07-16T09:00:05+00:00"},
+    ]
+    with session_factory() as db:
+        migration = db.get(models.Migration, migration_id)
+        migration.status = "running"
+        migration.activity_log = entries
+        db.commit()
+
+    response = client.get(f"/pipelines/{pipeline_id}/migrations/{migration_id}/status")
+    assert response.status_code == 200, response.text
+    assert response.json()["activity_log"] == entries
+
+
 def test_status_reflects_terminal_states(
     client: TestClient, session_factory: sessionmaker
 ) -> None:

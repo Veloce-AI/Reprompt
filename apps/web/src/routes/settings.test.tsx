@@ -143,9 +143,14 @@ describe("Settings", () => {
     renderSettings();
 
     expect(
-      await screen.findByText("Sign in to manage your workspace settings.")
+      await screen.findByText("Sign in to unlock your workspace settings")
     ).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Go to sign in" })).toBeInTheDocument();
+    // A real CTA, not just a text link - plus the one-click dev shortcut
+    // (import.meta.env.DEV is true under vitest).
+    expect(screen.getByRole("link", { name: "Sign in" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Sign in (dev)" })).toBeInTheDocument();
+    // What signing in unlocks is spelled out instead of a dead-end page.
+    expect(screen.getByText(/Add BYOK provider API keys/)).toBeInTheDocument();
     expect(getWorkspaceSettings).not.toHaveBeenCalled();
   });
 

@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from "react";
+import { useReducer, useState, type FormEvent } from "react";
 import { Link } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -17,6 +17,7 @@ import {
   type SystemModelPurpose,
 } from "@/lib/api";
 import { AppShell } from "@/components/app-shell";
+import { DevSignInButton } from "@/components/dev-sign-in-button";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -46,17 +47,43 @@ function formatDate(iso: string): string {
 }
 
 export default function Settings() {
+  // getSessionToken() reads localStorage on every render, so signing in via
+  // the dev button below only needs a re-render, not a reload/navigation.
+  const [, rerender] = useReducer((n: number) => n + 1, 0);
   const isSignedIn = Boolean(getSessionToken());
 
   if (!isSignedIn) {
     return (
-      <div className="mx-auto max-w-[640px] p-8 pt-24 text-center">
-        <h1 className="font-display text-28 font-semibold leading-display text-ink">Settings</h1>
-        <p className="mt-2 text-14 text-ink-soft">Sign in to manage your workspace settings.</p>
-        <Link to="/login" className="mt-4 inline-block text-13 text-beam hover:underline">
-          Go to sign in
-        </Link>
-      </div>
+      <AppShell>
+        <div className="mx-auto max-w-[640px] p-8 pt-16">
+          <h1 className="text-center font-display text-28 font-semibold leading-display text-ink">
+            Settings
+          </h1>
+          <Card className="mt-6">
+            <CardHeader>
+              <CardTitle>Sign in to unlock your workspace settings</CardTitle>
+              <CardDescription>
+                Settings is where your workspace lives — signing in takes a few seconds and
+                needs no password, just a one-time email link.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-6">
+              <ul className="space-y-2 text-13 text-ink-soft">
+                <li>• Rename your workspace</li>
+                <li>• Add BYOK provider API keys (encrypted at rest, never shown again)</li>
+                <li>• See every model your keys unlock, with cost and prompt-family info</li>
+                <li>• See which models Reprompt itself uses for rubrics, judging and mutation</li>
+              </ul>
+              <div className="flex flex-col items-center gap-4 border-t border-line pt-6">
+                <Link to="/login">
+                  <Button variant="primary">Sign in</Button>
+                </Link>
+                <DevSignInButton onSignedIn={rerender} />
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+      </AppShell>
     );
   }
 

@@ -22,6 +22,7 @@ import {
 import { MigrationRunBar } from "@/components/migration-run-bar";
 import { PipelineCanvas } from "@/components/pipeline-canvas";
 import { SUBSTEP_LABEL } from "@/components/stage-node";
+import { PrismExplainer } from "@/components/prism-explainer";
 
 const STATUS_LABELS: Record<string, string> = {
   pending: "Pending",
@@ -142,6 +143,14 @@ export function MigrationSuccessScreen({
 
         {started && (
           <div className="mt-2">
+            <div className="mb-3 flex items-center justify-between gap-2">
+              <p className="text-12 text-ink-soft">
+                Optimizing with <span className="font-medium text-ink">Prism</span> — a
+                self-evolving prompt optimizer
+              </p>
+              <PrismExplainer />
+            </div>
+
             <MigrationRunBar
               status={status}
               isConnecting={!isTerminal && !isRunning && statusQuery.isLoading}

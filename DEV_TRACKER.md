@@ -63,6 +63,9 @@ being generated then discarded — see the dated section below for the full
 design. `packages/core` 290 passed, 2 skipped (286 + 4 new, additive only),
 `apps/api` 147 passed (143 + 4 new), `apps/web` 93 passed (90 + 3 new) +
 clean typecheck.
+**Branding/copy pass — Prism as self-evolving optimizer [DONE — 2026-07-16]**:
+docs/UI copy only, no engine/schema changes — see the dated section below
+for the full list of what changed and why.
 **Not started**: Phase 6 (final end-to-end manual verification).
 
 **Note for future sessions/developers**: each phase above updates
@@ -70,6 +73,66 @@ clean typecheck.
 `docs/TESTING.md` for anything screen/behavior-facing. Don't create a
 separate status doc; just flag completion inline in whichever `.md` file
 the change actually touches.
+
+## Branding/copy pass — Prism as self-evolving optimizer [DONE — 2026-07-16]
+
+Copy/docs-only pass positioning Prism as **"a self-evolving prompt
+optimizer"** — no engine changes, no schema changes, no new aggregation.
+The framing is deliberate and bounded: Prism's existing mutate →
+judge-aware critique → refine (×3 rounds) → sweep → select loop genuinely
+revises its own output based on its own critique within a single run,
+which earns "self-evolving" honestly. The one thing actively avoided
+everywhere this copy touches: never implying cross-migration
+memory/learning that doesn't exist — no "gets smarter over time," no
+"learns from your migrations," no "remembers what worked." Nothing
+persists across separate migrations today; every place below that adds
+"self-evolving" language also says so explicitly.
+
+1. **UI label**: there is no user-facing strategy picker anywhere in
+   `apps/web/src/` — `OPTIMIZER_STRATEGY` is a backend env var
+   (`apps/api/.env.example`), not a per-migration UI choice, confirmed by
+   grepping `apps/web/src` for `strategy`/`prism` before making any change
+   (only hit: `ParityBeam`'s unrelated `prismPosition` prop). The one
+   place Prism's activity is actually visible to a user is the Migrations
+   tab's live view (`MigrationSuccessScreen`), so that's where the label
+   went: a subtitle line — "Optimizing with **Prism** — a self-evolving
+   prompt optimizer" — directly above `<MigrationRunBar>`, shown once a
+   migration has started. `apps/web/src/components/migration-success-screen.tsx`
+   (new subtitle block just before the existing `<MigrationRunBar>` render,
+   ~line 145).
+2. **"How Prism works" explainer**: new, self-contained
+   `apps/web/src/components/prism-explainer.tsx` — owns its own
+   open/close state, so it's a one-line drop-in (`<PrismExplainer />`).
+   Trigger is a small "How Prism works" text link next to the new
+   subtitle in `MigrationSuccessScreen`; opens the existing `Drawer`
+   primitives (`components/ui/drawer.tsx`, the same ones
+   `StageReasoningDrawer` in the same file already uses) with two short,
+   factual paragraphs describing the real loop (judge-aware critique, up
+   to 3 refine rounds, budget-bounded, per-stage, plateau early-stop) plus
+   one explicit paragraph on what Prism doesn't do (no cross-migration
+   memory). `migration-success-screen.tsx`'s own layout wasn't
+   restructured — only the new subtitle/trigger row was added above the
+   pre-existing `<MigrationRunBar>` call.
+3. **Docs**: `README.md`'s "Two search methods" table — Prism's row
+   reframed with "evolves the prompt through several rounds before
+   locking in a winner," plus a new sentence directly under the table:
+   "**Prism evolves within one migration, not across migrations**."
+   `DEV_TRACKER.md`'s own "Why two strategies, and why the name 'Prism'"
+   section (below) — reframed the same way, plus an explicit
+   per-migration/not-cross-migration sentence so the absence of
+   cross-run memory is never later mistaken for a regression.
+
+**Tests**: `apps/web/src/components/prism-explainer.test.tsx` — 3 new
+(renders the trigger with the panel closed by default; opens on click and
+shows the self-evolving explanation including the no-cross-migration-memory
+line; closes on Escape). Ran against this worktree's own clean baseline
+first (`apps/web` **93 passed**, 12 test files, clean `tsc --noEmit`).
+Final: **96 passed** (93 + 3 new), 13 test files, clean `tsc --noEmit`;
+`migration-success-screen.test.tsx`'s existing 3 tests still pass unchanged
+alongside the new subtitle/trigger row. `packages/core` and `apps/api`
+untouched (confirmed via `git status` — only `DEV_TRACKER.md`,
+`README.md`, and files under `apps/web/src/` changed), so their suites
+weren't re-run.
 
 ## Phase 2 — Project/multi-run ingestion [DONE — 2026-07-16]
 
@@ -915,11 +978,22 @@ worth knowing before touching `optimizer_runner.py`/`migrations.py` again:
 **Prism** is our own implementation of PromptWizard's published technique
 (mutate → score → critique → refine, iterate; plus synthetic few-shot
 example generation) — the essence of the approach, extracted and
-rebuilt in-house rather than depending on their package. Built entirely
-on the engine's own already-universal `llm/client.py`, so it works with
-any provider (OpenAI, Anthropic, Gemini, self-hosted Ollama/vLLM/etc.)
-uniformly, with no proxy and no extra dependency. Named to match the
-existing brand — the logo and `ParityBeam` UI component already use a
+rebuilt in-house rather than depending on their package. We describe it
+externally as **a self-evolving prompt optimizer**: within a single run
+it genuinely revises its own output based on its own critique — mutate,
+get judge-aware critique (real reasoning from the AI judge, not just a
+score), refine against that specific feedback for up to 3 rounds per
+stage, sweep, select the best-scoring candidate — which is honest
+framing for what's actually built, not a stretch. **This is per-migration,
+not cross-migration**: each migration evolves its own prompt from
+scratch, and Prism doesn't yet carry learnings between separate
+migrations — there's no persistence of "what worked" across runs today,
+so this should never be described as "getting smarter over time" or
+"learning from your migrations." Built entirely on the engine's own
+already-universal `llm/client.py`, so it works with any provider
+(OpenAI, Anthropic, Gemini, self-hosted Ollama/vLLM/etc.) uniformly,
+with no proxy and no extra dependency. Named to match the existing
+brand — the logo and `ParityBeam` UI component already use a
 beam-splitting-into-spectrum visual; Prism is exactly that: one prompt
 refracted into multiple analyzed, refined variants, vs. **simple** (the
 existing one-shot mutation strategy) being a beam that passes straight

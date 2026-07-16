@@ -163,6 +163,18 @@ response proving the crash-to-fallback path actually works). `apps/api`
 clean `tsc --noEmit`, `packages/core` untouched (**286 passed, 21
 skipped**, this worktree's own environment-dependent skip count — see
 Phase 1's note on why that number varies by machine).
+**Per-stage target-model overrides + migration CTA [DONE — 2026-07-16]**:
+`TargetModelConfig` gains optional `stage_overrides: {stage_id: [models]}`
+— pin specific model(s) per stage, other stages keep the global `models`
+list (`optimizer_runner._get_target_models_for_stage` resolves override
+first). Wizard gains an "Advanced: customize per stage" disclosure
+(pre-filled with the global selection, only diffs submitted), and the
+Migrations tab shows a prominent "+ Start a migration" CTA when none
+exists. Note: the agent building this hit a session limit before writing
+docs/committing — code was verified green and committed by the main
+session; `docs/TESTING.md` click-path for the per-stage section is still
+owed (next session: add it, the feature itself is fully tested — apps/api
+177 passed incl. 9 new, apps/web 130 passed incl. 8 new on merged master).
 **Not started**: Phase 6 (final end-to-end manual verification).
 
 **Note for future sessions/developers**: each phase above updates

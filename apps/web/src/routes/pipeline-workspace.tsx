@@ -19,6 +19,7 @@ import {
 } from "@/lib/rubric-format";
 import { AppShell } from "@/components/app-shell";
 import { PipelineCanvas } from "@/components/pipeline-canvas";
+import { DataTable } from "@/components/data-table";
 import { RubricReviewPanel } from "@/components/rubric-review-panel";
 import { NewMigrationWizard } from "@/components/new-migration-wizard";
 import { MigrationSuccessScreen } from "@/components/migration-success-screen";
@@ -161,15 +162,7 @@ export default function PipelineWorkspace() {
               onNodeClick={(stageId) => setSelectedStageId(stageId)}
             />
           )}
-          {tab === "data" && (
-            <div className="p-8">
-              <p className="font-display text-20 font-semibold text-ink">Coming soon</p>
-              <p className="mt-2 text-14 text-ink-soft">
-                A dashboard over this pipeline's benchmark and migration data lands in a later
-                phase.
-              </p>
-            </div>
-          )}
+          {tab === "data" && <DataTable pipelineId={pid} />}
           {tab === "rubrics" && (
             <div className="p-8">
               <RubricReviewPanel pipelineId={pid} />

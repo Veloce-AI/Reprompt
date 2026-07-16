@@ -252,6 +252,47 @@ export async function importPipeline(file: File): Promise<ImportResult> {
 }
 
 // ---------------------------------------------------------------------------
+// Stage records (Data tab): spreadsheet-style browser over every StageRecord
+// ---------------------------------------------------------------------------
+//
+// See apps/api/src/reprompt_api/stage_records.py — cursor pagination on
+// StageRecord.id, filtered server-side by pipeline (always) and optionally
+// by stage_id/trace_id. Public, unauthenticated - same as /dag and /rubrics.
+
+export interface StageRecordOut {
+  id: number;
+  stage_id: number;
+  stage_name: string;
+  trace_id: number;
+  input: Record<string, unknown>;
+  rendered_prompt: string;
+  output: string;
+  tokens_in: number | null;
+  tokens_out: number | null;
+  latency_ms: number | null;
+  cost: number | null;
+}
+
+export interface StageRecordsPage {
+  records: StageRecordOut[];
+  next_cursor: number | null;
+}
+
+export function listStageRecords(
+  pipelineId: number,
+  params: { stageId?: number | null; cursor?: number; limit?: number } = {}
+): Promise<StageRecordsPage> {
+  const search = new URLSearchParams();
+  if (params.stageId != null) search.set("stage_id", String(params.stageId));
+  if (params.cursor != null) search.set("cursor", String(params.cursor));
+  if (params.limit != null) search.set("limit", String(params.limit));
+  const qs = search.toString();
+  return request<StageRecordsPage>(
+    `/pipelines/${pipelineId}/stage-records${qs ? `?${qs}` : ""}`
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Trace format reference (screen: /schema)
 // ---------------------------------------------------------------------------
 //

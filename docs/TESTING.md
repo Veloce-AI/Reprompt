@@ -511,6 +511,43 @@ pattern as §3.3a:
    migration's results; not built here, scope was the backend
    plumbing/self-grading-bias fix only.
 
+### 3.3c Canvas tab live migration overlay
+
+Added 2026-07-16 — closes the product owner complaint "the canvas is
+static, it should be dynamic ... reflect what is going on when the
+pipeline is running." Before this, live per-stage coloring/pulsing/
+sub-step text only ever rendered inside the Migrations tab's own embedded
+canvas (§3.3, step 6); the Canvas tab itself always showed a static,
+uncolored DAG even while a migration was actively running in the
+background. See `DEV_TRACKER.md`'s "Canvas tab live migration overlay" for
+the full design (`apps/web/src/routes/pipeline-workspace.tsx`'s
+`CanvasTabContent`, sharing `apps/web/src/hooks/use-migration-status-poll.ts`
+with `MigrationSuccessScreen`'s own run view).
+
+1. Start a migration from the Migrations tab (§3.3, steps 1–5) so it's
+   actually `running`, then click the **Canvas** tab (`?tab=canvas`) while
+   it's still going.
+2. **Expected**: within a couple of seconds, a small pill appears just
+   under the tab bar reading "Migration running — view in Migrations →"
+   with a pulsing dot — click it to jump straight to the Migrations tab
+   (`?tab=migrations`), landing back on the same live run screen.
+3. The Canvas tab's own DAG now shows the same live coloring as the
+   Migrations tab's embedded canvas — the currently-optimizing stage node
+   pulsing indigo with its sub-step label, finished stages green, a
+   failed/budget-stopped stage red — reading off the same
+   `stage_states`/`progress_substep` fields, polled the same ~2s cadence.
+4. Once the migration reaches a terminal state (or if you open the Canvas
+   tab when nothing is running), the pill disappears and the DAG reverts to
+   the static, uncolored view — same as before this change. Open devtools'
+   network tab to confirm: no `GET .../migrations/{id}/status` polling
+   happens on the Canvas tab while no migration is running (only a light
+   ~5s `GET .../migrations` list check, just enough to notice one starting
+   without leaving the tab).
+5. Switch away to another tab (Data/Rubrics/Migrations) while a migration
+   is running, then confirm via devtools that the Canvas tab's polling
+   stops entirely while it isn't the active tab — both polls are scoped to
+   the Canvas tab actually being mounted, not global background polling.
+
 ### 3.4 Auth + Settings (M5)
 
 1. Go to `/login`, enter any email, submit.

@@ -3,7 +3,6 @@ import { useMutation, useQuery } from "@tanstack/react-query";
 import {
   ApiError,
   getMigrationResults,
-  getMigrationStatus,
   getPipelineDag,
   startMigration,
   type ActivityLogEntry,
@@ -26,6 +25,7 @@ import { PipelineCanvas } from "@/components/pipeline-canvas";
 import { SUBSTEP_LABEL } from "@/components/stage-node";
 import { PrismExplainer } from "@/components/prism-explainer";
 import { diffWords } from "@/lib/text-diff";
+import { useMigrationStatusPoll } from "@/hooks/use-migration-status-poll";
 
 const STATUS_LABELS: Record<string, string> = {
   pending: "Pending",
@@ -78,15 +78,9 @@ export function MigrationSuccessScreen({
     onSuccess: () => setStarted(true),
   });
 
-  const statusQuery = useQuery({
-    queryKey: ["migration-status", pid, migration.id],
-    queryFn: () => getMigrationStatus(pid, migration.id),
+  const statusQuery = useMigrationStatusPoll(pid, migration.id, {
     enabled: started,
     initialData: started ? migration : undefined,
-    refetchInterval: (query) => {
-      const s = query.state.data?.status;
-      return s === "running" ? 2000 : false;
-    },
   });
 
   // Same queryKey PipelineCanvas itself uses for this pipeline's DAG - reads

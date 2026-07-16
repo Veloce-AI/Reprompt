@@ -131,6 +131,38 @@ regardless — see the dated section below for the full design (a shared
 `useMigrationStatusPoll` hook, a lightweight conditional list-check, and a
 "Migration running" pill). `apps/web` 121 passed (117 + 4 new) + clean
 `tsc --noEmit`, `apps/api`/`packages/core` untouched.
+**Settings empty-page perception fix + System models visibility [DONE —
+2026-07-16]**: re-investigated the product owner's "Settings is empty"
+report (a follow-up task, separate from the "Canvas has nothing in it"
+investigation directly above, which had already concluded "Configured
+models" renders fine on the happy path but hadn't tested unauthenticated/
+zero-key states or crash resilience) — none of the three real states
+(unauthenticated, signed-in with zero BYOK keys, signed-in with a key)
+actually render blank when driven live via Playwright against real dev
+servers, but the app had **zero React error boundaries anywhere**, so any
+uncaught render exception on any route (e.g. a hand-merge introducing a
+frontend/backend shape mismatch — a real, live risk given this project's
+several-worktrees-then-hand-merge workflow) fell through to the router's
+bare, unstyled default error text with no nav or branding, which is
+visually indistinguishable from a blank page in a quick screenshot. Fixed
+by adding a root-level `errorComponent` (new
+`apps/web/src/components/route-error-fallback.tsx`, wired in
+`router.tsx`) that renders inside the app's own `AppShell` (nav stays
+usable) instead, plus defensive optional-chaining in
+`ConfiguredModelsCard`'s `model_card` usage so the one realistic shape-drift
+case doesn't even reach the boundary. Separately, made judge/mutator/
+rubric-generation auto-selection (fixed in code by commit `128bc94`, per
+that commit's own note "No UI surfaces the effective/overridden judge or
+mutator model yet") visible: new read-only "System models" card in
+Settings, backed by a new `GET /settings/system-models` endpoint that calls
+the exact same `select_model()` apps/api's real run paths use. See the
+dated section below for the full design, root-cause trace, and the
+Playwright evidence (including a deliberately-injected malformed API
+response proving the crash-to-fallback path actually works). `apps/api`
+**168 passed** (165 + 3 new), `apps/web` **119 passed** (117 + 2 new) +
+clean `tsc --noEmit`, `packages/core` untouched (**286 passed, 21
+skipped**, this worktree's own environment-dependent skip count — see
+Phase 1's note on why that number varies by machine).
 **Not started**: Phase 6 (final end-to-end manual verification).
 
 **Note for future sessions/developers**: each phase above updates
@@ -234,6 +266,163 @@ small "Migration running" pill making it obvious why nodes are suddenly
 colored and offering a one-click way back to the full run screen. Open the
 Canvas tab with nothing running (or after a migration finishes) and it's
 exactly the static view it always was, with no background polling.
+
+## Settings empty-page perception fix + System models visibility [DONE — 2026-07-16]
+
+Two separate but related asks: (1) the product owner reported a genuinely
+empty `/settings` screenshot, despite the "Canvas has nothing in it,
+Settings is empty, no rename" investigation directly below already having
+found "Configured models" renders fine — that investigation only drove the
+happy path (signed in, in a browser, no crash injection), not
+unauthenticated/zero-key states or render-crash resilience; (2)
+`select_model()`-based judge/mutator/rubric-generation auto-selection was
+fixed in code (`128bc94`, "Fix judge/mutator self-grading bias") but that
+phase's own closing note flagged "No UI surfaces the effective/overridden
+judge or mutator model yet" as a known gap — hard to trust a backend-only
+fix with zero visibility.
+
+**Investigation — driven live, not read from code.** Set up this worktree
+from scratch (`scripts/setup.sh`) and ran the API/web dev servers on
+isolated ports (`:8010`/`:5183`, not the main checkout's `:8000`/`:5173`,
+per this task's "don't touch the main checkout" constraint — required a
+temporary local-only CORS allowlist addition and `REPROMPT_WEB_BASE_URL`
+override to make the dev magic-link flow work cross-port; both reverted
+before committing, not part of the diff). Wrote a throwaway Playwright
+driver script (not committed — ad hoc verification, not a permanent spec)
+covering all three real states end-to-end:
+
+1. **Unauthenticated** — `/settings` shows "Sign in to manage your
+   workspace settings." with a sign-in link. Not blank. Screenshot
+   confirms a clean, small, centered message (this alone could misread as
+   "empty" in a careless glance, but it's the deliberate, correct
+   unauthenticated state, not a bug).
+2. **Signed in, zero BYOK keys** — full page renders: Workspace card, "No
+   API keys configured yet.", Configured models showing the 2 no-key-
+   required Ollama models, zero console errors. `GET /settings/workspace`,
+   `/settings/api-keys`, `/settings/models` all return 200 with real data.
+   Not blank.
+3. **Signed in, with a BYOK key** — same, now also showing `gpt-4o`/
+   `gpt-4o-mini` under the new provider group. Not blank.
+
+**None of the three real states reproduce a blank page** — consistent with
+(and extending) the prior investigation's conclusion. So the actual gap
+had to be something none of the three states exercises: a crash, not a
+data state. Grepped the whole frontend for `ErrorBoundary` /
+`componentDidCatch` / `getDerivedStateFromError` — **zero results**. No
+route in `router.tsx` set an `errorComponent` either. Proved this
+concretely with `page.route()`: intercepted `GET /settings/models` and
+injected a malformed entry (`model_card: null`, simulating a version-skewed
+frontend/backend pair — a real risk in a codebase built across several
+parallel worktrees that get hand-merged, exactly the working model this
+very task runs under). Result: `ConfiguredModelsCard` threw
+`Cannot read properties of null (reading 'family')`, and the **entire page
+— including the nav sidebar — unmounted**, replaced by TanStack Router's
+default `CatchBoundary` fallback: an unstyled "Something went wrong! /
+Hide Error / [stack trace]" with no branding, no nav, mostly whitespace.
+That is visually indistinguishable from "the page is empty" in a quick
+screenshot, and it's reachable from *any* uncaught render exception on
+*any* route in the app, not just this one triggered case — a real,
+reproducible mechanism for the report, even though the specific data
+condition that would trigger it in production wasn't identified (every
+field `ConfiguredModelOut`/`SystemModelOut` return is currently
+non-optional on the Pydantic side, so this exact null wouldn't happen
+today without a schema regression — but "a regression in a fast-moving
+multi-worktree repo causes a shape mismatch" is exactly the class of
+failure this project's own workflow makes newly plausible, not a
+hypothetical).
+
+**Fix — two layers**:
+1. **App-wide crash fallback**: new `apps/web/src/components/route-error-fallback.tsx`
+   (`RouteErrorFallback`), wired as `rootRoute`'s `errorComponent` in
+   `router.tsx`. Renders inside the app's own `AppShell` (nav rail stays
+   live/clickable — a crash on one screen no longer stops the user
+   navigating elsewhere) with a styled Card: "Something went wrong", the
+   real error message in a mono block, "Try again" (calls TanStack
+   Router's `reset()` to re-render the failed route without a full page
+   reload) and "Go to Pipelines". Re-ran the same injected-crash script
+   after this change: page body now reads "Reprompt / Pipelines / Trace
+   format / Settings / Something went wrong / ... / Try again / Go to
+   Pipelines" — nav intact, message legible, screenshot confirms it reads
+   as a real (if broken) part of the app, not a blank/dead page. This is a
+   root-level fix (covers every route, not just Settings) since the
+   underlying gap — zero error boundaries — was never Settings-specific.
+2. **Defensive guard in the one card most tied to the original report**:
+   `ConfiguredModelsCard`'s `model.model_card` access is now
+   optional-chained with a graceful "Prompt family info unavailable for
+   this model." fallback per-model, and `rules` defaults to `[]` — so the
+   specific null-`model_card` case no longer even reaches the error
+   boundary; a genuinely deeper anomaly (tested by injecting
+   `rules: "not-an-array"`, which the optional-chaining can't sensibly
+   guard against) still correctly falls through to the new boundary rather
+   than crashing silently. `SystemModelsCard`'s purpose-label lookups
+   (`SYSTEM_MODEL_PURPOSE_LABEL`/`_DESCRIPTION`) also fall back to the raw
+   purpose string rather than rendering `undefined` for an unrecognized
+   purpose.
+
+**System models visibility** — the second ask, addressed alongside since
+both land in Settings and share the "make an already-correct backend
+decision visible" framing:
+- **`apps/api/src/reprompt_api/settings.py`**: new `GET
+  /settings/system-models` → `SystemModelOut[]`
+  (`{purpose, selected_model, reason}`), one entry per
+  `reprompt_core.llm.model_select.Purpose` (`rubric_generation`/`judge`/
+  `mutator`). Calls the exact same `get_available_models(db, workspace)` +
+  `select_model(purpose, available)` pair `optimizer_runner.py`/
+  `rubrics.py` already call for a real run — no new selection logic, per
+  the task's "don't touch `select_model()`, just call it" constraint.
+  `reason` is always `"best available"` today: this view is deliberately
+  workspace-scoped, not migration-scoped, since a specific migration's own
+  `target_model_config.judge_model`/`mutator_model` override (added in
+  `128bc94`) only makes sense in the context of that migration's own
+  `target_models` — there's no single "current migration" at the
+  Settings level to read an override from, so this always shows the
+  no-override auto-select path (i.e. what a *new* migration would get by
+  default). **Considered and deliberately not built**: a workspace-level
+  default override (would need a new `Workspace` column) — per the task's
+  own "keep this scoped, read-only is the priority, don't over-build it"
+  instruction, and because it would sit awkwardly between "always
+  auto-select" and "set it per migration" without a clear use case driving
+  it yet.
+- **`apps/web`**: `lib/api.ts` gained `SystemModel`/`SystemModelPurpose` +
+  `listSystemModels()`. `routes/settings.tsx` gained `SystemModelsCard`,
+  rendered below the existing "Configured models" card — a table of
+  Purpose / Model / Why, with a human-readable label + one-line description
+  per purpose, and a closing note that a specific migration can still
+  override the judge/mutator model when created. Empty state
+  ("No system models to show yet.") for symmetry with the other cards,
+  even though `available_models` is never actually empty in practice (the
+  no-key-required local models guarantee at least a tier-3 fallback).
+- **Tests**: `apps/api/tests/test_settings.py` (3 new) —
+  `test_list_system_models_covers_all_three_purposes` (all three purposes
+  present, every entry names a real non-empty model/reason even with zero
+  BYOK keys), `test_list_system_models_selects_a_stronger_model_once_a_byok_key_is_added`
+  (zero keys → local Ollama fallback for all three purposes; adding an
+  Anthropic key upgrades all three to `claude-sonnet-4-5` — proves the
+  live upgrade path, not just a static response), `test_list_system_models_only_reflects_this_workspaces_keys`
+  (workspace isolation, same pattern as the existing `/settings/models`
+  isolation test). Also added `/settings/system-models` to the existing
+  "all endpoints reject unauthenticated requests" test.
+  `apps/web/src/routes/settings.test.tsx` (2 new): renders all three
+  purposes with their models/reasons when populated; shows the empty state
+  when the list is empty. Both new suites required adding
+  `listSystemModels: vi.fn()` to the existing `vi.mock("@/lib/api", ...)`
+  block and a default `mockResolvedValue([])` in `beforeEach`, same pattern
+  every other query in this test file already follows.
+
+**Verified**: `cd apps/api && uv run pytest -q` → **168 passed** (165
+baseline + 3 new). `cd apps/web && npx tsc --noEmit` → clean; `npx vitest
+run` → **119 passed** (117 baseline + 2 new), 15 test files.
+`cd packages/core && uv run pytest -q` → **286 passed, 21 skipped**,
+confirmed unchanged and untouched (`git status` shows no `packages/core`
+files in the diff at any point in this session) — this worktree's own
+environment-dependent skip count (see Phase 1's own note on why 21 vs. 2
+skips varies by machine, unrelated to this work). Full click-path to
+re-verify by hand: sign in → Settings → scroll past "Configured models" →
+"System models" card shows Rubric generation / Judge / Mutator rows, each
+with a real model name and "best available"; to see the crash-fallback,
+temporarily break any Settings card's data access and reload — the nav
+stays live and a styled "Something went wrong" card appears instead of a
+bare error line.
 
 ## Product owner report — "Canvas has nothing in it, Settings is empty, no rename" [FIXED — 2026-07-16]
 

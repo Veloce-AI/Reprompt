@@ -580,6 +580,34 @@ with `MigrationSuccessScreen`'s own run view).
    workspace BYOK keys via `complete_with_workspace_credentials`
    (`apps/api/src/reprompt_api/llm_context.py`). Not wired: nothing left
    outstanding here that's specific to Settings itself.
+9. Below "Configured models," the **"System models"** card (new,
+   2026-07-16) shows which model Reprompt's own harness — rubric
+   generation, judge, mutator — is currently auto-selecting, via
+   `GET /settings/system-models`
+   (`apps/api/src/reprompt_api/settings.py`), which calls the exact same
+   `reprompt_core.llm.model_select.select_model()` the real
+   optimizer/rubric-generation call sites use. With zero BYOK keys this
+   should show a local `ollama/...` model for all three purposes ("best
+   available"); add an Anthropic or OpenAI key and reload — all three
+   should upgrade to that provider's tier-1 model (`claude-sonnet-4-5` /
+   `gpt-4o`), proving the visibility is live, not a static label. This
+   closes the trust gap called out when `128bc94` ("Fix judge/mutator
+   self-grading bias") fixed the underlying selection but left it
+   invisible in the UI. A specific migration can still override the
+   judge/mutator model via its own `target_model_config` when created
+   (§3.3a) — this card always shows the no-override default, since there's
+   no single "current migration" at the Settings level to read an override
+   from (see DEV_TRACKER.md's "Settings empty-page perception fix + System
+   models visibility" for why a workspace-level override wasn't added).
+10. **If the page ever looks blank/broken**: as of 2026-07-16 every route
+    has a shared crash fallback (`rootRoute`'s `errorComponent` in
+    `router.tsx`, `apps/web/src/components/route-error-fallback.tsx`) — a
+    genuine render exception anywhere now shows a styled "Something went
+    wrong" card with the nav rail still usable, instead of no boundary at
+    all (previously: a full-page unmount to the router's bare, unstyled
+    default text, easy to mistake for a blank page in a screenshot). If
+    you ever see that bare default instead of this styled card, the
+    boundary itself has regressed — worth a bug report on its own.
 
 ### 3.5 Design system sanity check
 

@@ -10,8 +10,11 @@ import {
   getWorkspaceSettings,
   listApiKeys,
   listConfiguredModels,
+  listSystemModels,
   updateWorkspaceSettings,
   type ConfiguredModel,
+  type SystemModel,
+  type SystemModelPurpose,
 } from "@/lib/api";
 import { AppShell } from "@/components/app-shell";
 import { Button } from "@/components/ui/button";
@@ -70,6 +73,7 @@ export default function Settings() {
         <WorkspaceNameCard />
         <ApiKeysCard />
         <ConfiguredModelsCard />
+        <SystemModelsCard />
       </div>
     </div>
     </AppShell>
@@ -431,33 +435,145 @@ function ConfiguredModelsCard() {
                       {formatCost(model.output_cost_per_1m)} out
                     </span>
                   </div>
-                  <p className="mt-2 text-12 text-ink-soft">
-                    Prompt family: <span className="font-medium text-ink">{model.model_card.family}</span>
-                    {model.model_card.is_small_variant && " (small variant)"}
-                    {" — "}
-                    {model.model_card.description}
-                  </p>
-                  <ul className="mt-2 flex flex-wrap gap-2">
-                    {model.model_card.rules
-                      .filter((rule) => rule.will_apply)
-                      .map((rule) => (
-                        <li
-                          key={rule.name}
-                          className="rounded-full bg-beam-soft px-2 py-1 text-12 text-beam"
-                          title={rule.description}
-                        >
-                          {rule.name.replace(/_/g, " ")}
-                        </li>
-                      ))}
-                    {model.model_card.rules.every((rule) => !rule.will_apply) && (
-                      <li className="text-12 text-ink-soft">No transform rules apply.</li>
-                    )}
-                  </ul>
+                  {/* model_card is a required field on the wire contract, but this
+                      reads it defensively (optional chaining + fallbacks) rather than
+                      assuming the live response always matches the TS type exactly -
+                      a version-skewed backend/frontend pair (a real risk in a codebase
+                      built across several parallel worktrees that get hand-merged) is
+                      not something a compile-time type can catch, and a card that
+                      degrades gracefully here beats one that throws and blanks the
+                      whole page (see route-error-fallback.tsx's docstring). */}
+                  {model.model_card ? (
+                    <>
+                      <p className="mt-2 text-12 text-ink-soft">
+                        Prompt family:{" "}
+                        <span className="font-medium text-ink">{model.model_card.family}</span>
+                        {model.model_card.is_small_variant && " (small variant)"}
+                        {" — "}
+                        {model.model_card.description}
+                      </p>
+                      <ul className="mt-2 flex flex-wrap gap-2">
+                        {(model.model_card.rules ?? [])
+                          .filter((rule) => rule.will_apply)
+                          .map((rule) => (
+                            <li
+                              key={rule.name}
+                              className="rounded-full bg-beam-soft px-2 py-1 text-12 text-beam"
+                              title={rule.description}
+                            >
+                              {rule.name.replace(/_/g, " ")}
+                            </li>
+                          ))}
+                        {(model.model_card.rules ?? []).every((rule) => !rule.will_apply) && (
+                          <li className="text-12 text-ink-soft">No transform rules apply.</li>
+                        )}
+                      </ul>
+                    </>
+                  ) : (
+                    <p className="mt-2 text-12 text-ink-soft">
+                      Prompt family info unavailable for this model.
+                    </p>
+                  )}
                 </div>
               ))}
             </div>
           </div>
         ))}
+      </CardContent>
+    </Card>
+  );
+}
+
+const SYSTEM_MODEL_PURPOSE_LABEL: Record<SystemModelPurpose, string> = {
+  rubric_generation: "Rubric generation",
+  judge: "Judge",
+  mutator: "Mutator",
+};
+
+const SYSTEM_MODEL_PURPOSE_DESCRIPTION: Record<SystemModelPurpose, string> = {
+  rubric_generation: "Reverse-engineers a rubric from your example traces.",
+  judge: "Scores each candidate prompt's output against the rubric.",
+  mutator: "Proposes and critiques/refines candidate prompt rewrites.",
+};
+
+function SystemModelsCard() {
+  const modelsQuery = useQuery({
+    queryKey: ["settings-system-models"],
+    queryFn: listSystemModels,
+    retry: false,
+  });
+
+  if (modelsQuery.isError && isUnauthorized(modelsQuery.error)) {
+    return (
+      <Card>
+        <CardContent className="p-8">
+          <SessionExpiredNotice />
+        </CardContent>
+      </Card>
+    );
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>System models</CardTitle>
+        <CardDescription>
+          Reprompt's own harness — rubric generation, judging, and prompt mutation — picks a model
+          independently from whatever you're optimizing, so a candidate never grades or refines its
+          own output. This is what it's actually using right now, given your configured providers
+          above.
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        {modelsQuery.isLoading && (
+          <p className="text-14 text-ink-soft" role="status">
+            Loading…
+          </p>
+        )}
+        {modelsQuery.isError && !isUnauthorized(modelsQuery.error) && (
+          <p className="text-14 text-parity-fail" role="alert">
+            Couldn&apos;t load system models.
+          </p>
+        )}
+
+        {modelsQuery.data && modelsQuery.data.length === 0 && (
+          <p className="text-13 text-ink-soft">No system models to show yet.</p>
+        )}
+
+        {modelsQuery.data && modelsQuery.data.length > 0 && (
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Purpose</TableHead>
+                <TableHead>Model</TableHead>
+                <TableHead>Why</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {modelsQuery.data.map((entry: SystemModel) => (
+                <TableRow key={entry.purpose}>
+                  <TableCell className="text-ink">
+                    <div className="font-medium">
+                      {SYSTEM_MODEL_PURPOSE_LABEL[entry.purpose] ?? entry.purpose}
+                    </div>
+                    <div className="text-12 text-ink-soft">
+                      {SYSTEM_MODEL_PURPOSE_DESCRIPTION[entry.purpose] ?? ""}
+                    </div>
+                  </TableCell>
+                  <TableCell className="font-mono font-medium text-ink">
+                    {entry.selected_model}
+                  </TableCell>
+                  <TableCell className="text-ink-soft">{entry.reason}</TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        )}
+
+        <p className="mt-4 text-12 text-ink-soft">
+          A specific migration can still override the judge or mutator model when you create it;
+          this always shows what a new migration would get by default.
+        </p>
       </CardContent>
     </Card>
   );

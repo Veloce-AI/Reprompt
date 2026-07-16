@@ -539,6 +539,24 @@ export function listConfiguredModels(): Promise<ConfiguredModel[]> {
   return request<ConfiguredModel[]>("/settings/models", { headers: authHeaders() });
 }
 
+// SystemModel mirrors apps/api's settings.SystemModelOut - which model
+// Reprompt's OWN harness (judge, mutator, rubric generation) is currently
+// auto-selecting for this workspace, via the exact same
+// reprompt_core.llm.model_select.select_model() call apps/api's own
+// rubrics.py/optimizer_runner.py make for a real run. Makes that
+// previously backend-only decision visible in Settings.
+export type SystemModelPurpose = "rubric_generation" | "judge" | "mutator";
+
+export interface SystemModel {
+  purpose: SystemModelPurpose;
+  selected_model: string;
+  reason: string;
+}
+
+export function listSystemModels(): Promise<SystemModel[]> {
+  return request<SystemModel[]>("/settings/system-models", { headers: authHeaders() });
+}
+
 export function addApiKey(provider: string, apiKey: string): Promise<ApiKeyOut> {
   return request<ApiKeyOut>("/settings/api-keys", {
     method: "POST",

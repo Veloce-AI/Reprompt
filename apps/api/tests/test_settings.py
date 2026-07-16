@@ -102,6 +102,7 @@ def test_all_endpoints_reject_unauthenticated_requests(client: TestClient) -> No
     )
     assert client.delete("/settings/api-keys/1").status_code == 401
     assert client.get("/settings/models").status_code == 401
+    assert client.get("/settings/system-models").status_code == 401
 
 
 def test_endpoints_reject_garbage_bearer_token(client: TestClient) -> None:
@@ -457,3 +458,80 @@ def test_list_configured_models_only_shows_this_workspaces_keys(client: TestClie
         for entry in client.get("/settings/models", headers=_auth_headers(alice_token)).json()
     }
     assert "gpt-4o" in alice_models
+
+
+# ---------------------------------------------------------------------------
+# System models — what Reprompt's own harness is auto-selecting, and why
+# ---------------------------------------------------------------------------
+
+
+def test_list_system_models_covers_all_three_purposes(client: TestClient) -> None:
+    token, _ = _sign_in(client, "systemmodels@example.com")
+    response = client.get("/settings/system-models", headers=_auth_headers(token))
+    assert response.status_code == 200, response.text
+    body = response.json()
+    purposes = {entry["purpose"] for entry in body}
+    assert purposes == {"rubric_generation", "judge", "mutator"}
+    # Every entry always names a real, non-empty model - CURATED_MODELS
+    # always includes no-key-required local models, so this never comes back
+    # empty even before any BYOK key is configured.
+    assert all(entry["selected_model"] for entry in body)
+    assert all(entry["reason"] for entry in body)
+
+
+def test_list_system_models_selects_a_stronger_model_once_a_byok_key_is_added(
+    client: TestClient,
+) -> None:
+    token, _ = _sign_in(client, "systemmodels-upgrade@example.com")
+
+    before = {
+        entry["purpose"]: entry["selected_model"]
+        for entry in client.get("/settings/system-models", headers=_auth_headers(token)).json()
+    }
+    # With zero BYOK keys, only local/no-key models are available - the
+    # tier-3 fallback in select_model()'s curated table.
+    assert before["judge"] in {"ollama/llama3.1", "ollama/qwen2.5:14b"}
+
+    client.post(
+        "/settings/api-keys",
+        json={"provider": "anthropic", "api_key": "sk-ant-abcd1234"},
+        headers=_auth_headers(token),
+    )
+
+    after = {
+        entry["purpose"]: entry["selected_model"]
+        for entry in client.get("/settings/system-models", headers=_auth_headers(token)).json()
+    }
+    # Adding a real provider key unlocks a tier-1 model, which select_model()
+    # now prefers over the local fallback - the same upgrade a real
+    # migration/rubric-generation call would get.
+    assert after["judge"] == "claude-sonnet-4-5"
+    assert after["mutator"] == "claude-sonnet-4-5"
+    assert after["rubric_generation"] == "claude-sonnet-4-5"
+
+
+def test_list_system_models_only_reflects_this_workspaces_keys(client: TestClient) -> None:
+    alice_token, _ = _sign_in(client, "alice-system-models@example.com")
+    bob_token, _ = _sign_in(client, "bob-system-models@example.com")
+
+    client.post(
+        "/settings/api-keys",
+        json={"provider": "anthropic", "api_key": "sk-ant-alicekey123"},
+        headers=_auth_headers(alice_token),
+    )
+
+    bob_judge = next(
+        entry
+        for entry in client.get("/settings/system-models", headers=_auth_headers(bob_token)).json()
+        if entry["purpose"] == "judge"
+    )
+    assert bob_judge["selected_model"] != "claude-sonnet-4-5"
+
+    alice_judge = next(
+        entry
+        for entry in client.get(
+            "/settings/system-models", headers=_auth_headers(alice_token)
+        ).json()
+        if entry["purpose"] == "judge"
+    )
+    assert alice_judge["selected_model"] == "claude-sonnet-4-5"

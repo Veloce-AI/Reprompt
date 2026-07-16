@@ -24,6 +24,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from reprompt_core.budget import BudgetTracker
+from reprompt_core.llm.model_select import select_model
 from reprompt_core.optimizer.loop import (
     OptimizationResult,
     StageAttempt,
@@ -35,6 +36,14 @@ from reprompt_core.optimizer.loop import (
 from reprompt_api import models
 from reprompt_api.db import SessionLocal
 from reprompt_api.llm_context import complete_with_workspace_credentials
+
+# NOTE: reprompt_api.migrations.get_available_models is imported lazily
+# inside _run() below, not here at module level - migrations.py itself
+# imports run_optimizer_for_migration (this module) at its own module level
+# for its BackgroundTasks.add_task() call, so a top-level import here would
+# be a circular import (ImportError on a partially-initialized module).
+# Deferring the import to call-time, after both modules have finished
+# loading, is the standard fix and requires no restructuring of either file.
 
 __all__ = ["run_optimizer_for_migration"]
 
@@ -97,9 +106,27 @@ def _run(db: Session, migration_id: int) -> None:  # noqa: C901
         if not target_models:
             raise RuntimeError("Migration has no target models configured")
 
-        # Use first model as judge for consistent cross-model scoring.
-        judge_model = (
-            migration.target_model_config.get("judge_model") or target_models[0]
+        # Judge/mutator are Reprompt's OWN harness infrastructure (scoring
+        # candidate outputs / mutating-critiquing-refining candidate
+        # prompts) - deliberately decoupled from `target_models` above
+        # (the user's own choice of model(s) being tested), so a target
+        # model never silently grades or refines its own output. An
+        # explicit override in target_model_config always wins; otherwise
+        # auto-select independently from the workspace's own available
+        # models (never from target_models) via the same select_model()
+        # pattern already used for rubric generation - see
+        # reprompt_api.migrations.get_available_models and
+        # reprompt_core.llm.model_select.select_model. See DEV_TRACKER.md's
+        # "Fix judge/mutator self-grading bias" section for the full
+        # rationale.
+        from reprompt_api.migrations import get_available_models  # local import - see note above imports
+
+        available_models = [option.model for option in get_available_models(db, workspace)]
+        judge_model = migration.target_model_config.get("judge_model") or select_model(
+            "judge", available_models
+        )
+        mutator_model = migration.target_model_config.get("mutator_model") or select_model(
+            "mutator", available_models
         )
 
         db_stages = db.scalars(
@@ -193,6 +220,7 @@ def _run(db: Session, migration_id: int) -> None:  # noqa: C901
                 ),
                 budget=budget,
                 judge_model=judge_model,
+                mutator_model=mutator_model,
                 strategy=strategy,
                 parity_threshold=migration.parity_threshold,
                 on_attempt=on_attempt,

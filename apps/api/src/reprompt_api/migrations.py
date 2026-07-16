@@ -89,9 +89,35 @@ class TargetModelConfig(BaseModel):
     """List of target models the optimizer will try per stage, keeping the
     best-scoring result. Replaces the old single-default + per-stage-override
     shape — backward-compat reading of the old shape is handled in
-    ``optimizer_runner._get_target_models``."""
+    ``optimizer_runner._get_target_models``.
+
+    ``models`` is the user's own choice of model(s) to test/compare — the
+    thing actually being optimized. ``judge_model``/``mutator_model`` are
+    optional overrides for Reprompt's OWN harness infrastructure (scoring
+    candidate outputs / mutating-critiquing-refining candidate prompts),
+    deliberately kept separate from ``models`` so a target model never
+    silently grades or refines its own output. When omitted, both are
+    auto-selected independently from the workspace's available models — see
+    ``optimizer_runner.py`` and DEV_TRACKER.md's "Fix judge/mutator
+    self-grading bias" section."""
 
     models: list[str] = Field(min_length=1)
+    judge_model: str | None = Field(
+        default=None,
+        description=(
+            "Optional explicit override for which model judges/scores candidate "
+            "outputs. Omit to auto-select from this workspace's available models, "
+            "independent of `models` above."
+        ),
+    )
+    mutator_model: str | None = Field(
+        default=None,
+        description=(
+            "Optional explicit override for which model mutates/critiques/refines "
+            "candidate prompts. Omit to auto-select from this workspace's available "
+            "models, independent of `models` above."
+        ),
+    )
 
 
 class MigrationCreate(BaseModel):
@@ -319,7 +345,12 @@ def create_migration(
 
     migration = models.Migration(
         pipeline_id=pipeline_id,
-        target_model_config=migration_in.target_model_config.model_dump(),
+        # exclude_none: judge_model/mutator_model are optional overrides - a
+        # migration that doesn't set them should store/round-trip the same
+        # {"models": [...]} shape as before their fields existed (existing
+        # tests assert exact equality on this), not a dict padded with
+        # explicit `None`s for keys the caller never mentioned.
+        target_model_config=migration_in.target_model_config.model_dump(exclude_none=True),
         budget=migration_in.budget,
         parity_threshold=migration_in.parity_threshold,
         status="pending",

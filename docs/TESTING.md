@@ -445,6 +445,39 @@ highest for that stage on this migration.
    colored, everything the optimizer left untouched renders as plain text
    in between.
 
+### 3.3b Judge/mutator model selection (decoupled from target models)
+
+Added 2026-07-16 — see `DEV_TRACKER.md`'s "Fix judge/mutator self-grading
+bias". Backend-only fix, no UI surface yet: `target_model_config.models` is
+the user's own choice of model(s) under test; the judge (scores candidate
+outputs) and mutator (mutates/critiques/refines candidate prompts) are
+Reprompt's own harness infrastructure and must never silently fall back to
+one of the target models, so a model never grades or refines its own
+output. Verify via the API directly (curl or devtools network tab), same
+pattern as §3.3a:
+
+1. `POST /pipelines/{id}/migrations` with `target_model_config:
+   {"models": ["gpt-4o-mini"]}` (no `judge_model`/`mutator_model` key at
+   all) → `201`, and the response's `target_model_config` is exactly
+   `{"models": ["gpt-4o-mini"]}` — no `null`-valued `judge_model`/
+   `mutator_model` keys padded in. Once the migration runs, its judge and
+   mutator are auto-selected from the workspace's own configured models
+   (`GET /pipelines/{id}/models`'s BYOK-filtered set), independent of
+   `models` above — confirmed automatically by
+   `apps/api/tests/test_optimizer_runner.py::test_judge_and_mutator_auto_select_from_workspace_not_target_model`.
+2. Same request with `target_model_config: {"models": ["gpt-4o-mini"],
+   "judge_model": "claude-haiku-4-5", "mutator_model": "gpt-4o"}` → the
+   response's `target_model_config` includes both override keys exactly as
+   sent (round-trips through the schema rather than being silently
+   dropped) — an explicit override always wins outright over auto-select
+   for either key.
+3. There's no UI element yet showing which model actually judged/mutated a
+   run — only `models` (the run's target model list) is visible in the
+   wizard and results section (§3.3a). A future UI phase could surface
+   `judge_model`/`mutator_model` (effective or overridden) next to a
+   migration's results; not built here, scope was the backend
+   plumbing/self-grading-bias fix only.
+
 ### 3.4 Auth + Settings (M5)
 
 1. Go to `/login`, enter any email, submit.

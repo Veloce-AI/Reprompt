@@ -184,6 +184,55 @@ def test_create_migration_multi_model_config(client: TestClient) -> None:
     assert body["target_model_config"] == {"models": ["gpt-4o-mini", "claude-haiku-4-5"]}
 
 
+def test_create_migration_persists_explicit_judge_and_mutator_model_overrides(
+    client: TestClient,
+) -> None:
+    """judge_model/mutator_model are optional overrides for Reprompt's OWN
+    judge/mutator harness infrastructure, kept deliberately separate from
+    `models` (the model(s) the user is actually testing) - see
+    reprompt_api.optimizer_runner.py and DEV_TRACKER.md's "Fix judge/mutator
+    self-grading bias" section. Confirms they actually round-trip through
+    TargetModelConfig's schema/model_dump() rather than being silently
+    dropped (a real gap before these fields were declared - the old schema
+    only declared `models`, so Pydantic's default `model_dump()` stripped
+    any `judge_model`/`mutator_model` key a caller sent)."""
+    pipeline_id = _upload(client, _diamond_trace_file())
+
+    response = client.post(
+        f"/pipelines/{pipeline_id}/migrations",
+        json={
+            "target_model_config": {
+                "models": ["gpt-4o-mini"],
+                "judge_model": "claude-haiku-4-5",
+                "mutator_model": "gpt-4o",
+            },
+            "budget": 10.0,
+        },
+    )
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body["target_model_config"] == {
+        "models": ["gpt-4o-mini"],
+        "judge_model": "claude-haiku-4-5",
+        "mutator_model": "gpt-4o",
+    }
+
+
+def test_create_migration_omits_judge_and_mutator_model_when_not_given(client: TestClient) -> None:
+    """The common case - no judge_model/mutator_model override - must keep
+    storing the same bare {"models": [...]} shape as before those fields
+    existed (not padded with explicit `None`s), so existing rows/behavior
+    are unaffected."""
+    pipeline_id = _upload(client, _diamond_trace_file())
+
+    response = client.post(
+        f"/pipelines/{pipeline_id}/migrations",
+        json={"target_model_config": {"models": ["gpt-4o-mini"]}, "budget": 10.0},
+    )
+    assert response.status_code == 201, response.text
+    assert response.json()["target_model_config"] == {"models": ["gpt-4o-mini"]}
+
+
 def test_create_migration_defaults_parity_threshold_to_95_percent(client: TestClient) -> None:
     pipeline_id = _upload(client, _diamond_trace_file())
 

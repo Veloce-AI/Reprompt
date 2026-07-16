@@ -88,6 +88,18 @@ diff, alongside which target model won and its composite score — see the
 dated section below for the full design. Display-only, no new optimizer/
 scoring logic. `apps/api` 154 passed (147 + 7 new), `apps/web` 105 passed
 (93 + 12 new) + clean typecheck, `packages/core` untouched.
+**Fix judge/mutator self-grading bias [DONE — 2026-07-16]**: extends the
+"Model auto-selection for rubric generation" phase's exact `select_model()`
+pattern to the two optimizer call sites it was deliberately not wired into
+yet — `judge_model` no longer falls back to `target_models[0]`, and
+`mutator_model` (previously not passed to `run_optimizer` at all, so it
+silently fell back to the target model inside `packages/core`) is now
+explicitly selected too, both from the workspace's own available models,
+never from the migration's target models — see the dated section below for
+the full design, plus a real schema gap (`judge_model` wasn't actually an
+accepted field on `TargetModelConfig`, so the override was dead code) and a
+circular-import fix found along the way. `apps/api` 165 passed (160 + 5
+new), `packages/core` untouched (305 passed, 2 skipped).
 **Not started**: Phase 6 (final end-to-end manual verification).
 
 **Note for future sessions/developers**: each phase above updates
@@ -2332,3 +2344,193 @@ score, and the original prompt against the winning prompt as an inline
 word diff (struck-through red for removed text, highlighted green for
 added text, unchanged words plain). Nothing to click/expand — it's visible
 as soon as the section renders, no separate "view diff" action.
+
+## Planned, not yet built — LLM call telemetry + scorecard (multi-model report)
+
+Design pass completed 2026-07-16 (Plan agent, grounded in actual code, not
+guessed) — full detail below, this is the concrete next-up work, not a
+vague idea. Triggered by the product owner's explicit architecture
+clarification: a migration's `target_model_config.models` are the user's
+own choice of model(s) to compare — the thing being tested. Rubric
+generation, judging, and the mutate/critique/refine harness are
+Reprompt's own infrastructure and must use an independently-selected
+model (via `select_model()`), never the model under test — see "Fix
+judge/mutator self-grading bias" section (below, or being merged
+concurrently) for the bug this surfaced.
+
+**The ask**: (1) store stats for every LLM call the system makes, not
+just the subset that becomes a `Candidate` row today: (2) a real
+per-target-model report — winning prompt, model-card info, cost, latency
+— organized per stage; (3) when a migration tried multiple target
+models, a clear side-by-side with a decisive "which is actually best"
+verdict, not just raw numbers.
+
+**Key facts the design is grounded in**: every LLM call in the codebase
+flows through exactly 2 closures (`rubrics.py`'s per-stage `_call`,
+`optimizer_runner.py`'s per-target-model lambda) — both call
+`llm_context.complete_with_workspace_credentials`, which already returns
+a fully-populated `LLMResponse` (tokens/cost/latency/model/provider).
+`BudgetTracker` is pure in-memory today (`packages/core/src/reprompt_core
+/budget.py`) — per-call detail dies once a run finishes for anything
+that isn't a sweep attempt. `Candidate` already has `target_model`
+(fixed 2026-07-16), `cost`, `scores`, `prompt_variant` per attempt — the
+scorecard's per-stage-per-model data is a read-time rollup over what's
+already there, no new schema needed for that half.
+
+**Decisions made** (see the full design in this session's planning
+output if picking this up — summarized here):
+- **New `LLMCall` table** (`apps/api` only, `packages/core` stays
+  headless — only gains two additive, provider-stripped string kwargs
+  `purpose`/`stage_id` threaded through ~9 existing `call(...)` sites).
+  Logs every call including failures (`succeeded=false`), best-effort
+  (never allowed to raise into/block the call path it's observing, same
+  philosophy as `BudgetTracker.record_spend`). Purposes: `rubric_generation`,
+  `judge`, `mutator_mutate`, `mutator_critique_refine`,
+  `mutator_few_shot_select`, `optimizer_cheap_score`, `sweep_attempt`.
+- **New `GET .../scorecard` endpoint** — does NOT replace or modify the
+  existing `GET .../results` (Phase C's before/after diff keeps working
+  as-is, stays the smaller/faster single-winner read). Scorecard returns
+  per stage: every target model tried, its winning prompt, model-card
+  info (reuses `model_cards.build_family_card()`, zero duplication),
+  cost, latency, a `is_recommended` flag + human `recommendation_reason`.
+  Rolls up to an `overall` per-target-model summary + `overall_recommended_model`.
+- **"Best" is not raw score** — a model within `SCORE_PARITY_EPSILON` of
+  the top score (reuse Prism's existing `PLATEAU_EPSILON` constant/value,
+  don't invent a new number) wins on lowest cost, tie-broken by latency,
+  tie-broken by position in `target_model_config.models`. Same rule
+  applies at both per-stage and overall altitude. This directly answers
+  "give the best," not "show the highest number."
+- **UI**: extends `migration-success-screen.tsx`'s existing "Results"
+  section (renamed "Scorecard") — single-model stages render like today,
+  multi-model stages get a side-by-side row per model with a
+  "Recommended" badge (reuses existing `Badge` "pass" token) and the
+  reason as a tooltip/caption.
+
+**Phasing**: (1) `LLMCall` telemetry, backend-only, invisible to users —
+pure groundwork; (2) scorecard endpoint + UI, the real consumer-facing
+feature; (3) a raw `LLMCall` ledger endpoint for debugging/cost-audit,
+no UI, low priority. Not started — pick up at Phase 1.
+
+**Invariants that must hold**: budget hard-stop untouched (telemetry is
+pure side-observation, never a pre-check/gate); rubric-approval gate
+untouched; per-stage failure isolation untouched (a telemetry write
+failure degrades silently, never becomes a stage/migration failure);
+`packages/core` stays headless.
+
+**Open, non-blocking**: whether `LLMCall.workspace_id` should eventually
+back a workspace-wide "Settings → Usage" cost dashboard (schema supports
+it, no UI scoped yet); whether `judge_pairwise` vs `judge_single_pass`
+need separate `purpose` values later (currently lumped as `"judge"`,
+one-value addition if ever needed, not a schema change).
+
+## Fix judge/mutator self-grading bias [DONE — 2026-07-16]
+
+Architectural intent, confirmed with the product owner: a migration's
+`target_model_config.models` is the user's own choice of model(s) to
+compare/test — the thing actually being optimized (candidate prompts run
+on it, compared against the original trace's output). Rubric generation,
+judging/validation, and the mutate/critique/refine harness are Reprompt's
+OWN infrastructure and must use an independently-selected model, decoupled
+entirely from whatever the user picked to test — so the model being
+evaluated never grades or refines its own output. Rubric generation was
+already fixed correctly in the prior "Model auto-selection for rubric
+generation" phase above (calls `select_model("rubric_generation", ...)`
+against the workspace's own available models); this phase extends the
+exact same pattern to the two remaining, deliberately-out-of-scope-until-now
+call sites, both in `apps/api/src/reprompt_api/optimizer_runner.py`.
+
+**The bug** (both violations confirmed by reading the code before touching
+anything):
+1. `judge_model = migration.target_model_config.get("judge_model") or
+   target_models[0]` — with no explicit override, the judge fell back to
+   the *first target model*, i.e. the model potentially under test judged
+   its own output.
+2. `run_optimizer(...)` was called with no `mutator_model` kwarg at all, so
+   `packages/core/src/reprompt_core/optimizer/loop.py`'s own `mutator_model
+   or stage_input.target_model` fallback (line ~865) silently used the
+   target model as the mutator too.
+
+**The fix** — `apps/api/src/reprompt_api/optimizer_runner.py`'s `_run()`:
+both `judge_model` and `mutator_model` are now `migration.target_model_
+config.get(...)` (explicit override, unchanged behavior when present) or
+`select_model("judge"/"mutator", available_models)`, where
+`available_models` comes from `reprompt_api.migrations.get_available_models
+(db, workspace)` — the workspace's own BYOK-filtered configured models,
+**never** `target_models`. `mutator_model=mutator_model` is now passed
+explicitly into the `run_optimizer(...)` call (previously missing
+entirely). `packages/core`'s `select_model()` itself was not touched — it
+already declared both `"judge"` and `"mutator"` as valid `Purpose` values
+from the rubric-generation phase, just unused until now; this phase is
+pure call-site plumbing, no new heuristic. Deliberately did **not** add
+logic to exclude target models from `available_models` — the architectural
+requirement is that the *selection* isn't driven by what the user picked
+to test, not that the two must never coincidentally match; if the
+genuinely best available judge model happens to equal a target model,
+that's fine and left alone.
+
+**Real gap found and also fixed**: `apps/api/src/reprompt_api/migrations.py`'s
+`TargetModelConfig` Pydantic model only declared `models: list[str]` — no
+`judge_model`/`mutator_model` fields at all, despite `optimizer_runner.py`
+already reading `.get("judge_model")` off the raw dict. Since `POST
+/pipelines/{id}/migrations` builds the stored `target_model_config` via
+`migration_in.target_model_config.model_dump()`, any `judge_model` a caller
+sent through the real API was silently stripped by Pydantic before ever
+reaching the DB — the "explicit override" path was dead code for any
+migration created through the actual endpoint (only reachable if a test
+wrote directly to the DB, bypassing the schema). Fixed by declaring both
+fields as `Optional[str] = None` on `TargetModelConfig`, with a docstring
+explaining the same target-vs-harness split. `model_dump()` at the create
+endpoint was changed to `model_dump(exclude_none=True)` so a migration that
+doesn't set either override still stores/round-trips the original bare
+`{"models": [...]}` shape (existing tests assert exact dict equality on
+this field — `exclude_none=True` keeps that assertion true rather than
+padding the dict with two `null` keys every caller would now see).
+
+**Circular import found and fixed**: `apps/api/src/reprompt_api/migrations.py`
+already imports `run_optimizer_for_migration` from `optimizer_runner.py` at
+module level (for its `BackgroundTasks.add_task()` call in `create_migration`'s
+sibling "start" endpoint). A naive top-level `from reprompt_api.migrations
+import get_available_models` in `optimizer_runner.py` would therefore be a
+genuine circular import (`ImportError` on the partially-initialized
+`migrations` module, since the cycle would resolve mid-way through
+`migrations.py`'s own top-level execution, before `get_available_models` is
+defined in that file). Fixed with a function-local import inside `_run()`
+— the standard, minimal-footprint fix for this shape of cycle; no
+restructuring of either module.
+
+**Tests** — `apps/api/tests/test_optimizer_runner.py` (3 new):
+`test_judge_and_mutator_auto_select_from_workspace_not_target_model` (a
+migration targeting a weak, always-available local model
+`ollama/llama3.1`, with an Anthropic BYOK key configured, auto-selects
+`claude-sonnet-4-5` — a stronger tier-1 model — for both judge and mutator,
+proving the selection is driven by the workspace's available models, not
+`target_models[0]`, and is genuinely decoupled since the two differ),
+`test_explicit_judge_model_override_wins_over_auto_select`,
+`test_explicit_mutator_model_override_wins_over_auto_select` (either
+override key still wins outright, unvalidated against available models,
+per `select_model()`'s existing contract). `apps/api/tests/test_migrations.py`
+(2 new): `test_create_migration_persists_explicit_judge_and_mutator_model_
+overrides` (round-trips through the real `POST .../migrations` endpoint —
+proves the schema gap above is actually fixed, not just the dict-reading
+side), `test_create_migration_omits_judge_and_mutator_model_when_not_given`
+(bare `{"models": [...]}` shape preserved when neither override is set).
+
+**Verified**: `cd apps/api && uv run pytest -q` → **165 passed** (160
+baseline + 5 new: 3 in `test_optimizer_runner.py`, 2 in
+`test_migrations.py`). `cd packages/core && uv run pytest -q` → **305
+passed, 2 skipped**, byte-for-byte unaffected — confirmed via `git status`
+that no `packages/core` file changed at all (only
+`apps/api/src/reprompt_api/migrations.py`,
+`apps/api/src/reprompt_api/optimizer_runner.py`,
+`apps/api/tests/test_migrations.py`,
+`apps/api/tests/test_optimizer_runner.py`, plus this doc and
+`docs/TESTING.md` appear in the diff).
+
+**Where this leaves things**: a target model can no longer silently become
+its own judge or mutator, in either the auto-select or (previously broken)
+explicit-override path, matching rubric generation's existing pattern
+exactly. No UI surfaces the effective/overridden judge or mutator model
+yet — see `docs/TESTING.md`'s new §3.3b for the current API-level manual
+check and the explicit note that a UI surface (e.g. showing the judge model
+next to a migration's results) is a real, not-yet-built follow-up, out of
+scope for this backend plumbing fix.

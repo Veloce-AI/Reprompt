@@ -33,6 +33,7 @@ from sqlalchemy.orm import Session
 
 from reprompt_core.deterministic import parse_deterministic_checks
 from reprompt_core.llm.client import PermanentLLMError, RepromptLLMError, TransientLLMError
+from reprompt_core.llm.model_select import NoAvailableModelError, select_model
 from reprompt_core.rubric_generator import RubricGenerationError, StageOutputSample, generate_rubric
 
 from reprompt_api import models
@@ -40,6 +41,7 @@ from reprompt_api.auth import get_current_user
 from reprompt_api.crypto import EncryptionNotConfigured
 from reprompt_api.db import get_db
 from reprompt_api.llm_context import ProviderKeyNotConfigured, complete_with_workspace_credentials
+from reprompt_api.migrations import get_available_models
 
 router = APIRouter(tags=["rubrics"])
 
@@ -63,6 +65,16 @@ class RubricOut(BaseModel):
     judge_criteria: list[dict]
     downstream_contract: list[str]
     approved: bool
+    generated_with_model: str | None = Field(
+        default=None,
+        description=(
+            "Which model actually produced this rubric's content, ONLY on the response to a "
+            "generate/regenerate call (POST .../generate-rubric) - null on every other response "
+            "(list/patch/approve), since that identity isn't persisted on the Rubric row. Set "
+            "whether the model was auto-selected or explicitly chosen by the caller, so the UI "
+            "can show 'Generated using <model>' right after a generation call either way."
+        ),
+    )
 
 
 class RubricUpdate(BaseModel):
@@ -106,7 +118,7 @@ def _validate_downstream_contract(raw: list[str]) -> list[str]:
     return raw
 
 
-def _to_out(rubric: models.Rubric, stage_name: str) -> RubricOut:
+def _to_out(rubric: models.Rubric, stage_name: str, *, generated_with_model: str | None = None) -> RubricOut:
     return RubricOut(
         id=rubric.id,
         stage_id=rubric.stage_id,
@@ -115,6 +127,7 @@ def _to_out(rubric: models.Rubric, stage_name: str) -> RubricOut:
         judge_criteria=rubric.judge_criteria or [],
         downstream_contract=rubric.downstream_contract or [],
         approved=rubric.approved,
+        generated_with_model=generated_with_model,
     )
 
 
@@ -228,10 +241,18 @@ def approve_all_rubrics(pipeline_id: int, db: Session = Depends(get_db)) -> list
 
 
 class GenerateRubricIn(BaseModel):
-    model: str = Field(
+    model: str | None = Field(
+        default=None,
         min_length=1,
         max_length=255,
-        description="LiteLLM model string for the 'strong model' doing the rubric analysis, e.g. 'claude-sonnet-4-5'.",
+        description=(
+            "LiteLLM model string for the 'strong model' doing the rubric analysis, e.g. "
+            "'claude-sonnet-4-5'. Optional - omit (or send null) to have the server auto-select "
+            "a model from this workspace's configured models via "
+            "reprompt_core.llm.model_select.select_model(purpose='rubric_generation'). An "
+            "explicit value here always wins outright, never second-guessed against what's "
+            "auto-selectable."
+        ),
     )
 
 
@@ -272,14 +293,22 @@ def generate_rubric_for_stage(
 ) -> RubricOut:
     """Generate (or regenerate) `stage_id`'s rubric from its real benchmark
     outputs across all traces, using the current user's workspace's saved
-    BYOK key for `body.model`'s provider.
+    BYOK key for the generator model's provider.
+
+    `body.model` is optional: if omitted, the model is auto-selected via
+    `reprompt_core.llm.model_select.select_model(purpose="rubric_generation",
+    ...)` from this workspace's configured models (the same BYOK-filtered
+    curated list `GET /settings/models` shows — see
+    `reprompt_api.migrations.get_available_models`). An explicit `body.model`
+    always wins outright and is never second-guessed against that list.
 
     Error mapping mirrors `reprompt_api.pipelines.test_prompt` exactly (same
     underlying mechanism, same failure modes): no workspace key configured
-    for the required provider -> 422 pointing at /settings;
-    encryption misconfigured -> 500; a transient provider error (rate
-    limit/timeout) -> 502; any other permanent LLM error, or the generator's
-    own RubricGenerationError (model's output was unusable even after one
+    for the required provider -> 422 pointing at /settings; nothing at all
+    configured to auto-select from -> 422 pointing at /settings; encryption
+    misconfigured -> 500; a transient provider error (rate limit/timeout) ->
+    502; any other permanent LLM error, or the generator's own
+    RubricGenerationError (model's output was unusable even after one
     corrective retry — see reprompt_core.rubric_generator) -> 422.
     """
     stage = _get_stage_or_404(db, pipeline_id, stage_id)
@@ -297,6 +326,21 @@ def generate_rubric_for_stage(
 
     workspace = _get_workspace_or_500(db, current_user)
 
+    if body.model:
+        generator_model = body.model
+    else:
+        available = [option.model for option in get_available_models(db, workspace)]
+        try:
+            generator_model = select_model("rubric_generation", available)
+        except NoAvailableModelError as exc:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "No models are configured for this workspace yet — add an API key at "
+                    "/settings, or pick a model explicitly."
+                ),
+            ) from exc
+
     def _call(model: str, messages, **kwargs):
         return complete_with_workspace_credentials(db, workspace, model, messages, **kwargs)
 
@@ -307,7 +351,7 @@ def generate_rubric_for_stage(
             stage.prompt_template,
             samples,
             call=_call,
-            generator_model=body.model,
+            generator_model=generator_model,
         )
     except ProviderKeyNotConfigured as exc:
         raise HTTPException(
@@ -346,4 +390,4 @@ def generate_rubric_for_stage(
 
     db.commit()
     db.refresh(rubric)
-    return _to_out(rubric, stage.name)
+    return _to_out(rubric, stage.name, generated_with_model=result.model)

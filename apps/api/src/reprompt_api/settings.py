@@ -58,7 +58,7 @@ from reprompt_api import models
 from reprompt_api.auth import get_current_user
 from reprompt_api.crypto import EncryptionNotConfigured, encrypt
 from reprompt_api.db import get_db
-from reprompt_api.migrations import CURATED_MODELS, ModelOption, _to_option
+from reprompt_api.migrations import ModelOption, get_available_models
 from reprompt_api.model_cards import FamilyCardOut, build_family_card
 
 router = APIRouter(prefix="/settings", tags=["settings"])
@@ -332,19 +332,5 @@ def list_configured_models(
     for that target without opening a migration wizard first.
     """
     workspace = _get_workspace_or_500(db, current_user)
-    configured_providers = {
-        row.provider
-        for row in db.scalars(
-            select(models.WorkspaceApiKey).where(
-                models.WorkspaceApiKey.workspace_id == workspace.id
-            )
-        ).all()
-    }
-
-    options = [_to_option(model) for model in CURATED_MODELS]
-    available = [
-        option
-        for option in options
-        if not option.requires_api_key or option.provider in configured_providers
-    ]
+    available = get_available_models(db, workspace)
     return [_to_configured_model_out(option) for option in available]

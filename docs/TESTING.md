@@ -323,10 +323,20 @@ migrations/candidates), no soft-delete/undo.
 1. Either seed rubrics for the imported pipeline via the dev-only script
    (`cd apps/api && uv run python -m reprompt_api.seed_rubrics
    --pipeline-id <id>`), **or** use the real generator now built into the
-   tab itself: enter a model name (e.g. `openai/gpt-4o`) in the field at
-   the top of `/pipelines/$pipelineId?tab=rubrics` and click "Generate all
-   rubrics" — needs a real BYOK key configured for that model's provider
-   (see §3.4 below), makes one real LLM call per stage.
+   tab itself, at `/pipelines/$pipelineId?tab=rubrics`: leave the "Model
+   (optional — auto-selected if left blank)" field at the top **blank** and
+   click "Generate all rubrics" — the server picks a model itself
+   (`reprompt_core.llm.model_select.select_model`, purpose
+   `"rubric_generation"`) from whatever this workspace has configured (see
+   §3.4 below for adding a BYOK key first; with zero keys configured, it
+   still succeeds by falling back to a no-key local `ollama/...` model).
+   Makes one real LLM call per stage. Each stage's card header shows a
+   small "— generated using `<model>`" caption once its call returns,
+   confirming which model was actually picked.
+   Alternatively, type a specific model name (e.g. `openai/gpt-4o`) into
+   that field first — an explicit model always wins over auto-selection,
+   same as before, and needs a real BYOK key configured for that model's
+   provider.
 2. From the canvas, click the "Rubrics" tab → each stage shows three
    grouped sections: Format checks, Content criteria, Downstream contract
    — all in plain English (no raw JSON/schema shown to the reviewer).
@@ -334,6 +344,9 @@ migrations/candidates), no soft-delete/undo.
    confirm the edit persisted.
 4. Approve one stage, then "Approve all" → confirm every stage shows
    approved.
+5. Per-stage "Regenerate" also works with the model field left blank
+   (auto-selects again) — it's no longer disabled/blocked on an empty
+   field the way it was before model auto-selection existed.
 
 ### 3.3 New migration wizard (Migrations tab, screen 5)
 
@@ -439,7 +452,7 @@ Windows process-killing quirks, etc.) are in `DEVELOPMENT.md` §Testing.
 Quick reference:
 
 ```bash
-cd packages/core && uv run pytest -v   # trace/DAG/evaluators/judge/scoring/sweep/budget/model-card
+cd packages/core && uv run pytest -v   # trace/DAG/evaluators/judge/scoring/sweep/budget/model-card/model-select
 cd apps/api && uv run pytest -v        # models/ingest/pipelines/stage_records/rubrics/migrations/auth/settings
 cd apps/web && npx tsc --noEmit && pnpm test   # typecheck + Vitest
 cd apps/web && npx playwright test     # needs the API running separately first, see DEVELOPMENT.md

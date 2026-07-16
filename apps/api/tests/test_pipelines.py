@@ -228,6 +228,67 @@ def test_patch_pipeline_for_unknown_pipeline_returns_404(client: TestClient) -> 
     assert response.status_code == 404
 
 
+def test_delete_pipeline_removes_pipeline_and_cascades_to_children(
+    client: TestClient, session_factory: sessionmaker
+) -> None:
+    """A hard delete must not orphan anything - populate one row in every
+    child table (rubric, migration, candidate; benchmark_sets/traces/
+    stage_records already exist from the diamond import) before deleting,
+    then assert every table is empty afterward, not just the pipelines
+    table.
+    """
+    upload_response = _upload(client, _diamond_trace_file())
+    pipeline_id = upload_response.json()["pipeline_id"]
+
+    with session_factory() as db:
+        stage = db.query(models.Stage).filter_by(pipeline_id=pipeline_id).first()
+        db.add(
+            models.Rubric(
+                stage_id=stage.id,
+                deterministic_checks={},
+                judge_criteria={},
+                downstream_contract={},
+            )
+        )
+        migration = models.Migration(
+            pipeline_id=pipeline_id, target_model_config={}, budget=10.0
+        )
+        db.add(migration)
+        db.commit()
+        db.refresh(migration)
+        db.add(
+            models.Candidate(
+                migration_id=migration.id,
+                stage_id=stage.id,
+                target_model="gpt-4o-mini",
+                prompt_variant="x",
+                format="text",
+            )
+        )
+        db.commit()
+
+    response = client.delete(f"/pipelines/{pipeline_id}")
+    assert response.status_code == 204
+    assert response.content == b""
+
+    assert client.get("/pipelines").json() == []
+
+    with session_factory() as db:
+        assert db.query(models.Pipeline).count() == 0
+        assert db.query(models.Stage).count() == 0
+        assert db.query(models.BenchmarkSet).count() == 0
+        assert db.query(models.Trace).count() == 0
+        assert db.query(models.StageRecord).count() == 0
+        assert db.query(models.Rubric).count() == 0
+        assert db.query(models.Migration).count() == 0
+        assert db.query(models.Candidate).count() == 0
+
+
+def test_delete_pipeline_for_unknown_pipeline_returns_404(client: TestClient) -> None:
+    response = client.delete("/pipelines/999999")
+    assert response.status_code == 404
+
+
 def test_import_minimal_stage_record_persists_null_tokens_and_latency(
     client: TestClient, session_factory: sessionmaker
 ) -> None:

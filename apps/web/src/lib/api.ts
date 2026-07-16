@@ -100,6 +100,22 @@ export function updatePipeline(
   });
 }
 
+export async function deletePipeline(pipelineId: number): Promise<void> {
+  const response = await fetch(`${API_BASE_URL}/pipelines/${pipelineId}`, {
+    method: "DELETE",
+  });
+  if (!response.ok) {
+    let detail = response.statusText;
+    try {
+      const body = await response.json();
+      if (typeof body.detail === "string") detail = body.detail;
+    } catch {
+      // response body wasn't JSON (or was empty) - fall back to statusText
+    }
+    throw new ApiError(detail, response.status);
+  }
+}
+
 export function listRubrics(pipelineId: number): Promise<RubricOut[]> {
   return request<RubricOut[]>(`/pipelines/${pipelineId}/rubrics`);
 }

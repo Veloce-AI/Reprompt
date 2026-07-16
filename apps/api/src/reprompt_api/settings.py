@@ -54,6 +54,8 @@ from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from reprompt_core.llm.model_select import NoAvailableModelError, Purpose, select_model
+
 from reprompt_api import models
 from reprompt_api.auth import get_current_user
 from reprompt_api.crypto import EncryptionNotConfigured, encrypt
@@ -334,3 +336,74 @@ def list_configured_models(
     workspace = _get_workspace_or_500(db, current_user)
     available = get_available_models(db, workspace)
     return [_to_configured_model_out(option) for option in available]
+
+
+# ---------------------------------------------------------------------------
+# System models — what Reprompt's OWN harness is auto-selecting, and why
+# ---------------------------------------------------------------------------
+#
+# The gap this closes: reprompt_core.llm.model_select.select_model() decides
+# which model judges candidates, mutates/critiques/refines prompts, and
+# generates rubrics (apps/api's rubrics.py and optimizer_runner.py both call
+# it) - but that decision was entirely invisible in the UI. A backend-only
+# fix (see DEV_TRACKER.md's "Fix judge/mutator self-grading bias") is hard to
+# trust without a way to actually see it, so this surfaces the exact same
+# select_model() call apps/api already makes for real runs.
+#
+# Deliberately read-only and workspace-scoped, not migration-scoped: a
+# specific migration can still override judge_model/mutator_model via its
+# own target_model_config (see migrations.py's TargetModelConfig docstring)
+# - that's the right place for a *per-migration* override, since the
+# target-vs-harness decoupling it protects only makes sense in the context of
+# one migration's own target_models. There is no single "current migration"
+# at the workspace-settings level to read such an override from, so this
+# view always reports the no-override auto-select path (reason is always
+# "best available" today) - i.e. exactly what a *new* migration would get if
+# it didn't set an explicit override. Adding a workspace-level default
+# override (a new Workspace column) was considered and deliberately not
+# built here - it would sit awkwardly between "always auto-select" and "set
+# it per migration," and the task calling for this section prioritized
+# visibility over a new override surface.
+
+
+class SystemModelOut(BaseModel):
+    purpose: Purpose
+    selected_model: str
+    reason: str
+
+
+# Every purpose select_model() knows about, in the order judge/mutator/rubric
+# generation actually run within a migration (rubric generation happens
+# up-front, before a migration exists; judge/mutator run during the
+# optimizer loop) - kept simple/flat per the task's own "keep this scoped"
+# instruction rather than trying to group by when-it-runs.
+_SYSTEM_MODEL_PURPOSES: tuple[Purpose, ...] = ("rubric_generation", "judge", "mutator")
+
+
+@router.get("/system-models", response_model=list[SystemModelOut])
+def list_system_models(
+    current_user: models.User = Depends(get_current_user), db: Session = Depends(get_db)
+) -> list[SystemModelOut]:
+    """Which model Reprompt's own harness currently auto-selects for each
+    purpose, given this workspace's configured providers - the exact same
+    reprompt_core.llm.model_select.select_model() call apps/api's
+    rubrics.py/optimizer_runner.py make for a real run, with no override
+    applied (see module-level note above for why this is workspace-scoped
+    rather than migration-scoped).
+    """
+    workspace = _get_workspace_or_500(db, current_user)
+    available = [option.model for option in get_available_models(db, workspace)]
+
+    results: list[SystemModelOut] = []
+    for purpose in _SYSTEM_MODEL_PURPOSES:
+        try:
+            selected = select_model(purpose, available)
+        except NoAvailableModelError as exc:
+            # Shouldn't happen in practice - CURATED_MODELS always includes
+            # no-key-required local models, so `available` is never actually
+            # empty - but handled the same way `_get_workspace_or_500` treats
+            # its own "shouldn't happen" case: a clear 500, not a raw
+            # stack trace.
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+        results.append(SystemModelOut(purpose=purpose, selected_model=selected, reason="best available"))
+    return results

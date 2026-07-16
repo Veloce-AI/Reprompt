@@ -10,7 +10,7 @@ import {
   RouterProvider,
 } from "@tanstack/react-router";
 import Settings from "./settings";
-import type { ApiKeyOut, ConfiguredModel, WorkspaceSettings } from "@/lib/api";
+import type { ApiKeyOut, ConfiguredModel, SystemModel, WorkspaceSettings } from "@/lib/api";
 
 vi.mock("@/lib/api", async () => {
   const actual = await vi.importActual<typeof import("@/lib/api")>("@/lib/api");
@@ -24,6 +24,7 @@ vi.mock("@/lib/api", async () => {
     addApiKey: vi.fn(),
     deleteApiKey: vi.fn(),
     listConfiguredModels: vi.fn(),
+    listSystemModels: vi.fn(),
   };
 });
 
@@ -34,6 +35,7 @@ import {
   getWorkspaceSettings,
   listApiKeys,
   listConfiguredModels,
+  listSystemModels,
   updateWorkspaceSettings,
 } from "@/lib/api";
 
@@ -43,6 +45,15 @@ window.scrollTo = vi.fn() as unknown as typeof window.scrollTo;
 
 function baseWorkspace(overrides: Partial<WorkspaceSettings> = {}): WorkspaceSettings {
   return { name: "Acme workspace", ...overrides };
+}
+
+function baseSystemModel(overrides: Partial<SystemModel> = {}): SystemModel {
+  return {
+    purpose: "judge",
+    selected_model: "claude-sonnet-4-5",
+    reason: "best available",
+    ...overrides,
+  };
 }
 
 function baseKey(overrides: Partial<ApiKeyOut> = {}): ApiKeyOut {
@@ -117,9 +128,12 @@ beforeEach(() => {
   vi.mocked(addApiKey).mockReset();
   vi.mocked(deleteApiKey).mockReset();
   vi.mocked(listConfiguredModels).mockReset();
-  // Default every test to an empty configured-models list unless a test
-  // overrides it - most tests here aren't about this card specifically.
+  vi.mocked(listSystemModels).mockReset();
+  // Default every test to an empty configured-models/system-models list
+  // unless a test overrides it - most tests here aren't about these cards
+  // specifically.
   vi.mocked(listConfiguredModels).mockResolvedValue([]);
+  vi.mocked(listSystemModels).mockResolvedValue([]);
 });
 
 describe("Settings", () => {
@@ -319,5 +333,37 @@ describe("Settings", () => {
     renderSettings();
 
     expect(await screen.findByText("No models available yet.")).toBeInTheDocument();
+  });
+
+  it("shows the system models Reprompt's own harness is auto-selecting", async () => {
+    vi.mocked(getSessionToken).mockReturnValue("session-token");
+    vi.mocked(getWorkspaceSettings).mockResolvedValue(baseWorkspace());
+    vi.mocked(listApiKeys).mockResolvedValue([]);
+    vi.mocked(listSystemModels).mockResolvedValue([
+      baseSystemModel({ purpose: "rubric_generation", selected_model: "claude-sonnet-4-5" }),
+      baseSystemModel({ purpose: "judge", selected_model: "claude-sonnet-4-5" }),
+      baseSystemModel({ purpose: "mutator", selected_model: "gpt-4o" }),
+    ]);
+
+    renderSettings();
+
+    expect(await screen.findByText("System models")).toBeInTheDocument();
+    expect(await screen.findByText("Rubric generation")).toBeInTheDocument();
+    expect(screen.getByText("Judge")).toBeInTheDocument();
+    expect(screen.getByText("Mutator")).toBeInTheDocument();
+    expect(screen.getAllByText("claude-sonnet-4-5")).toHaveLength(2);
+    expect(screen.getByText("gpt-4o")).toBeInTheDocument();
+    expect(screen.getAllByText("best available")).toHaveLength(3);
+  });
+
+  it("shows an empty state when no system models are returned", async () => {
+    vi.mocked(getSessionToken).mockReturnValue("session-token");
+    vi.mocked(getWorkspaceSettings).mockResolvedValue(baseWorkspace());
+    vi.mocked(listApiKeys).mockResolvedValue([]);
+    vi.mocked(listSystemModels).mockResolvedValue([]);
+
+    renderSettings();
+
+    expect(await screen.findByText("No system models to show yet.")).toBeInTheDocument();
   });
 });

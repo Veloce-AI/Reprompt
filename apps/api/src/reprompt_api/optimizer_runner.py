@@ -83,6 +83,17 @@ def _get_target_models(config: dict) -> list[str]:
     return [default] if default else []
 
 
+def _get_stage_overrides(config: dict) -> dict[str, list[str]]:
+    """Per-stage advanced override: {"<stage.id>": ["model1", "model2"]}.
+
+    Absent/empty for the common case (no advanced customization) - every
+    stage then falls back to the global ``_get_target_models`` list, exactly
+    as before this field existed. See ``migrations.py``'s
+    ``TargetModelConfig.stage_overrides`` docstring for the full contract.
+    """
+    return config.get("stage_overrides") or {}
+
+
 def _run(db: Session, migration_id: int) -> None:  # noqa: C901
     migration = db.get(models.Migration, migration_id)
     if migration is None:
@@ -135,18 +146,34 @@ def _run(db: Session, migration_id: int) -> None:  # noqa: C901
             .order_by(models.Stage.id)
         ).all()
 
-        # Total units of work: each model runs against every stage.
-        total_work = len(db_stages) * len(target_models)
+        # Per-stage advanced override (DEV_TRACKER.md's "Per-stage target
+        # model override"): a stage keyed here tries only its own model list
+        # instead of the global `target_models` list. Absent/empty for the
+        # common case - every stage then behaves exactly as before this
+        # field existed.
+        stage_overrides = _get_stage_overrides(migration.target_model_config)
+        override_stages = [s for s in db_stages if str(s.id) in stage_overrides]
+        default_stages = [s for s in db_stages if str(s.id) not in stage_overrides]
+
+        # Total units of work: default stages run once per global target
+        # model, override stages run once per their own override model.
+        total_work = len(default_stages) * len(target_models) + sum(
+            len(stage_overrides[str(s.id)]) for s in override_stages
+        )
         stage_id_to_name: dict[int, str] = {s.id: s.name for s in db_stages}
 
-        _state: dict = {"last_stage_id": None, "work_done": 0}
+        # `current_target_model` is written right before every run_optimizer
+        # call below (both the global-model loop and the per-stage-override
+        # loop) so on_attempt always records the model that actually
+        # produced the attempt, regardless of which loop is running.
+        _state: dict = {"last_stage_id": None, "work_done": 0, "current_target_model": None}
 
         def on_attempt(attempt: StageAttempt) -> None:
             db.add(
                 models.Candidate(
                     migration_id=migration.id,
                     stage_id=attempt.stage_id,
-                    target_model=target_model,
+                    target_model=_state["current_target_model"],
                     prompt_variant=attempt.prompt_variant,
                     params=attempt.params,
                     format=attempt.format_mode,
@@ -198,39 +225,93 @@ def _run(db: Session, migration_id: int) -> None:  # noqa: C901
         any_stopped_early = False
         final_stop_reason: str | None = None
 
-        for target_model in target_models:
+        # Skip entirely (not just per-model) when every stage has its own
+        # override - avoids both a wasted no-op iteration per target model
+        # and a misleading "no benchmark records" warning for stages that
+        # were never meant to run against the global list at all.
+        if default_stages:
+            for target_model in target_models:
+                if budget.is_exhausted:
+                    any_stopped_early = True
+                    final_stop_reason = "budget_exhausted"
+                    break
+
+                stages = _build_stage_inputs(db, pipeline.id, default_stages, target_model)
+                if not stages:
+                    logger.warning(
+                        "No benchmark records for pipeline %d — skipping model %s",
+                        pipeline.id,
+                        target_model,
+                    )
+                    continue
+
+                _state["current_target_model"] = target_model
+                result: OptimizationResult = run_optimizer(
+                    stages,
+                    call=lambda model, messages, **kw: complete_with_workspace_credentials(
+                        db, workspace, model, messages, **kw
+                    ),
+                    budget=budget,
+                    judge_model=judge_model,
+                    mutator_model=mutator_model,
+                    strategy=strategy,
+                    parity_threshold=migration.parity_threshold,
+                    on_attempt=on_attempt,
+                    on_phase=on_phase,
+                )
+
+                total_cost += result.total_cost_usd
+                if result.stopped_early:
+                    any_stopped_early = True
+                    final_stop_reason = result.stop_reason
+
+        # Per-stage overrides: each such stage tries only its own model
+        # list, one run_optimizer call per (stage, override model) pair -
+        # isolated per stage since each stage in this set has a distinct
+        # candidate list, unlike the shared-list batching above. No-op when
+        # stage_overrides is empty (the common case), so the default path's
+        # behavior/output is unchanged from before this loop existed.
+        for stage in override_stages:
             if budget.is_exhausted:
                 any_stopped_early = True
                 final_stop_reason = "budget_exhausted"
                 break
 
-            stages = _build_stage_inputs(db, pipeline.id, db_stages, target_model)
-            if not stages:
-                logger.warning(
-                    "No benchmark records for pipeline %d — skipping model %s",
-                    pipeline.id,
-                    target_model,
+            for override_model in stage_overrides[str(stage.id)]:
+                if budget.is_exhausted:
+                    any_stopped_early = True
+                    final_stop_reason = "budget_exhausted"
+                    break
+
+                stage_inputs = _build_stage_inputs(db, pipeline.id, [stage], override_model)
+                if not stage_inputs:
+                    logger.warning(
+                        "No benchmark records for pipeline %d, stage %d — skipping override model %s",
+                        pipeline.id,
+                        stage.id,
+                        override_model,
+                    )
+                    continue
+
+                _state["current_target_model"] = override_model
+                result = run_optimizer(
+                    stage_inputs,
+                    call=lambda model, messages, **kw: complete_with_workspace_credentials(
+                        db, workspace, model, messages, **kw
+                    ),
+                    budget=budget,
+                    judge_model=judge_model,
+                    mutator_model=mutator_model,
+                    strategy=strategy,
+                    parity_threshold=migration.parity_threshold,
+                    on_attempt=on_attempt,
+                    on_phase=on_phase,
                 )
-                continue
 
-            result: OptimizationResult = run_optimizer(
-                stages,
-                call=lambda model, messages, **kw: complete_with_workspace_credentials(
-                    db, workspace, model, messages, **kw
-                ),
-                budget=budget,
-                judge_model=judge_model,
-                mutator_model=mutator_model,
-                strategy=strategy,
-                parity_threshold=migration.parity_threshold,
-                on_attempt=on_attempt,
-                on_phase=on_phase,
-            )
-
-            total_cost += result.total_cost_usd
-            if result.stopped_early:
-                any_stopped_early = True
-                final_stop_reason = result.stop_reason
+                total_cost += result.total_cost_usd
+                if result.stopped_early:
+                    any_stopped_early = True
+                    final_stop_reason = result.stop_reason
 
         migration.status = "completed" if not any_stopped_early else "stopped_early"
         migration.total_cost_usd = total_cost

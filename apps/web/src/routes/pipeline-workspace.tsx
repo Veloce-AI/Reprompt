@@ -77,6 +77,16 @@ export default function PipelineWorkspace() {
   const pipelinesQuery = useQuery({ queryKey: ["pipelines"], queryFn: listPipelines });
   const pipeline = pipelinesQuery.data?.find((p) => p.id === pid);
 
+  // Same queryKey MigrationsTab uses below, so this shares its cache - no
+  // second network round trip. Read here only to know whether the
+  // "Migrations" tab needs a louder entry point: with no Migration yet, the
+  // tab was previously a plain label identical in weight to Canvas/Data/
+  // Rubrics, easy to read as passive navigation rather than "click here to
+  // add the models you want to test" - see DEV_TRACKER.md's "Migration
+  // wizard discoverability" note.
+  const migrationsQuery = useQuery({ queryKey: ["migrations", pid], queryFn: () => listMigrations(pid) });
+  const hasNoMigrationYet = migrationsQuery.data?.length === 0;
+
   const renameMutation = useMutation({
     mutationFn: (name: string) => updatePipeline(pid, { name }),
     onSuccess: (updated) => {
@@ -156,22 +166,32 @@ export default function PipelineWorkspace() {
           </div>
 
           <nav className="mt-4 flex gap-1" aria-label="Pipeline workspace tabs">
-            {WORKSPACE_TABS.map((t) => (
-              <button
-                key={t}
-                type="button"
-                onClick={() => goToTab(t)}
-                aria-current={tab === t ? "page" : undefined}
-                className={cn(
-                  "rounded-control px-3 py-1.5 text-13 font-medium transition-colors duration-fast ease-out",
-                  tab === t
-                    ? "bg-beam-soft text-beam"
-                    : "text-ink-soft hover:bg-beam-soft/50 hover:text-ink"
-                )}
-              >
-                {TAB_LABELS[t]}
-              </button>
-            ))}
+            {WORKSPACE_TABS.map((t) => {
+              // While no Migration exists yet for this pipeline and we're not
+              // already on that tab, render it as an obvious primary-styled
+              // call-to-action ("+ Start a migration") instead of a plain tab
+              // label - once a Migration exists (or the user is on the tab
+              // itself), it goes back to behaving like every other tab.
+              const isMigrationsCta = t === "migrations" && hasNoMigrationYet && tab !== "migrations";
+              return (
+                <button
+                  key={t}
+                  type="button"
+                  onClick={() => goToTab(t)}
+                  aria-current={tab === t ? "page" : undefined}
+                  className={cn(
+                    "rounded-control px-3 py-1.5 text-13 font-medium transition-colors duration-fast ease-out",
+                    tab === t
+                      ? "bg-beam-soft text-beam"
+                      : isMigrationsCta
+                        ? "bg-beam text-paper hover:brightness-110"
+                        : "text-ink-soft hover:bg-beam-soft/50 hover:text-ink"
+                  )}
+                >
+                  {isMigrationsCta ? "+ Start a migration" : TAB_LABELS[t]}
+                </button>
+              );
+            })}
           </nav>
         </div>
 

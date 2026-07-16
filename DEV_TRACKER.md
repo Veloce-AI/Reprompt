@@ -1900,3 +1900,94 @@ side drawer. No Run filter yet (see the deliberate-scope-cut note above).
 same way `stage_id` is threaded today (the backend's cursor-pagination
 query already has the right shape to add one more optional equality
 filter). Nothing else about this phase is mid-flight.
+
+## Pipeline delete [DONE — 2026-07-16]
+
+Another separate frontend-shape track, independent of the optimizer phase
+numbering (same relationship as "Phase 1 — Unified pipeline workspace" and
+"Phase 3 — Data dashboard tab" above). Closes out the **Pipeline CRUD**
+backlog item: rename already existed (Phase 1's `PATCH /pipelines/{id}`,
+the workspace header's click-to-edit-inline name) and naming-at-import
+already worked (a pipeline's name always comes from the imported trace
+file's `pipeline.name` — see `pipelines.py`'s `import_pipeline` /
+`ImportResult.name`, unchanged here); the only missing piece was delete.
+All three are now built. No changes to `packages/core`, the optimizer
+loop, or anything under `packages/core/src/reprompt_core/optimizer/`.
+
+**Backend** — `apps/api/src/reprompt_api/pipelines.py`:
+- New `DELETE /pipelines/{pipeline_id}` (`delete_pipeline`) — 404 if the
+  pipeline doesn't exist, else a single `db.delete(pipeline); db.commit()`
+  and `204 No Content`. Same 404-if-missing / 204-on-success shape as
+  `settings.py`'s `delete_api_key`.
+- **Cascade check done before writing this, not assumed**: read every FK
+  in `models.py` that points at `Pipeline` (`Stage.pipeline_id`,
+  `BenchmarkSet.pipeline_id`, `Migration.pipeline_id`) and one level
+  further down (`StageRecord.stage_id`/`trace_id`, `Rubric.stage_id`,
+  `Candidate.migration_id`/`stage_id`, `Trace.benchmark_set_id`). Every
+  one of them already carries both `ForeignKey(..., ondelete="CASCADE")`
+  *and* the matching ORM `relationship(..., cascade="all, delete-orphan")`
+  on the parent side (`Pipeline.stages`/`.benchmark_sets`/`.migrations`,
+  `Stage.stage_records`/`.rubric`/`.candidates`, `BenchmarkSet.traces`,
+  `Trace.stage_records`, `Migration.candidates`) — confirmed "cascades
+  already work" was accurate, not stale. A single `db.delete(pipeline)`
+  is therefore sufficient; no manual child-deletion-in-order code needed.
+  (Note for later: SQLite FK enforcement itself is off in `db.py` — no
+  `PRAGMA foreign_keys=ON` — so the DB-level `ondelete="CASCADE"` is inert
+  on SQLite today; the ORM-level `cascade="all, delete-orphan"` is what
+  actually does the work in tests/dev, and would keep working unchanged
+  if this project moves to Postgres later where the DB-level cascade
+  would also kick in.)
+- `tests/test_pipelines.py`: 2 new tests —
+  `test_delete_pipeline_removes_pipeline_and_cascades_to_children` (seeds
+  one row in every child table — rubric, migration, candidate, on top of
+  the diamond import's existing stages/benchmark_set/traces/stage_records
+  — deletes the pipeline, then asserts all seven tables are empty
+  afterward, not just `pipelines`) and
+  `test_delete_pipeline_for_unknown_pipeline_returns_404`.
+
+**Frontend**:
+- `apps/web/src/lib/api.ts`: new `deletePipeline(pipelineId)` — same
+  bare-`fetch`-with-manual-error-handling shape as the existing
+  `deleteApiKey` (not the shared `request<T>()` helper, since that always
+  calls `.json()` and a `204 No Content` response has no body).
+- `apps/web/src/routes/home.tsx`: each pipeline row in the Pipelines home
+  table gets a trash-icon `Button` (`lucide-react`'s `Trash2`,
+  `variant="ghost" size="icon"`, `aria-label="Delete {name}"`). Click
+  handler calls `event.stopPropagation()` first (the row itself navigates
+  to the pipeline on click) then `window.confirm(...)` naming the
+  pipeline and warning that stages/rubrics/runs/migrations are all
+  permanently removed — only on confirm does it call the new
+  `deletePipeline` mutation. **`window.confirm` was a deliberate choice,
+  not a placeholder**: no modal/dialog primitive exists anywhere in
+  `apps/web/src/components/ui/` yet (checked before building this), and
+  adding one purely to gate a single destructive button would be more new
+  surface area than the task warrants — it still satisfies the real
+  requirement (an explicit confirm step, not a bare click). On success,
+  invalidates the `["pipelines"]` query so the row disappears without a
+  full reload; on failure, shows the error inline above the table (same
+  `ApiError`-aware pattern as the page's existing load-error banner).
+- Tests: new `apps/web/src/routes/home.test.tsx`, 5 cases — delete button
+  present per row, cancelling the confirm dialog makes no request,
+  confirming calls `deletePipeline` with the right id and the row is gone
+  after refetch, clicking delete never navigates into the pipeline (stays
+  on `/`), and a failed delete surfaces the error message.
+
+**Verified**: `cd apps/api && uv run pytest -q` → **149 passed** (147
+baseline + 2 new). `cd apps/web && pnpm exec tsc --noEmit` → clean.
+`cd apps/web && pnpm test` → **98 passed** (93 baseline + 5 new), 13 test
+files. `packages/core` untouched — confirmed via `git status` (only
+`apps/api/src/reprompt_api/pipelines.py`, `apps/api/tests/test_pipelines.py`,
+`apps/web/src/lib/api.ts`, `apps/web/src/routes/home.tsx` (modified) and
+`apps/web/src/routes/home.test.tsx` (new) appear in the diff, plus this
+doc and `docs/TESTING.md`).
+
+**What a user sees**: on the Pipelines home screen, each row now has a
+trash icon at the right edge. Clicking it (without navigating into the
+pipeline, even though the row itself is normally a click-to-open target)
+pops a browser confirm dialog naming the pipeline and warning the delete
+is permanent; confirming removes it — and everything under it — for good,
+and it disappears from the list immediately.
+
+**Pipeline CRUD backlog item: fully closed.** Create (import), Read
+(list/DAG/data tab), Update (rename), Delete are all built and tested —
+nothing left open under this item.

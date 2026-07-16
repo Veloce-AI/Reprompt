@@ -250,6 +250,27 @@ def update_pipeline(
     )
 
 
+@router.delete("/{pipeline_id}", status_code=204)
+def delete_pipeline(pipeline_id: int, db: Session = Depends(get_db)) -> None:
+    """Hard delete a pipeline and every child row underneath it (stages,
+    rubrics, benchmark sets/traces/stage records, migrations/candidates).
+    Safe as a single `db.delete()` — every Pipeline-rooted relationship in
+    models.py is declared `cascade="all, delete-orphan"`, and each of
+    those children cascades further down the same way (Stage -> rubric/
+    stage_records/candidates, BenchmarkSet -> traces -> stage_records,
+    Migration -> candidates), so nothing is left orphaned. Same
+    404-if-missing / 204-on-success shape as settings.py's delete_api_key.
+    The frontend is expected to confirm with the user before calling this
+    — it is not idempotent-safe to retry blindly (a second call 404s).
+    """
+    pipeline = db.get(models.Pipeline, pipeline_id)
+    if pipeline is None:
+        raise HTTPException(status_code=404, detail=f"Pipeline {pipeline_id} not found")
+
+    db.delete(pipeline)
+    db.commit()
+
+
 @router.get("/{pipeline_id}/dag", response_model=DagResponse)
 def get_pipeline_dag(pipeline_id: int, db: Session = Depends(get_db)) -> DagResponse:
     pipeline = db.get(

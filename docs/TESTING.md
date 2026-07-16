@@ -293,6 +293,31 @@ exclusive to the Rubrics tab.
    endpoint lands — see `DEV_TRACKER.md`'s Phase 3 entry) and no text
    search box (out of scope, would need real indexing).
 
+### 3.1e Delete a pipeline (Pipelines home)
+
+Added 2026-07-16 — see `DEV_TRACKER.md`'s "Pipeline delete" section. Closes
+out the Pipeline CRUD backlog item (create/import, read, rename, and now
+delete are all built). Hard delete — permanently removes the pipeline and
+everything under it (stages, rubrics, benchmark sets/traces/stage records,
+migrations/candidates), no soft-delete/undo.
+
+1. On `/`, each row in the pipelines table has a trash icon on the right
+   edge → click it. Confirm this does **not** navigate into the pipeline
+   (the row itself is normally a click target) — a browser confirm dialog
+   pops up naming the pipeline and warning the delete is permanent.
+2. Click "Cancel" on the confirm dialog → confirm nothing happens, the
+   pipeline is still in the list, no network request was made.
+3. Click the trash icon again and confirm this time → the row disappears
+   from the table (list refetches; `DELETE /pipelines/{id}` returns `204`).
+4. Reload `/` → confirm the pipeline is really gone, not just hidden
+   client-side.
+5. Open the pipeline's canvas/rubrics/migrations tabs *before* deleting it,
+   note a stage id or migration id, then delete it and query the DB
+   directly (or `GET /pipelines/{id}/dag` → expect `404`) to confirm the
+   stage/rubric/migration/candidate rows are actually gone, not orphaned.
+6. Delete an id that doesn't exist (e.g. `curl -X DELETE
+   localhost:8000/pipelines/999999`) → confirm `404`, not a 500.
+
 ### 3.2 Rubric review (Rubrics tab, screen 4)
 
 1. Either seed rubrics for the imported pipeline via the dev-only script

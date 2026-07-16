@@ -1,6 +1,8 @@
+import type { MouseEvent } from "react";
 import { Link, useNavigate } from "@tanstack/react-router";
-import { useQuery } from "@tanstack/react-query";
-import { listPipelines } from "@/lib/api";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Trash2 } from "lucide-react";
+import { ApiError, deletePipeline, listPipelines, type PipelineSummary } from "@/lib/api";
 import { AppShell } from "@/components/app-shell";
 import { Dropzone } from "@/components/dropzone";
 import { Badge } from "@/components/ui/badge";
@@ -19,15 +21,40 @@ import { useImportStore } from "@/store/import-store";
 
 export default function Home() {
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const setPendingFile = useImportStore((s) => s.setPendingFile);
   const { data: pipelines, isLoading, isError, error } = useQuery({
     queryKey: ["pipelines"],
     queryFn: listPipelines,
   });
 
+  const deleteMutation = useMutation({
+    mutationFn: (pipelineId: number) => deletePipeline(pipelineId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["pipelines"] });
+    },
+  });
+
   function startImportWith(file: File) {
     setPendingFile(file);
     navigate({ to: "/pipelines/import" });
+  }
+
+  // Destructive + irreversible (hard delete, cascades to every stage,
+  // rubric, run, and migration underneath it) - requires an explicit
+  // confirm step, not a bare click. window.confirm is deliberate here:
+  // no modal/dialog primitive exists in the codebase yet (see
+  // components/ui/), and adding one just for this would be more surface
+  // area than a destructive-action gate needs.
+  function handleDeleteClick(event: MouseEvent, pipeline: PipelineSummary) {
+    event.stopPropagation();
+    if (deleteMutation.isPending) return;
+    const confirmed = window.confirm(
+      `Delete "${pipeline.name}"? This permanently removes its stages, rubrics, runs, and migrations. This can't be undone.`
+    );
+    if (confirmed) {
+      deleteMutation.mutate(pipeline.id);
+    }
   }
 
   return (
@@ -58,6 +85,15 @@ export default function Home() {
         {isError && (
           <p className="text-14 text-parity-fail" role="alert">
             Couldn't load pipelines: {error instanceof Error ? error.message : "unknown error"}
+          </p>
+        )}
+
+        {deleteMutation.isError && (
+          <p className="mb-4 text-14 text-parity-fail" role="alert">
+            Couldn't delete pipeline:{" "}
+            {deleteMutation.error instanceof ApiError
+              ? deleteMutation.error.message
+              : "unknown error"}
           </p>
         )}
 
@@ -95,6 +131,7 @@ export default function Home() {
               <TableHead>Models</TableHead>
               <TableHead>Benchmark queries</TableHead>
               <TableHead>Last migration parity</TableHead>
+              <TableHead className="w-12" />
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -133,6 +170,17 @@ export default function Home() {
                       no-score state communicates that, same component
                       that will show a real score once M4 exists. */}
                   <ParityBeam />
+                </TableCell>
+                <TableCell>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    aria-label={`Delete ${pipeline.name}`}
+                    disabled={deleteMutation.isPending}
+                    onClick={(event) => handleDeleteClick(event, pipeline)}
+                  >
+                    <Trash2 className="h-4 w-4 text-parity-fail" />
+                  </Button>
                 </TableCell>
               </TableRow>
             ))}

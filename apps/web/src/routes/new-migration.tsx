@@ -18,27 +18,6 @@ import { Badge } from "@/components/ui/badge";
 
 type WizardStep = "target-model" | "budget" | "confirm";
 
-type ModelFamily = "anthropic" | "gemini" | "openai" | "llama" | "generic";
-
-const _OPEN_WEIGHT_MARKERS = ["llama", "mistral", "mixtral", "gemma", "qwen", "deepseek", "phi", "vicuna", "falcon", "starcoder"];
-
-function resolveFamily(model: string): ModelFamily {
-  const lower = model.toLowerCase();
-  if (_OPEN_WEIGHT_MARKERS.some((m) => lower.includes(m))) return "llama";
-  if (lower.includes("claude")) return "anthropic";
-  if (lower.includes("gemini")) return "gemini";
-  if (lower.includes("gpt")) return "openai";
-  return "generic";
-}
-
-const FAMILY_TRANSFORM_LABELS: Record<ModelFamily, string> = {
-  anthropic: "XML-tagged sections (Anthropic convention)",
-  gemini: "Markdown headers (Gemini convention)",
-  openai: "Compression on mini/small variants only",
-  llama: "Compression on small variants only",
-  generic: "Compression on small variants only",
-};
-
 const STEPS: { id: WizardStep; label: string }[] = [
   { id: "target-model", label: "Target model" },
   { id: "budget", label: "Budget & parity threshold" },
@@ -183,7 +162,6 @@ export default function NewMigration() {
                 <div className="grid grid-cols-2 gap-3">
                   {(modelsQuery.data ?? []).map((option) => {
                     const checked = selectedModels.has(option.model);
-                    const family = resolveFamily(option.model);
                     return (
                       <label
                         key={option.model}
@@ -221,7 +199,9 @@ export default function NewMigration() {
                             {!option.requires_api_key && (
                               <Badge variant="neutral">No API key</Badge>
                             )}
-                            <Badge variant="neutral">{FAMILY_TRANSFORM_LABELS[family]}</Badge>
+                            {option.transform_descriptions.map((desc) => (
+                              <Badge key={desc} variant="neutral">{desc}</Badge>
+                            ))}
                           </div>
                         </div>
                       </label>

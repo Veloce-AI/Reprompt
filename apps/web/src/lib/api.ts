@@ -129,6 +129,8 @@ export interface ModelOption {
   supports_json_mode: boolean;
   supports_function_calling: boolean;
   requires_api_key: boolean;
+  family: string;
+  transform_descriptions: string[];
 }
 
 export interface TargetModelConfig {

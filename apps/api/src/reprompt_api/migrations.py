@@ -49,6 +49,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from reprompt_core.llm.model_card import applicable_rules, resolve_family
 from reprompt_core.llm.registry import get_model_capabilities
 
 from reprompt_api import models
@@ -83,6 +84,8 @@ class ModelOption(BaseModel):
     supports_json_mode: bool
     supports_function_calling: bool
     requires_api_key: bool
+    family: str
+    transform_descriptions: list[str]
 
 
 class TargetModelConfig(BaseModel):
@@ -131,6 +134,8 @@ def _to_option(model: str) -> ModelOption:
     output_cost_per_1m = (
         caps.output_cost_per_token * 1_000_000 if caps.output_cost_per_token is not None else None
     )
+    family = resolve_family(model)
+    rules = applicable_rules(model)
     return ModelOption(
         model=model,
         provider=caps.provider,
@@ -141,6 +146,8 @@ def _to_option(model: str) -> ModelOption:
         supports_json_mode=caps.supports_json_mode,
         supports_function_calling=caps.supports_function_calling,
         requires_api_key=caps.requires_api_key,
+        family=family,
+        transform_descriptions=[rule.description for rule in rules],
     )
 
 

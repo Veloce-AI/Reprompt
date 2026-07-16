@@ -66,6 +66,8 @@ function baseModels(): ModelOption[] {
       supports_json_mode: true,
       supports_function_calling: true,
       requires_api_key: true,
+      family: "openai",
+      transform_descriptions: ["Strip hedging/filler phrases and fold each paragraph's sentences into terse imperative bullet points."],
     },
     {
       model: "claude-haiku-4-5",
@@ -77,6 +79,8 @@ function baseModels(): ModelOption[] {
       supports_json_mode: true,
       supports_function_calling: true,
       requires_api_key: true,
+      family: "anthropic",
+      transform_descriptions: ["Wrap recognized labeled sections in XML-ish tags, per Anthropic's documented prompting guidance."],
     },
   ];
 }

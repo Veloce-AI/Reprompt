@@ -107,7 +107,16 @@ export default function PipelineWorkspace() {
 
   return (
     <AppShell>
-      <div className="flex h-full min-h-[calc(100vh-1px)] flex-col">
+      {/* h-[calc(100vh-1px)], not min-h - AppShell's <main> wrapper
+          ("mx-auto max-w-[1440px]") has no explicit height of its own, so
+          only an explicit (not min-) height here is a "definite size" per
+          the flexbox spec for percentage/flex-basis resolution to propagate
+          down through the Canvas tab's nested flex-item chain to
+          react-flow's own height:100% root - min-height alone produced a
+          real pixel value at each layer but never a spec-definite one, so
+          react-flow's DAG silently rendered in a 0-height viewport (see the
+          Canvas tab wrapper below for the fuller trace). */}
+      <div className="flex h-[calc(100vh-1px)] flex-col">
         <div className="border-b border-line px-8 py-4">
           <div className="flex items-start justify-between gap-4">
           {isEditingName ? (
@@ -166,7 +175,18 @@ export default function PipelineWorkspace() {
           </nav>
         </div>
 
-        <div className="flex-1 overflow-y-auto">
+        {/* flex + flex-col (not just the flex-1 item class) so the Canvas
+            tab's PipelineCanvas - whose default wrapper div is itself
+            "h-full min-h-[480px] flex-1" - gets a real flex-item main size
+            to grow into. Without display:flex here, that inner flex-1 is
+            inert (this div isn't a flex *container*), height:100% has no
+            definite ancestor height to resolve against (min-height doesn't
+            count per spec), and react-flow's own 100%-height root collapses
+            to 0 - the DAG's nodes render in the DOM (data/labels are all
+            present) but paint in a zero-height viewport, i.e. invisible.
+            Single child per tab (mutually exclusive conditionals below) so
+            this doesn't change layout for Data/Rubrics/Migrations. */}
+        <div className="flex flex-1 flex-col overflow-y-auto">
           {tab === "canvas" && (
             <PipelineCanvas
               pipelineId={pid}

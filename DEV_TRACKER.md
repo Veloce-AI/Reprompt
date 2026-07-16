@@ -100,6 +100,19 @@ the full design, plus a real schema gap (`judge_model` wasn't actually an
 accepted field on `TargetModelConfig`, so the override was dead code) and a
 circular-import fix found along the way. `apps/api` 165 passed (160 + 5
 new), `packages/core` untouched (305 passed, 2 skipped).
+**Product owner report investigated — "Canvas has nothing in it, Settings
+is empty, no rename" [FIXED — 2026-07-16]**: two of the three complaints
+didn't reproduce against current code (Settings' "Configured models" card
+and the pipeline-workspace Canvas route both work when actually driven in
+a browser); the third was a real CSS layout bug that made the Canvas
+tab's DAG genuinely invisible (correct data, zero-height viewport) despite
+looking fine in unit tests — see the dated section below for the full
+root-cause trace and fix. Inline rename was also added to the Pipelines
+home list itself (previously only in the workspace header, one click
+deeper than where the report said to look). `apps/web` 117 passed
+(unchanged - jsdom doesn't do real CSS layout, so this bug and its fix are
+both invisible to Vitest either way) + clean `tsc --noEmit`, `apps/api`
+165 passed (untouched), `packages/core` untouched.
 **Not started**: Phase 6 (final end-to-end manual verification).
 
 **Note for future sessions/developers**: each phase above updates
@@ -107,6 +120,95 @@ new), `packages/core` untouched (305 passed, 2 skipped).
 `docs/TESTING.md` for anything screen/behavior-facing. Don't create a
 separate status doc; just flag completion inline in whichever `.md` file
 the change actually touches.
+
+## Product owner report — "Canvas has nothing in it, Settings is empty, no rename" [FIXED — 2026-07-16]
+
+Product owner was looking at the live Pipelines home page (real, populated
+table - matches this file's own description of it) and raised three
+complaints. Killed stale dev-server processes first (Windows `netstat -ano`
++ PowerShell `Stop-Process`, `kill -0`/`kill %N` don't work reliably here -
+see `feedback_gitbash_kill0_unreliable.md`; one port-8000 process turned
+out to be an unkillable-but-healthy Windows networking ghost socket with no
+matching PID in `Get-Process`/`tasklist`/`Get-CimInstance` - verified it
+was actually still the correct live API via `GET /openapi.json` rather than
+fight it further), then actually drove the app with Playwright (already a
+project dependency for `apps/web/e2e/`, `playwright.config.ts` has
+`reuseExistingServer: true` so it attached to the already-running dev
+server) via the dev magic-link flow, rather than assuming from reading code
+or repeating "just hard refresh."
+
+**1. "Nothing is in Settings" - did not reproduce.** `/settings`'s
+"Configured models" card (built in "Settings page — real
+model-configuration content [DONE — 2026-07-15]" below) rendered fully
+with real data (the curated no-key-required Ollama models, cost, prompt
+family, transform-rule pills) on a fresh sign-in, zero console errors,
+screenshot confirms it visually matches the rest of the app's Card-based
+design language. Not a regression to fix.
+
+**2. "The canvas and all, nothing is there" - REAL bug, found and fixed.**
+Clicking a pipeline row on the home list correctly routed to
+`/pipelines/$id?tab=canvas` (`apps/web/src/routes/home.tsx`'s row
+`onClick`) and the DOM/React Query data were both genuinely present (35
+stage nodes with real names/models/token counts in `body.innerText`,
+`.react-flow__node` count = 35, 0 console errors) - but a screenshot of the
+same page showed a **completely blank canvas**. Root-caused via
+`page.evaluate()` measuring `getBoundingClientRect`/`getComputedStyle` down
+the DOM chain in `apps/web/src/routes/pipeline-workspace.tsx`: the Canvas
+tab's content wrapper (`<div className="flex-1 overflow-y-auto">`, line
+~169) is a plain block div, not `display:flex` - so `PipelineCanvas`'s own
+wrapper (`h-full min-h-[480px] flex-1`, `pipeline-canvas.tsx` line 98) only
+ever got its height from `min-height` (480px), never from `h-full`. Per the
+CSS spec, a `min-height`-derived size does not count as an "explicitly
+specified" (definite) height for descendants' `height:100%` resolution -
+so `@xyflow/react`'s own `.react-flow` root (inline `height:100%`, and all
+its meaningful children are `position:absolute` so it has no in-flow
+content to size itself by either) collapsed to computed `height:0px`.
+React Flow then laid out and positioned all 35 nodes correctly *inside a
+zero-height viewport* - real data, real DOM, invisible paint. This is
+exactly the failure mode unit tests can't catch (jsdom doesn't run real
+CSS layout - `pipeline-workspace.test.tsx`'s existing "renders the
+pipeline canvas" test passed before, during, and after this fix, because
+it only asserts the DOM node exists, never that it has nonzero height).
+
+Confirmed via the working sibling case first
+(`migration-success-screen.tsx` line 174 wraps the same `PipelineCanvas` in
+a div with an *explicit* `h-[420px]`, not `min-h-`, and that one has always
+rendered correctly) before changing anything, then fixed at the actual
+root of the chain rather than patching every intermediate layer: changed
+`pipeline-workspace.tsx`'s outer workspace container from
+`"flex h-full min-h-[calc(100vh-1px)] flex-col"` to
+`"flex h-[calc(100vh-1px)] flex-col"` (an explicit height, still
+viewport-relative so no behavior change in the normal case, but now a
+spec-definite size that correctly propagates through every `flex-1`/
+`h-full` step below it) and made the Canvas tab's content wrapper a real
+flex container (`"flex-1 overflow-y-auto"` → `"flex flex-1 flex-col
+overflow-y-auto"`) so `PipelineCanvas`'s own `flex-1` (previously inert -
+its parent wasn't `display:flex`) actually takes effect. Re-measured after
+the fix: `.react-flow` height went from `0px` to `603.4px`, screenshot
+confirms all 35 stage nodes now paint with names/models/token counts and
+working pan/zoom controls. Single child per tab (the four tab branches are
+mutually exclusive) so this doesn't change layout for Data/Rubrics/
+Migrations.
+
+**3. "Edit pipeline name is not there" - real gap, not a bug (expected,
+called out in the task brief).** Inline rename already existed in the
+pipeline workspace header (`pipeline-workspace.tsx`'s `startEditingName`/
+`saveName`, click-to-edit pattern) but not on the Pipelines home list the
+owner was actually looking at. Added the identical pattern to
+`apps/web/src/routes/home.tsx`: click a row's name → editable `Input` →
+`Enter`/blur saves via the same `PATCH /pipelines/{id}`
+(`updatePipeline`) the workspace already uses → optimistic
+`queryClient.setQueryData` update, same pattern the row's own delete
+button already uses on this screen. `event.stopPropagation()` on the name
+button/input so clicking to rename doesn't also trigger the row's
+navigate-into-workspace `onClick`. Verified round-trip live (rename →
+confirm persisted in the table → rename back), no accidental navigation.
+
+**Verification**: `apps/web` typecheck clean, `117 passed` (unchanged from
+baseline - confirmed via `git stash` before/after comparison, since this
+CSS bug and its fix are both invisible to jsdom-based Vitest either way).
+`apps/api` `165 passed` (untouched - this was a frontend-only investigation
+and fix). `packages/core` untouched. No schema/API changes.
 
 ## Model auto-selection for rubric generation [DONE — 2026-07-16]
 

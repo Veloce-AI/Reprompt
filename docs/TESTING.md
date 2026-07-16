@@ -227,7 +227,13 @@ drawer.
 4. On the Canvas tab, click any stage node → a drawer slides in from the
    right showing that stage's rubric (format checks + content criteria) and
    an "Approve" button. Approving from the drawer updates the badge in
-   place without closing the drawer or navigating away.
+   place without closing the drawer or navigating away. (A CSS layout bug
+   made this tab paint completely blank — correct data, zero-height
+   viewport — until 2026-07-16; see `DEV_TRACKER.md`'s "Product owner
+   report" section for the root cause. If nodes ever go invisible again on
+   this tab specifically, check the Canvas tab's content wrapper is still a
+   real `flex` container, not just a `flex-1` item, before assuming it's a
+   data problem.)
 5. In the drawer, click "View full rubric →" → the workspace switches to
    the Rubrics tab and scrolls straight to that stage's card (each card has
    an anchor id — no other card should end up at the top of the viewport
@@ -317,6 +323,25 @@ migrations/candidates), no soft-delete/undo.
    stage/rubric/migration/candidate rows are actually gone, not orphaned.
 6. Delete an id that doesn't exist (e.g. `curl -X DELETE
    localhost:8000/pipelines/999999`) → confirm `404`, not a 500.
+
+### 3.1f Inline rename (Pipelines home)
+
+Added 2026-07-16 — see `DEV_TRACKER.md`'s "Product owner report — 'Canvas
+has nothing in it, Settings is empty, no rename'" section. Rename already
+existed one click deeper, in the workspace header (§3.1b step 1) — this
+adds it to the home list itself, same `PATCH /pipelines/{id}` endpoint.
+
+1. On `/`, click directly on a pipeline's name in the table (not the row
+   itself — clicking elsewhere in the row still navigates into the
+   workspace as before) → it turns into a text input, same click-to-edit
+   affordance as the workspace header.
+2. Change it, press Enter (or click away) → confirm it saves and the table
+   cell shows the new name. Confirm the page does **not** navigate away
+   (renaming from the list should never accidentally open the pipeline).
+3. Press Escape while editing → confirm it discards the draft instead of
+   saving.
+4. Reload `/` → confirm the new name persisted server-side, not just in
+   local state.
 
 ### 3.2 Rubric review (Rubrics tab, screen 4)
 

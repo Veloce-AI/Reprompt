@@ -1,13 +1,20 @@
-import type { MouseEvent } from "react";
+import { useState, type KeyboardEvent, type MouseEvent } from "react";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Trash2 } from "lucide-react";
-import { ApiError, deletePipeline, listPipelines, type PipelineSummary } from "@/lib/api";
+import {
+  ApiError,
+  deletePipeline,
+  listPipelines,
+  updatePipeline,
+  type PipelineSummary,
+} from "@/lib/api";
 import { AppShell } from "@/components/app-shell";
 import { Dropzone } from "@/components/dropzone";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
 import {
   Table,
   TableBody,
@@ -34,6 +41,46 @@ export default function Home() {
       queryClient.invalidateQueries({ queryKey: ["pipelines"] });
     },
   });
+
+  // Inline rename, right on the row - same PATCH /pipelines/{id} the
+  // workspace header's "click to rename" already uses (pipeline-workspace.tsx),
+  // just reachable one click sooner: this list is what a user actually
+  // lands on first, and having to open a pipeline just to rename it was the
+  // gap. Tracks which row (by id) is being edited rather than a boolean, so
+  // only one row edits at a time and clicking a different name mid-edit
+  // swaps cleanly.
+  const [editingId, setEditingId] = useState<number | null>(null);
+  const [nameDraft, setNameDraft] = useState("");
+
+  const renameMutation = useMutation({
+    mutationFn: ({ id, name }: { id: number; name: string }) => updatePipeline(id, { name }),
+    onSuccess: (updated) => {
+      queryClient.setQueryData<PipelineSummary[]>(["pipelines"], (old) =>
+        old ? old.map((p) => (p.id === updated.id ? updated : p)) : old
+      );
+      setEditingId(null);
+    },
+  });
+
+  function startEditingName(event: MouseEvent, pipeline: PipelineSummary) {
+    event.stopPropagation();
+    setNameDraft(pipeline.name);
+    setEditingId(pipeline.id);
+  }
+
+  function saveName(pipeline: PipelineSummary) {
+    const trimmed = nameDraft.trim();
+    if (!trimmed || trimmed === pipeline.name) {
+      setEditingId(null);
+      return;
+    }
+    renameMutation.mutate({ id: pipeline.id, name: trimmed });
+  }
+
+  function handleNameKeyDown(event: KeyboardEvent<HTMLInputElement>, pipeline: PipelineSummary) {
+    if (event.key === "Enter") saveName(pipeline);
+    if (event.key === "Escape") setEditingId(null);
+  }
 
   function startImportWith(file: File) {
     setPendingFile(file);
@@ -97,6 +144,15 @@ export default function Home() {
           </p>
         )}
 
+        {renameMutation.isError && (
+          <p className="mb-4 text-14 text-parity-fail" role="alert">
+            Couldn't rename pipeline:{" "}
+            {renameMutation.error instanceof ApiError
+              ? renameMutation.error.message
+              : "unknown error"}
+          </p>
+        )}
+
         {pipelines && pipelines.length === 0 && (
           <Card className="border-dashed">
             <CardContent className="flex flex-col items-center gap-6 p-16">
@@ -148,7 +204,27 @@ export default function Home() {
                 }
               >
                 <TableCell className="font-medium text-ink">
-                  {pipeline.name}
+                  {editingId === pipeline.id ? (
+                    <Input
+                      autoFocus
+                      value={nameDraft}
+                      onChange={(e) => setNameDraft(e.target.value)}
+                      onClick={(e) => e.stopPropagation()}
+                      onKeyDown={(e) => handleNameKeyDown(e, pipeline)}
+                      onBlur={() => saveName(pipeline)}
+                      aria-label="Pipeline name"
+                      className="max-w-xs"
+                    />
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={(e) => startEditingName(e, pipeline)}
+                      className="rounded-control text-left hover:underline"
+                      title="Click to rename"
+                    >
+                      {pipeline.name}
+                    </button>
+                  )}
                 </TableCell>
                 <TableCell className="font-mono tabular-nums">
                   {pipeline.stage_count}

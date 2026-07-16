@@ -152,22 +152,31 @@ causes a later `alembic upgrade head` to fail).
 ```
 /                                      Pipelines home
 /pipelines/import                      Import wizard (3 steps)
-/pipelines/$pipelineId                 Pipeline canvas (React Flow DAG)
-/pipelines/$pipelineId/rubrics         Rubric review (screen 4)
-/pipelines/$pipelineId/migrations/new  New migration wizard (screen 5)
+/pipelines/$pipelineId?tab=canvas      Pipeline workspace — Canvas tab (default, React Flow DAG)
+/pipelines/$pipelineId?tab=data        Pipeline workspace — Data tab (StageRecord browser, Phase 3)
+/pipelines/$pipelineId?tab=rubrics     Pipeline workspace — Rubrics tab (screen 4)
+/pipelines/$pipelineId?tab=migrations  Pipeline workspace — Migrations tab (screen 5)
 /login                                 Request a magic link
 /auth/verify?token=...                 Exchange a magic link for a session
 /settings                              Workspace name + BYOK API keys
 /dev/kit                               Design system reference (not a product screen)
 ```
 
+**The old three-route shape** (`/pipelines/$id`, `/pipelines/$id/rubrics`,
+`/pipelines/$id/migrations/new` as separate screens) was replaced 2026-07-15
+by the single unified workspace above — see DEV_TRACKER.md's "Phase 1 —
+Unified pipeline workspace". `/pipelines/$id/rubrics` and
+`/pipelines/$id/migrations/new` still work as URLs (any old bookmark or
+shared link) but now just redirect into the matching tab of
+`/pipelines/$id` — they render nothing of their own anymore.
+
 **The real click-path** through the product as built so far:
 
 ```
 /  →  (drop a trace file)  →  /pipelines/import
    →  (validate, continue)  →  DAG preview  →  "View pipeline canvas"
-   →  /pipelines/$id        →  "Review rubrics"  →  /pipelines/$id/rubrics
-                             →  "New migration"   →  /pipelines/$id/migrations/new
+   →  /pipelines/$id (Canvas tab)  →  click "Rubrics" tab  →  ?tab=rubrics
+                                    →  click "Migrations" tab  →  ?tab=migrations
 ```
 
 Auth and Settings are a separate, currently-unconnected flow — nothing
@@ -197,34 +206,277 @@ calling a milestone done.
 5. Back at `/`, the table now shows the imported pipeline (not the empty
    state) with correct stage count, model badges, benchmark query count.
 
-### 3.2 Rubric review (screen 4)
+### 3.1b Unified pipeline workspace (tabs, inline rename, rubric drawer)
 
-1. Seed rubrics for the imported pipeline (no generator exists yet — this
-   is a dev-only step): `cd apps/api && uv run python -m
-   reprompt_api.seed_rubrics --pipeline-id <id>`.
-2. From the canvas, click "Review rubrics" → each stage shows three
+Added 2026-07-15 — see DEV_TRACKER.md's "Phase 1 — Unified pipeline
+workspace". Covers the persistent header/tab bar that now wraps the Canvas,
+Data, Rubrics, and Migrations screens, plus the canvas's new node-click
+drawer.
+
+1. On `/pipelines/$id`, click directly on the pipeline name in the header →
+   it turns into a text input. Change it, press Enter (or click away) →
+   confirm it saves (`PATCH /pipelines/{id}`) and the header shows the new
+   name after the input closes. Press Escape while editing → confirm it
+   discards the draft instead of saving.
+2. Click each of the four tab buttons (Canvas · Data · Rubrics ·
+   Migrations) → confirm the URL's `?tab=` query param changes to match and
+   the body below swaps — the header and tab bar itself never re-render/flash.
+3. The Data tab now shows the real StageRecord browser — see §3.1c below
+   for its own walkthrough (built in Phase 3, 2026-07-16; it used to be a
+   plain "Coming soon" panel).
+4. On the Canvas tab, click any stage node → a drawer slides in from the
+   right showing that stage's rubric (format checks + content criteria) and
+   an "Approve" button. Approving from the drawer updates the badge in
+   place without closing the drawer or navigating away.
+5. In the drawer, click "View full rubric →" → the workspace switches to
+   the Rubrics tab and scrolls straight to that stage's card (each card has
+   an anchor id — no other card should end up at the top of the viewport
+   for even a frame first).
+6. Visit `/pipelines/$id/rubrics` or `/pipelines/$id/migrations/new`
+   directly (typed URL or an old bookmark) → confirm each redirects to
+   `/pipelines/$id?tab=rubrics` / `?tab=migrations` respectively, landing on
+   the right tab with the right tab button visually active.
+
+### 3.1c Import new run (project/multi-run ingestion)
+
+Added 2026-07-16 — see `DEV_TRACKER.md`'s "Phase 2 — Project/multi-run
+ingestion". Lets a second (third, ...) trace file be attached to an
+*existing* pipeline as a new benchmark run, instead of always creating a
+brand-new pipeline.
+
+1. On `/pipelines/$id`, click "Import new run" in the header (next to the
+   pipeline name) → a drawer slides in from the right with a drop zone.
+2. Drop a trace file whose stages exactly match the pipeline's existing
+   ones (same `id`/model/prompt_template/system_prompt/params) →
+   `POST /pipelines/{id}/import` succeeds, the drawer shows "Run imported —
+   N stages, M traces.", and the existing `Stage` rows are reused (no
+   duplicate stages appear on the Canvas tab after closing the drawer).
+3. Drop a trace file that adds one genuinely new stage (a new `id` not seen
+   before) → succeeds, stage count grows by one; reopen the Canvas tab and
+   confirm the new node appears, wired to whatever it `depends_on`.
+4. Drop a trace file where an existing stage's `id` is unchanged but its
+   `model`/`prompt_template`/`system_prompt`/`params` differ from what's
+   already stored → the drawer shows a red "Import failed" panel naming the
+   conflicting stage (422 from the API) — nothing is persisted; "Try a
+   different file" clears the error so you can pick another file without
+   closing and reopening the drawer.
+5. `GET /pipelines/{id}/runs` (curl or devtools network tab) returns one
+   entry per successful run, each `{id, name, created_at, trace_count}` —
+   not yet surfaced as its own list in the UI (only the "Import new run"
+   action itself is built this phase).
+
+### 3.1d Data tab — StageRecord browser (Phase 3, 2026-07-16)
+
+A read-only, spreadsheet-style browser over every `StageRecord` (input,
+rendered prompt, output, tokens/cost/latency) captured for a pipeline's
+benchmark traces. No edit/approve affordances here by design — that stays
+exclusive to the Rubrics tab.
+
+1. On `/pipelines/$id?tab=data`, confirm a table renders with columns:
+   Trace · Stage · Input · Rendered Prompt · Output · Tok in · Tok out ·
+   Cost · Latency — the three text columns (Input/Rendered Prompt/Output)
+   show truncated (~80 char) previews, not the full text.
+2. Use the "Stage" dropdown above the table (default "All stages",
+   populated from the same DAG fetch the Canvas tab uses) to filter down to
+   one stage → confirm only that stage's rows remain and the row count
+   drops accordingly.
+3. Click any row → a drawer slides in from the right (same drawer
+   component the Canvas tab's rubric drawer uses) showing that record's
+   full, untruncated input (pretty-printed JSON), rendered prompt, and
+   output, plus its exact token/cost/latency figures.
+4. Scroll a pipeline with many benchmark traces → confirm more rows load
+   in automatically as you approach the bottom (cursor pagination against
+   `GET /pipelines/{id}/stage-records`, ~50 records per page) without a
+   visible "load more" click or a full page re-fetch.
+5. **Deliberately not built yet, not a bug**: no Run filter/dropdown (a
+   fast follow-on once Phase 2's `GET /pipelines/{id}/runs` multi-run
+   endpoint lands — see `DEV_TRACKER.md`'s Phase 3 entry) and no text
+   search box (out of scope, would need real indexing).
+
+### 3.1e Delete a pipeline (Pipelines home)
+
+Added 2026-07-16 — see `DEV_TRACKER.md`'s "Pipeline delete" section. Closes
+out the Pipeline CRUD backlog item (create/import, read, rename, and now
+delete are all built). Hard delete — permanently removes the pipeline and
+everything under it (stages, rubrics, benchmark sets/traces/stage records,
+migrations/candidates), no soft-delete/undo.
+
+1. On `/`, each row in the pipelines table has a trash icon on the right
+   edge → click it. Confirm this does **not** navigate into the pipeline
+   (the row itself is normally a click target) — a browser confirm dialog
+   pops up naming the pipeline and warning the delete is permanent.
+2. Click "Cancel" on the confirm dialog → confirm nothing happens, the
+   pipeline is still in the list, no network request was made.
+3. Click the trash icon again and confirm this time → the row disappears
+   from the table (list refetches; `DELETE /pipelines/{id}` returns `204`).
+4. Reload `/` → confirm the pipeline is really gone, not just hidden
+   client-side.
+5. Open the pipeline's canvas/rubrics/migrations tabs *before* deleting it,
+   note a stage id or migration id, then delete it and query the DB
+   directly (or `GET /pipelines/{id}/dag` → expect `404`) to confirm the
+   stage/rubric/migration/candidate rows are actually gone, not orphaned.
+6. Delete an id that doesn't exist (e.g. `curl -X DELETE
+   localhost:8000/pipelines/999999`) → confirm `404`, not a 500.
+
+### 3.2 Rubric review (Rubrics tab, screen 4)
+
+1. Either seed rubrics for the imported pipeline via the dev-only script
+   (`cd apps/api && uv run python -m reprompt_api.seed_rubrics
+   --pipeline-id <id>`), **or** use the real generator now built into the
+   tab itself, at `/pipelines/$pipelineId?tab=rubrics`: leave the "Model
+   (optional — auto-selected if left blank)" field at the top **blank** and
+   click "Generate all rubrics" — the server picks a model itself
+   (`reprompt_core.llm.model_select.select_model`, purpose
+   `"rubric_generation"`) from whatever this workspace has configured (see
+   §3.4 below for adding a BYOK key first; with zero keys configured, it
+   still succeeds by falling back to a no-key local `ollama/...` model).
+   Makes one real LLM call per stage. Each stage's card header shows a
+   small "— generated using `<model>`" caption once its call returns,
+   confirming which model was actually picked.
+   Alternatively, type a specific model name (e.g. `openai/gpt-4o`) into
+   that field first — an explicit model always wins over auto-selection,
+   same as before, and needs a real BYOK key configured for that model's
+   provider.
+2. From the canvas, click the "Rubrics" tab → each stage shows three
    grouped sections: Format checks, Content criteria, Downstream contract
    — all in plain English (no raw JSON/schema shown to the reviewer).
 3. Edit a `required_keys` or `length_bounds` check inline, save, reload,
    confirm the edit persisted.
 4. Approve one stage, then "Approve all" → confirm every stage shows
    approved.
+5. Per-stage "Regenerate" also works with the model field left blank
+   (auto-selects again) — it's no longer disabled/blocked on an empty
+   field the way it was before model auto-selection existed.
 
-### 3.3 New migration wizard (screen 5)
+### 3.3 New migration wizard (Migrations tab, screen 5)
 
-1. From the canvas, click "New migration" → step 1 shows the model picker
+1. From the canvas, click the "Migrations" tab → step 1 shows the model picker
    with cost/context-window/JSON-mode info per model (including at least
    one local/no-key model like an `ollama/...` entry, which should show
-   `requires_key: false`).
+   `requires_key: false`) and, next to each model option, its model-card
+   info fetched from `GET /model-cards/{model}` — resolved prompt family
+   (anthropic/gemini/openai/llama/generic) and which transform rules will
+   actually apply to that specific model (e.g. "xml_wrap_sections" for a
+   Claude target, "terseify_if_small" only for a nano/mini/haiku-class
+   model) — see `DEV_TRACKER.md`'s "Phase D(a)".
 2. Set a bulk default model, override one stage individually.
 3. Step 2: set a budget and parity threshold (default 95%).
 4. Step 3: confirm screen shows the full config correctly, including the
    per-stage override.
 5. Click "Run migration" → **expected**: a real `Migration` row is
-   created (status "pending"), and the UI honestly states the optimizer
-   that would actually run it doesn't exist yet. If you ever see a fake
-   progress bar or "running" animation here, that's a regression — this
-   screen is explicitly not allowed to pretend M3 exists until it does.
+   created and the optimizer actually runs (M3/M4 wiring — Phase 4/4b —
+   landed after this section was first written; the "no fake progress bar"
+   caveat that used to live here is stale and superseded by the live view
+   below). Needs a real BYOK key configured — see `README.md`'s "Getting
+   an AI model API key" section.
+5a. Once started, a subtitle line appears above the run bar: "Optimizing
+   with **Prism** — a self-evolving prompt optimizer", with a **"How Prism
+   works"** text link next to it. Click the link → a drawer opens (same
+   drawer primitive used elsewhere) titled "How Prism works" with two
+   short factual paragraphs on the actual loop (judge-aware critique, up
+   to 3 refine rounds, budget-bounded, per-stage) and one paragraph on
+   what it doesn't do — explicitly states Prism doesn't carry learnings
+   between separate migrations, each migration evolves its own prompt
+   from scratch. Press Escape or click the drawer's close (X) button to
+   dismiss it — see `apps/web/src/components/prism-explainer.tsx` and the
+   dated "Branding/copy pass" section in `DEV_TRACKER.md`.
+6. While it's running: the pipeline DAG canvas appears live, with the
+   currently-optimizing stage's node pulsing indigo (Phase 2 — "Live
+   DAG/run status view") and, directly under its name, a small sub-step
+   line reading e.g. "Running — critiquing weakest candidates" or
+   "Running — running parameter sweep" that updates roughly every 2s as
+   the optimizer moves through mutation, critique/refine rounds
+   (Prism strategy only), and the final sweep/score pass (Phase A — "Live
+   optimizer sub-step signal", see `DEV_TRACKER.md`). Finished stages turn
+   green, a failed/budget-stopped stage turns red with the reason shown in
+   the run bar above the canvas.
+6a. **Click the currently-running (pulsing indigo) stage node** → a drawer
+   opens on the right (same drawer primitive as the Canvas tab's rubric
+   drawer) showing the live reasoning captured for that stage so far — once
+   a Prism critique/refine round completes, this shows the actual critique
+   text (why that candidate scored the way it did and what changed), not
+   just a phase name. Click a done/idle/failed node instead → nothing
+   happens (only a running node has a live reasoning feed to show; see
+   Phase B — "Live reasoning feed + activity log" in `DEV_TRACKER.md`).
+6b. Below the canvas, an **"Activity log"** panel lists every phase
+   transition across every stage so far, one line each — "Stage {name}:
+   {reasoning text or phase label}" — newest at the bottom, auto-scrolling
+   as new entries arrive on the same ~2s poll (no separate polling
+   mechanism). Entries persist across a page reload (`GET .../status`'s
+   `activity_log` field, capped at the most recent 100 entries server-side)
+   and are visible during a run and after it finishes/fails.
+7. Click "Back to pipeline canvas" from the run screen → confirm it just
+   switches the tab bar back to Canvas (`?tab=canvas`), not a full page
+   navigation away from the workspace.
+8. Switch to another tab and back to Migrations (or reload the page while
+   on `?tab=migrations`) → confirm you land straight back on this same
+   run/success screen (`GET /pipelines/{id}/migrations` finding the
+   existing `Migration` row), not the wizard again — the wizard only shows
+   when a pipeline has no `Migration` yet.
+9. Once the run reaches a terminal state (Completed/Failed/Stopped early —
+   step 6 above), scroll down past the Activity log → a **"Results —
+   before / after prompts"** section appears (Phase C — "Before/after
+   prompt diff", see `DEV_TRACKER.md`), one card per stage that got at
+   least one attempt: the stage name, which target model won, its
+   composite score, and the original prompt against the winning prompt
+   shown as an inline word diff — removed text struck through in red,
+   added text highlighted in green, unchanged text plain. No click needed,
+   it's visible as soon as the section renders. This section never appears
+   while the run is still "Running" (nothing worth showing yet).
+
+### 3.3a Migration results (before/after prompt diff)
+
+Added 2026-07-16 — see `DEV_TRACKER.md`'s "Phase C — Before/after prompt
+diff". Read-only, display-only: no new optimizer/scoring logic, just
+surfacing `Stage.prompt_template` against whichever `Candidate` row scored
+highest for that stage on this migration.
+
+1. `GET /pipelines/{id}/migrations/{migration_id}/results` (curl or
+   devtools network tab) on a migration that hasn't started yet → `[]`.
+2. Same request mid-run (any stage that's finished at least one attempt) →
+   already returns entries for those stages, even though the migration
+   itself is still `"running"` — this endpoint isn't gated on terminal
+   status, only on a stage actually having a `Candidate` row yet.
+3. Same request once the migration is terminal → one entry per stage that
+   ever got an attempt, each `{stage_id, stage_name, original_prompt,
+   winning_prompt, winning_model, score}`.
+4. In the UI (§3.3 step 9 above): the diff highlighting is genuinely
+   word-level, not whole-paragraph — only the changed words/phrases are
+   colored, everything the optimizer left untouched renders as plain text
+   in between.
+
+### 3.3b Judge/mutator model selection (decoupled from target models)
+
+Added 2026-07-16 — see `DEV_TRACKER.md`'s "Fix judge/mutator self-grading
+bias". Backend-only fix, no UI surface yet: `target_model_config.models` is
+the user's own choice of model(s) under test; the judge (scores candidate
+outputs) and mutator (mutates/critiques/refines candidate prompts) are
+Reprompt's own harness infrastructure and must never silently fall back to
+one of the target models, so a model never grades or refines its own
+output. Verify via the API directly (curl or devtools network tab), same
+pattern as §3.3a:
+
+1. `POST /pipelines/{id}/migrations` with `target_model_config:
+   {"models": ["gpt-4o-mini"]}` (no `judge_model`/`mutator_model` key at
+   all) → `201`, and the response's `target_model_config` is exactly
+   `{"models": ["gpt-4o-mini"]}` — no `null`-valued `judge_model`/
+   `mutator_model` keys padded in. Once the migration runs, its judge and
+   mutator are auto-selected from the workspace's own configured models
+   (`GET /pipelines/{id}/models`'s BYOK-filtered set), independent of
+   `models` above — confirmed automatically by
+   `apps/api/tests/test_optimizer_runner.py::test_judge_and_mutator_auto_select_from_workspace_not_target_model`.
+2. Same request with `target_model_config: {"models": ["gpt-4o-mini"],
+   "judge_model": "claude-haiku-4-5", "mutator_model": "gpt-4o"}` → the
+   response's `target_model_config` includes both override keys exactly as
+   sent (round-trips through the schema rather than being silently
+   dropped) — an explicit override always wins outright over auto-select
+   for either key.
+3. There's no UI element yet showing which model actually judged/mutated a
+   run — only `models` (the run's target model list) is visible in the
+   wizard and results section (§3.3a). A future UI phase could surface
+   `judge_model`/`mutator_model` (effective or overridden) next to a
+   migration's results; not built here, scope was the backend
+   plumbing/self-grading-bias fix only.
 
 ### 3.4 Auth + Settings (M5)
 
@@ -241,11 +493,23 @@ calling a milestone done.
    reappear anywhere in the UI or a network response after the initial
    save.
 6. Delete the key, confirm it's gone from the list.
-7. **Known gap, not yet built**: a saved key doesn't do anything live yet
-   beyond the one proof-of-concept endpoint
-   (`POST /pipelines/{id}/stages/{id}/test-prompt`, see `apps/api/src/reprompt_api/llm_context.py`)
-   — it isn't wired into the rubric generator or optimizer because
-   neither of those exist yet either.
+7. Scroll down to the **"Configured models"** card (new, 2026-07-15 — this
+   used to be the empty/undersized part of the page): before adding any
+   key, it lists only the no-key-required curated models (the `ollama/...`
+   entries, since local/self-hosted models never need a BYOK key). Add an
+   API key for `openai` (step 5 above) → reload/refetch → `gpt-4o` and
+   `gpt-4o-mini` now appear too, grouped under an "openai" heading. Each
+   model shows input/output cost per 1M tokens (or "Free (local)"),
+   its resolved prompt family, and a pill per model-card transform rule
+   that will actually apply to it — the same underlying data as the
+   migration wizard's model picker (§3.3 step 1,
+   `GET /settings/models`/`apps/api/src/reprompt_api/settings.py`), just
+   surfaced globally instead of buried inside one pipeline's wizard.
+8. A saved key is wired into: the model-picker/wizard's live model calls,
+   the rubric generator (§3.2), and the optimizer (§3.3) — all three read
+   workspace BYOK keys via `complete_with_workspace_credentials`
+   (`apps/api/src/reprompt_api/llm_context.py`). Not wired: nothing left
+   outstanding here that's specific to Settings itself.
 
 ### 3.5 Design system sanity check
 
@@ -263,8 +527,8 @@ Windows process-killing quirks, etc.) are in `DEVELOPMENT.md` §Testing.
 Quick reference:
 
 ```bash
-cd packages/core && uv run pytest -v   # trace/DAG/evaluators/judge/scoring/sweep/budget/model-card
-cd apps/api && uv run pytest -v        # models/ingest/pipelines/rubrics/migrations/auth/settings
+cd packages/core && uv run pytest -v   # trace/DAG/evaluators/judge/scoring/sweep/budget/model-card/model-select
+cd apps/api && uv run pytest -v        # models/ingest/pipelines/stage_records/rubrics/migrations/auth/settings
 cd apps/web && npx tsc --noEmit && pnpm test   # typecheck + Vitest
 cd apps/web && npx playwright test     # needs the API running separately first, see DEVELOPMENT.md
 ```
@@ -273,11 +537,16 @@ cd apps/web && npx playwright test     # needs the API running separately first,
 
 - No route guards on any pipeline/rubric/migration screen — auth exists
   but nothing requires being logged in yet, by design.
-- No rubric *generator* — rubrics only exist if hand-seeded via
-  `seed_rubrics.py`.
-- No optimizer — "Run migration" creates a config record, nothing more.
-- No scorecard screen, no config export — both need real migration
-  results that don't exist without an optimizer.
+- No API endpoint runs the raw `Sample Queries/*.txt` query-log converter
+  (`reprompt_core.importers.query_log.convert_file`) — dropping one of
+  those files straight into the import wizard fails validation (it's not
+  yet in the universal trace schema shape). Convert it to JSON with that
+  function first (one Python call, see §3.1) before importing via the UI.
+  A real, pre-existing gap (not something this session broke) — worth
+  closing with a proper API-side conversion step in a future pass.
+- No scorecard screen, no config export — both need a full M4 3-pass
+  migration run's real results, which the current single-pass M3 loop
+  doesn't produce yet.
 - Docker/Postgres path exists but is untested in this environment by
   choice (SQLite only so far).
 

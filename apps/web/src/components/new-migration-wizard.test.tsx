@@ -2,15 +2,8 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import { fireEvent } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import {
-  createMemoryHistory,
-  createRootRoute,
-  createRoute,
-  createRouter,
-  RouterProvider,
-} from "@tanstack/react-router";
-import NewMigration from "./new-migration";
-import type { DagResponse, ModelOption } from "@/lib/api";
+import { NewMigrationWizard } from "./new-migration-wizard";
+import type { DagResponse, ModelOption, ModelCardInfo } from "@/lib/api";
 
 vi.mock("@/lib/api", async () => {
   const actual = await vi.importActual<typeof import("@/lib/api")>("@/lib/api");
@@ -19,14 +12,11 @@ vi.mock("@/lib/api", async () => {
     getPipelineDag: vi.fn(),
     listModelOptions: vi.fn(),
     createMigration: vi.fn(),
+    getModelCard: vi.fn(),
   };
 });
 
-import { createMigration, getPipelineDag, listModelOptions } from "@/lib/api";
-
-// TanStack Router's scroll restoration calls window.scrollTo, which jsdom
-// doesn't implement - stub it out (same pattern as rubric-review.test.tsx).
-window.scrollTo = vi.fn() as unknown as typeof window.scrollTo;
+import { createMigration, getPipelineDag, listModelOptions, getModelCard } from "@/lib/api";
 
 function baseDag(): DagResponse {
   return {
@@ -85,27 +75,30 @@ function baseModels(): ModelOption[] {
   ];
 }
 
-function renderAtPipeline(pipelineId: string) {
-  const rootRoute = createRootRoute();
-  const route = createRoute({
-    getParentRoute: () => rootRoute,
-    path: "/pipelines/$pipelineId/migrations/new",
-    component: NewMigration,
-  });
-  const routeTree = rootRoute.addChildren([route]);
-  const router = createRouter({
-    routeTree,
-    history: createMemoryHistory({
-      initialEntries: [`/pipelines/${pipelineId}/migrations/new`],
-    }),
-  });
+function baseModelCard(family: string): ModelCardInfo {
+  return {
+    family,
+    version: 1,
+    description: `Family card for ${family}`,
+    is_small_variant: false,
+    rules: [
+      {
+        name: "test_rule",
+        description: "A test rule",
+        applies_to: "all",
+        will_apply: true,
+      },
+    ],
+  };
+}
+
+function renderWizard(onCreated: (m: unknown) => void) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   });
-
   return render(
     <QueryClientProvider client={queryClient}>
-      <RouterProvider router={router} />
+      <NewMigrationWizard pipelineId={1} onCreated={onCreated as never} />
     </QueryClientProvider>
   );
 }
@@ -114,14 +107,15 @@ beforeEach(() => {
   vi.mocked(getPipelineDag).mockReset();
   vi.mocked(listModelOptions).mockReset();
   vi.mocked(createMigration).mockReset();
+  vi.mocked(getModelCard).mockReset();
 });
 
-describe("NewMigration wizard", () => {
+describe("NewMigrationWizard", () => {
   it("disables Continue until at least one model is checked", async () => {
     vi.mocked(getPipelineDag).mockResolvedValue(baseDag());
     vi.mocked(listModelOptions).mockResolvedValue(baseModels());
 
-    renderAtPipeline("1");
+    renderWizard(vi.fn());
 
     await screen.findByLabelText("gpt-4o-mini");
     expect(
@@ -136,7 +130,7 @@ describe("NewMigration wizard", () => {
     ).toBeEnabled();
   });
 
-  it("walks through all three steps and creates a migration with multi-model config", async () => {
+  it("walks through all three steps and calls onCreated with the new migration", async () => {
     vi.mocked(getPipelineDag).mockResolvedValue(baseDag());
     vi.mocked(listModelOptions).mockResolvedValue(baseModels());
     vi.mocked(createMigration).mockResolvedValue({
@@ -152,10 +146,14 @@ describe("NewMigration wizard", () => {
       progress_stage_name: null,
       progress_current: null,
       progress_total: null,
+      progress_substep: null,
+      activity_log: null,
       completed_at: null,
+      stage_states: {},
     });
 
-    renderAtPipeline("1");
+    const onCreated = vi.fn();
+    renderWizard(onCreated);
 
     // Step 1: check both models
     await screen.findByLabelText("gpt-4o-mini");
@@ -185,14 +183,16 @@ describe("NewMigration wizard", () => {
       });
     });
 
-    await screen.findByText(/Migration #42 created/);
+    await waitFor(() => {
+      expect(onCreated).toHaveBeenCalledWith(expect.objectContaining({ id: 42 }));
+    });
   });
 
   it("shows a validation hint and blocks continue for a non-positive budget", async () => {
     vi.mocked(getPipelineDag).mockResolvedValue(baseDag());
     vi.mocked(listModelOptions).mockResolvedValue(baseModels());
 
-    renderAtPipeline("1");
+    renderWizard(vi.fn());
     await screen.findByLabelText("gpt-4o-mini");
     fireEvent.click(screen.getByLabelText("gpt-4o-mini"));
     fireEvent.click(
@@ -204,5 +204,32 @@ describe("NewMigration wizard", () => {
 
     expect(screen.getByText(/Budget must be greater than \$0/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Continue to review" })).toBeDisabled();
+  });
+
+  it("displays model card transform rules when available", async () => {
+    vi.mocked(getPipelineDag).mockResolvedValue(baseDag());
+    vi.mocked(listModelOptions).mockResolvedValue(baseModels());
+    vi.mocked(getModelCard).mockImplementation((model) => {
+      if (model === "gpt-4o-mini") {
+        return Promise.resolve(baseModelCard("openai"));
+      }
+      if (model === "claude-haiku-4-5") {
+        return Promise.resolve(baseModelCard("anthropic"));
+      }
+      return Promise.reject(new Error("Not found"));
+    });
+
+    renderWizard(vi.fn());
+    await screen.findByLabelText("gpt-4o-mini");
+
+    await waitFor(() => {
+      const headings = screen.getAllByText("Model transform rules");
+      expect(headings.length).toBeGreaterThan(0);
+    });
+
+    const rules = screen.getAllByText(/test_rule/);
+    expect(rules.length).toBeGreaterThanOrEqual(1);
+    const descriptions = screen.getAllByText(/A test rule/);
+    expect(descriptions.length).toBeGreaterThanOrEqual(1);
   });
 });

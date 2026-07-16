@@ -24,6 +24,7 @@ from reprompt_core.judge import (
     JudgeResponseError,
     JudgeResult,
     judge_pairwise,
+    judge_single_pass,
 )
 from reprompt_core.llm.client import LLMResponse
 from reprompt_core.trace import TokenUsage
@@ -414,3 +415,64 @@ def test_empty_judge_criteria_raises_value_error(monkeypatch: pytest.MonkeyPatch
 
     with pytest.raises(ValueError, match="at least one judge criterion"):
         judge_pairwise(BENCHMARK, CANDIDATE, [], model="claude-sonnet-4-5")
+
+
+# ---------------------------------------------------------------------------
+# judge_single_pass — the no-swap judge call used by Prism's critique-ranking
+# pass (loop.py's _optimize_stage_prism, see DEV_TRACKER.md's Phase 1
+# quality-fixes note)
+# ---------------------------------------------------------------------------
+
+
+def test_judge_single_pass_makes_exactly_one_call_with_no_disagreement(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: list[dict] = []
+
+    def fake_complete(model, messages, **kwargs):
+        captured.append({"messages": messages})
+        return _fake_llm_response(_uniform_score_content(CRITERIA, 0.7, "Reasonably close."))
+
+    monkeypatch.setattr("reprompt_core.llm.client.complete", fake_complete)
+
+    result = judge_single_pass(BENCHMARK, CANDIDATE, CRITERIA, model="claude-sonnet-4-5")
+
+    assert len(captured) == 1  # no position-swap - one call, not two
+    assert result.overall_score == pytest.approx(0.7)
+    assert result.disagreement == 0.0
+    assert result.low_confidence is False
+    assert all(c.reasoning == "Reasonably close." for c in result.criteria)
+
+
+def test_judge_single_pass_retries_once_on_malformed_json(monkeypatch: pytest.MonkeyPatch) -> None:
+    responses = iter(
+        [
+            _fake_llm_response("not valid json", cost_usd=0.001),
+            _fake_llm_response(_uniform_score_content(CRITERIA, 0.6), cost_usd=0.002),
+        ]
+    )
+
+    def fake_complete(model, messages, **kwargs):
+        return next(responses)
+
+    monkeypatch.setattr("reprompt_core.llm.client.complete", fake_complete)
+
+    result = judge_single_pass(BENCHMARK, CANDIDATE, CRITERIA, model="claude-sonnet-4-5")
+
+    assert result.overall_score == pytest.approx(0.6)
+
+
+def test_judge_single_pass_raises_after_retry_also_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    call_count = {"n": 0}
+
+    def fake_complete(model, messages, **kwargs):
+        call_count["n"] += 1
+        return _fake_llm_response("still not json", cost_usd=0.001)
+
+    monkeypatch.setattr("reprompt_core.llm.client.complete", fake_complete)
+
+    with pytest.raises(JudgeResponseError) as exc_info:
+        judge_single_pass(BENCHMARK, CANDIDATE, CRITERIA, model="claude-sonnet-4-5")
+
+    assert call_count["n"] == 2  # exactly one retry, no third attempt
+    # The failed response's cost is still recoverable for budget accounting.
+    assert exc_info.value.response is not None
+    assert exc_info.value.response.cost_usd == pytest.approx(0.001)

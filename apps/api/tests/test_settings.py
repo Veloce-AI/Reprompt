@@ -101,6 +101,7 @@ def test_all_endpoints_reject_unauthenticated_requests(client: TestClient) -> No
         == 401
     )
     assert client.delete("/settings/api-keys/1").status_code == 401
+    assert client.get("/settings/models").status_code == 401
 
 
 def test_endpoints_reject_garbage_bearer_token(client: TestClient) -> None:
@@ -387,3 +388,72 @@ def test_add_api_key_fails_loudly_when_encryption_key_not_configured(
     )
     assert response.status_code == 500
     assert crypto.ENV_VAR in response.json()["detail"]
+
+
+# ---------------------------------------------------------------------------
+# Configured models (Settings screen content, 2026-07-15)
+# ---------------------------------------------------------------------------
+
+
+def test_list_configured_models_shows_only_no_key_models_before_any_byok_key(
+    client: TestClient,
+) -> None:
+    token, _ = _sign_in(client, "nomodels@example.com")
+    response = client.get("/settings/models", headers=_auth_headers(token))
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert len(body) > 0
+    # Every entry returned before any key is added must be a no-key-required
+    # (e.g. local/self-hosted Ollama) model.
+    assert all(entry["requires_api_key"] is False for entry in body)
+
+
+def test_list_configured_models_includes_provider_after_byok_key_added(
+    client: TestClient,
+) -> None:
+    token, _ = _sign_in(client, "withkey@example.com")
+    client.post(
+        "/settings/api-keys",
+        json={"provider": "openai", "api_key": "sk-abcd12345678"},
+        headers=_auth_headers(token),
+    )
+    response = client.get("/settings/models", headers=_auth_headers(token))
+    assert response.status_code == 200, response.text
+    models_out = {entry["model"]: entry for entry in response.json()}
+    assert "gpt-4o" in models_out
+    assert "gpt-4o-mini" in models_out
+    assert models_out["gpt-4o"]["requires_api_key"] is True
+
+
+def test_list_configured_models_includes_model_card_info(client: TestClient) -> None:
+    token, _ = _sign_in(client, "cardinfo@example.com")
+    response = client.get("/settings/models", headers=_auth_headers(token))
+    assert response.status_code == 200, response.text
+    body = response.json()
+    ollama_entry = next(entry for entry in body if entry["model"] == "ollama/llama3.1")
+    assert ollama_entry["model_card"]["family"] == "llama"
+    assert isinstance(ollama_entry["model_card"]["rules"], list)
+    assert len(ollama_entry["model_card"]["rules"]) > 0
+
+
+def test_list_configured_models_only_shows_this_workspaces_keys(client: TestClient) -> None:
+    alice_token, _ = _sign_in(client, "alice2@example.com")
+    bob_token, _ = _sign_in(client, "bob2@example.com")
+
+    client.post(
+        "/settings/api-keys",
+        json={"provider": "openai", "api_key": "sk-alicekey12345"},
+        headers=_auth_headers(alice_token),
+    )
+
+    bob_models = {
+        entry["model"]
+        for entry in client.get("/settings/models", headers=_auth_headers(bob_token)).json()
+    }
+    assert "gpt-4o" not in bob_models
+
+    alice_models = {
+        entry["model"]
+        for entry in client.get("/settings/models", headers=_auth_headers(alice_token)).json()
+    }
+    assert "gpt-4o" in alice_models

@@ -8,15 +8,16 @@ accurate so anyone (human or AI) can pick this up cold without
 re-deriving context. Read `START_HERE.md` first if you haven't — it
 points here plus the rest of the docs in reading order.
 
-Last updated: 2026-07-14.
+Last updated: 2026-07-16.
 
 ## Current state (one paragraph)
 
 Two optimizer strategies exist in `packages/core/src/reprompt_core/optimizer/`:
 **simple** (one-shot: mutate the prompt once via one LLM call, then run
 the param/format sweep) and **Prism** (multi-round: mutate → cheap-score →
-critique the weak ones → refine → sweep again → full-score → select, plus
-optional few-shot example selection). Both are 100% in-house code — no
+critique the weak ones (now with real judge signal — see the dated Phase 1
+quality-fixes section below) → refine → sweep again → full-score → select,
+plus optional few-shot example selection). Both are 100% in-house code — no
 vendored source, no new dependencies, both call the engine's own
 `llm/client.py` so both work with any provider (OpenAI/Anthropic/Gemini/
 self-hosted) uniformly. `run_optimizer(..., strategy="simple"|"prism")`
@@ -24,15 +25,649 @@ selects between them; `apps/api` reads this from `OPTIMIZER_STRATEGY`
 (see `apps/api/.env.example`).
 
 **Done and test-verified**: Phase 0 (cleanup), the DB/credential
-groundwork, Phase 1 (`mutator.py`'s `critique_and_refine`/
+groundwork, the original Phase 1 (`mutator.py`'s `critique_and_refine`/
 `select_few_shot_examples`), Phase 2 (`loop.py`'s strategy dispatch and
-`_optimize_stage_prism`), Phase 3 (`packages/core` tests), and **Phase 4 +
+`_optimize_stage_prism`), Phase 3 (`packages/core` tests), **Phase 4 +
 4b** (`apps/api` wiring — merged via PR #3/#4 from an external
 contributor, `shreychechani`, reviewed and tested before merge — see
 "PR #3/#4 review notes" below for what changed vs. this file's original
-Phase 4 spec and one real gap found). **Not started**: Phase 6 (final
-end-to-end manual verification), the `target_model` tracking fix (see
-below).
+Phase 4 spec and one real gap found), **Phase 2 — Live DAG/run status view
+[DONE — 2026-07-15]**, a dated **"Phase 1 — Prism optimizer quality
+fixes [DONE — 2026-07-15]"** section (below) — a separate audit's 6
+findings against the already-shipped Prism engine (most notably: the
+critique loop was judge-blind, and `max_refine_rounds=1` made the plateau
+early-stopping logic dead code), `packages/core` only, `264 passed,
+21 skipped` after. **Phase D(a) — Model-card info in wizard [DONE —
+2026-07-15]**: new read-only endpoint `GET /model-cards/{model}` returns
+family classification and applicable transform rules as JSON; migration
+wizard model picker now fetches and displays these rules human-readable
+next to each model option (backend 122 passed, frontend 70 passed, clean
+typecheck). **Phase A — Live optimizer sub-step signal [DONE —
+2026-07-15]**: an `on_phase` callback threaded through the engine so the
+live DAG view (Phase 2) shows *which* internal phase a running stage is in
+(e.g. "critiquing weakest candidates"), not just that it's running.
+**`target_model` tracking fix [DONE — 2026-07-15]**: `Candidate` rows now
+record which target model produced them (Alembic migration
+`8c4f6d1a3e9b`), closing the gap noted in "PR #3/#4 review notes" below.
+**Phase 2 — Project/multi-run ingestion [DONE — 2026-07-16]**: a second
+(third, ...) trace file can now be attached to an *existing* pipeline as a
+new run (`BenchmarkSet`) instead of always minting a brand-new pipeline —
+see the dated section below for the full design (stage reuse/grow/drift
+rule, new endpoints, "Import new run" drawer). `apps/api` 137 passed (131 +
+6 new), `apps/web` 86 passed (85 + 1 new) + clean typecheck,
+`packages/core` untouched.
+**Phase B — Live reasoning feed + activity log [DONE — 2026-07-16]**: the
+LLM's own critique text (Prism's `critique_and_refine`) and a chronological
+activity log across the whole run are now surfaced in the UI instead of
+being generated then discarded — see the dated section below for the full
+design. `packages/core` 290 passed, 2 skipped (286 + 4 new, additive only),
+`apps/api` 147 passed (143 + 4 new), `apps/web` 93 passed (90 + 3 new) +
+clean typecheck.
+**Model auto-selection for rubric generation [DONE — 2026-07-16]**: rubric
+generation no longer requires a caller-supplied model up front — see the
+dated section below for the full design (new `llm/model_select.py`, wired
+into `apps/api/src/reprompt_api/rubrics.py`, optional model field in the
+Rubrics tab). This is rubric-generation-only, not the optimizer's own
+judge-model selection (out of scope, untouched). Built in this worktree
+against a local baseline of `packages/core` 271 passed/21 skipped,
+`apps/api` 147 passed, `apps/web` 93 passed (this worktree's checkout
+predates Phase B/Project-ingestion's code landing here, even though their
+DEV_TRACKER entries above are already present from the shared doc — those
+two phases' actual code is only in their own worktrees pending hand-merge,
+not evaluated by this session). After this phase: `packages/core` 286
+passed/21 skipped (271 + 15 new), `apps/api` 151 passed (147 + 4 new, one
+existing test extended with two new assertions), `apps/web` 97 passed (93
++ 4 new) + clean typecheck.
+**Branding/copy pass — Prism as self-evolving optimizer [DONE — 2026-07-16]**:
+docs/UI copy only, no engine/schema changes — see the dated section below
+for the full list of what changed and why.
+**Phase C — Before/after prompt diff [DONE — 2026-07-16]**: once a
+migration reaches a terminal state, the Migrations tab now shows each
+stage's original prompt against the winning candidate's prompt as a word
+diff, alongside which target model won and its composite score — see the
+dated section below for the full design. Display-only, no new optimizer/
+scoring logic. `apps/api` 154 passed (147 + 7 new), `apps/web` 105 passed
+(93 + 12 new) + clean typecheck, `packages/core` untouched.
+**Fix judge/mutator self-grading bias [DONE — 2026-07-16]**: extends the
+"Model auto-selection for rubric generation" phase's exact `select_model()`
+pattern to the two optimizer call sites it was deliberately not wired into
+yet — `judge_model` no longer falls back to `target_models[0]`, and
+`mutator_model` (previously not passed to `run_optimizer` at all, so it
+silently fell back to the target model inside `packages/core`) is now
+explicitly selected too, both from the workspace's own available models,
+never from the migration's target models — see the dated section below for
+the full design, plus a real schema gap (`judge_model` wasn't actually an
+accepted field on `TargetModelConfig`, so the override was dead code) and a
+circular-import fix found along the way. `apps/api` 165 passed (160 + 5
+new), `packages/core` untouched (305 passed, 2 skipped).
+**Not started**: Phase 6 (final end-to-end manual verification).
+
+**Note for future sessions/developers**: each phase above updates
+`DEV_TRACKER.md` itself as part of "done" — same discipline applies to
+`docs/TESTING.md` for anything screen/behavior-facing. Don't create a
+separate status doc; just flag completion inline in whichever `.md` file
+the change actually touches.
+
+## Model auto-selection for rubric generation [DONE — 2026-07-16]
+
+The gap: `packages/core/src/reprompt_core/rubric_generator.py`'s
+`generate_rubric` takes a required `generator_model` with no default (by
+design — same reasoning as `judge.judge_pairwise`'s `model` param), which
+meant `apps/api`'s rubric-generation endpoint and the Rubrics tab's
+"Generate all rubrics" button both required a human to type a model name
+before generating anything, every time, with no suggested default. Scope:
+rubric generation only — the optimizer loop
+(`packages/core/src/reprompt_core/optimizer/`) and its own judge-model
+selection are untouched, per the task brief.
+
+**`packages/core`**:
+- New `packages/core/src/reprompt_core/llm/model_select.py`:
+  `select_model(purpose: Literal["rubric_generation", "judge", "mutator"],
+  available_models: list[str], *, explicit: str | None = None) -> str`.
+  Deliberately simple, per the task's own "not a complex heuristic"
+  instruction: a hand-curated capability-tier table
+  (`_CAPABILITY_TIERS`/`_GENERAL_ANALYSIS_TIERS`, best tier first) ∩
+  `available_models`, cost as the tiebreak *within* a tier (ascending,
+  via `reprompt_core.llm.registry.get_model_capabilities` — never a second
+  hand-curated cost table), falling back to the cheapest available model
+  if nothing curated matches at all. `explicit` (when given) wins
+  immediately, before any of that runs, and is never checked against
+  `available_models` — "if the caller already chose a model, don't
+  second-guess it." Raises `NoAvailableModelError` (a `ValueError`
+  subclass) only when `explicit` is absent *and* `available_models` is
+  empty. Checked `llm/registry.py` first for existing capability-tier
+  metadata to build on (per the task brief) — it deliberately only exposes
+  cost/context-window/JSON-mode/tool-use facts pulled from LiteLLM (see its
+  own docstring), nothing resembling "how good is this model at analysis,"
+  so the tier table here is new, hand-curated data, not derived from
+  anything already in the registry.
+  All three declared purposes (`rubric_generation`/`judge`/`mutator`) share
+  one tier table today — same underlying question (strong reasoning +
+  strict instruction-following) — but the lookup is per-purpose so a future
+  split is a one-line addition, not a signature change. Only
+  `rubric_generation` is actually wired into a caller in this phase; the
+  other two purposes exist in the type/table but nothing calls
+  `select_model("judge"/"mutator", ...)` yet (that's the optimizer's own,
+  explicitly out-of-scope, existing model-selection path).
+- New `packages/core/tests/test_model_select.py` (15 new): explicit
+  override wins even against an empty/mismatched `available_models`,
+  best-available-tier selection, falling through to a lower tier when the
+  top tier isn't available, cost tiebreak within a tier (against real
+  registry pricing data, same convention as `test_llm_registry.py` — no
+  mocking), unknown-price-treated-as-free, no-tier-match cheapest-available
+  fallback, empty-available-and-no-explicit raises `NoAvailableModelError`,
+  and all three purposes select successfully end-to-end.
+  `packages/core`: **286 passed, 21 skipped** (271 + 15 new).
+
+**`apps/api`**:
+- `apps/api/src/reprompt_api/migrations.py`: extracted
+  `get_available_models(db, workspace) -> list[ModelOption]` out of
+  `reprompt_api.settings.list_configured_models` (the exact "curated
+  models ∩ this workspace's BYOK providers, plus every no-key-required
+  model unconditionally" logic already built for Settings' "Configured
+  models" section, per the task brief — reused, not duplicated).
+  `settings.py`'s `list_configured_models` now just calls this and no
+  longer computes the intersection inline; behavior is byte-for-byte
+  identical (same existing `test_settings.py` tests pass unchanged).
+- `apps/api/src/reprompt_api/rubrics.py`: `GenerateRubricIn.model` is now
+  `str | None = None` (was a required field). In
+  `generate_rubric_for_stage`, when `body.model` is falsy, the endpoint
+  calls `get_available_models(db, workspace)` (the workspace's real,
+  BYOK-filtered model list — never empty even with zero keys configured,
+  since local `ollama/...` models need none) then
+  `select_model("rubric_generation", available)`; `NoAvailableModelError`
+  maps to the same 422-pointing-at-`/settings` shape the missing-key path
+  already used, for the (currently unreachable given today's always-has-
+  local-models `CURATED_MODELS`, but still handled) case of a truly empty
+  list. An explicit `body.model` bypasses all of this exactly as before —
+  no behavior change for existing callers that already pass a model.
+  `RubricOut` gained `generated_with_model: str | None = None` — populated
+  only on the generate/regenerate endpoint's response (from
+  `RubricGenerationResult.model`, the model that actually produced the
+  accepted content), left `None` on every other response (list/patch/
+  approve) since it isn't persisted on the `Rubric` row — this is
+  deliberately a transient "what just happened" detail for the UI caption,
+  not new schema/migration surface, keeping the change additive-only.
+- `apps/api/tests/test_rubrics_generate.py` (4 new + 2 new assertions on
+  the existing success-path test): omitting `model` entirely auto-selects
+  and reports it back in `generated_with_model`; an explicit JSON `null`
+  behaves the same as omitting the key; an explicit model is never
+  second-guessed even when a cheaper/higher-tier option is configured;
+  auto-select still succeeds (falls back to a no-key local model) with
+  zero BYOK keys configured at all, rather than 422ing.
+  `apps/api`: **151 passed** (147 + 4 new).
+
+**Frontend**:
+- `apps/web/src/lib/api.ts`: `generateRubric(pipelineId, stageId, model?:
+  string)` — `model` is now optional; omits the `model` key from the
+  request body entirely (rather than sending `""`) so the server's
+  auto-select path fires. `RubricOut.generated_with_model?: string | null`
+  added, mirroring the backend field.
+- `apps/web/src/components/rubric-review-panel.tsx`: the model `Input` at
+  the top of the Rubrics tab is now genuinely optional — "Generate all
+  rubrics" no longer blocks with an error when it's blank (removed the
+  `"Enter a model name first..."` validation), and per-stage "Regenerate"
+  is no longer `disabled` on an empty field either (its tooltip now reads
+  "No model entered — one will be auto-selected" instead of demanding
+  input first). Each stage card's header now shows a small "— generated
+  using `<model>`" caption next to the stage id whenever
+  `rubric.generated_with_model` is set (i.e. right after that stage was
+  generated/regenerated in the current session) — exactly the "shown after
+  the fact, not required upfront" shape the task asked for. Empty-state
+  copy updated to describe auto-selection as the default path.
+- `apps/web/src/components/rubric-review-panel.test.tsx` (4 new): generates
+  successfully with a blank model field, asserting `generateRubric` is
+  called with `undefined` (not `""`) for the model; the "generated using
+  ..." caption renders when `generated_with_model` is set and is absent
+  when it isn't; the Regenerate button is enabled with a blank model field.
+  `apps/web`: **97 passed** (93 + 4 new) + clean `tsc --noEmit`.
+
+**Where this leaves things**: rubric generation now has a sensible default
+model choice end-to-end (core → API → UI), matching the pattern the task
+asked for without touching the optimizer's separate judge/mutator model
+selection. If a future phase wants `select_model("judge", ...)` or
+`select_model("mutator", ...)` actually wired into the optimizer, the
+function is already purpose-parameterized for that — no `model_select.py`
+changes needed, just a new call site (deliberately not built here, out of
+scope per the task brief).
+
+## Branding/copy pass — Prism as self-evolving optimizer [DONE — 2026-07-16]
+
+Copy/docs-only pass positioning Prism as **"a self-evolving prompt
+optimizer"** — no engine changes, no schema changes, no new aggregation.
+The framing is deliberate and bounded: Prism's existing mutate →
+judge-aware critique → refine (×3 rounds) → sweep → select loop genuinely
+revises its own output based on its own critique within a single run,
+which earns "self-evolving" honestly. The one thing actively avoided
+everywhere this copy touches: never implying cross-migration
+memory/learning that doesn't exist — no "gets smarter over time," no
+"learns from your migrations," no "remembers what worked." Nothing
+persists across separate migrations today; every place below that adds
+"self-evolving" language also says so explicitly.
+
+1. **UI label**: there is no user-facing strategy picker anywhere in
+   `apps/web/src/` — `OPTIMIZER_STRATEGY` is a backend env var
+   (`apps/api/.env.example`), not a per-migration UI choice, confirmed by
+   grepping `apps/web/src` for `strategy`/`prism` before making any change
+   (only hit: `ParityBeam`'s unrelated `prismPosition` prop). The one
+   place Prism's activity is actually visible to a user is the Migrations
+   tab's live view (`MigrationSuccessScreen`), so that's where the label
+   went: a subtitle line — "Optimizing with **Prism** — a self-evolving
+   prompt optimizer" — directly above `<MigrationRunBar>`, shown once a
+   migration has started. `apps/web/src/components/migration-success-screen.tsx`
+   (new subtitle block just before the existing `<MigrationRunBar>` render,
+   ~line 145).
+2. **"How Prism works" explainer**: new, self-contained
+   `apps/web/src/components/prism-explainer.tsx` — owns its own
+   open/close state, so it's a one-line drop-in (`<PrismExplainer />`).
+   Trigger is a small "How Prism works" text link next to the new
+   subtitle in `MigrationSuccessScreen`; opens the existing `Drawer`
+   primitives (`components/ui/drawer.tsx`, the same ones
+   `StageReasoningDrawer` in the same file already uses) with two short,
+   factual paragraphs describing the real loop (judge-aware critique, up
+   to 3 refine rounds, budget-bounded, per-stage, plateau early-stop) plus
+   one explicit paragraph on what Prism doesn't do (no cross-migration
+   memory). `migration-success-screen.tsx`'s own layout wasn't
+   restructured — only the new subtitle/trigger row was added above the
+   pre-existing `<MigrationRunBar>` call.
+3. **Docs**: `README.md`'s "Two search methods" table — Prism's row
+   reframed with "evolves the prompt through several rounds before
+   locking in a winner," plus a new sentence directly under the table:
+   "**Prism evolves within one migration, not across migrations**."
+   `DEV_TRACKER.md`'s own "Why two strategies, and why the name 'Prism'"
+   section (below) — reframed the same way, plus an explicit
+   per-migration/not-cross-migration sentence so the absence of
+   cross-run memory is never later mistaken for a regression.
+
+**Tests**: `apps/web/src/components/prism-explainer.test.tsx` — 3 new
+(renders the trigger with the panel closed by default; opens on click and
+shows the self-evolving explanation including the no-cross-migration-memory
+line; closes on Escape). Ran against this worktree's own clean baseline
+first (`apps/web` **93 passed**, 12 test files, clean `tsc --noEmit`).
+Final: **96 passed** (93 + 3 new), 13 test files, clean `tsc --noEmit`;
+`migration-success-screen.test.tsx`'s existing 3 tests still pass unchanged
+alongside the new subtitle/trigger row. `packages/core` and `apps/api`
+untouched (confirmed via `git status` — only `DEV_TRACKER.md`,
+`README.md`, and files under `apps/web/src/` changed), so their suites
+weren't re-run.
+
+## Phase 2 — Project/multi-run ingestion [DONE — 2026-07-16]
+
+The gap: every trace upload previously created a brand-new `Pipeline` +
+brand-new `Stage` rows + one `BenchmarkSet`, unconditionally
+(`persist_trace_file`) — no way to attach a second run to an existing
+pipeline. `BenchmarkSet.pipeline_id` was already a plain FK (the schema
+already supported many `BenchmarkSet`s per `Pipeline`), just nothing used
+it. Built in a parallel worktree alongside unrelated Phase 3 work on
+`pipelines.py`/`pipeline-workspace.tsx` — kept changes additive/narrow in
+both shared files for an easier hand-merge (only added new endpoints/a new
+route param and a new header button + drawer; no existing function bodies
+restructured).
+
+**Backend**:
+- `apps/api/src/reprompt_api/ingest.py`: `persist_trace_file(db,
+  trace_file, *, pipeline: models.Pipeline | None = None) ->
+  models.Pipeline`. `pipeline=None` (default) behaves exactly as before.
+  When `pipeline` is given: no new `Pipeline`/`Stage` set is created by
+  default — for each stage in the incoming file, looked up by
+  `(pipeline_id, source_id)`: if an existing `Stage` row matches
+  (`model`/`prompt_template`/`system_prompt`/`params` all equal), it's
+  reused as-is; if not found, a new `Stage` row is created (a pipeline can
+  grow new stages across runs); if found but any of those four fields
+  differ, every such conflict is collected and raised as one new
+  `StageDriftError` (defined locally in `ingest.py`) naming every
+  conflicting stage — checked across *all* incoming stages before any
+  mutation happens, so a rejected import never leaves the session
+  half-modified (no partial `Stage`/`BenchmarkSet` rows to roll back).
+  Chose reject-with-422 over accept-and-flag or versioning per the task's
+  own settled decision: an in-place stage change would silently invalidate
+  an already-approved `Rubric` with no way to detect it, and `Rubric`/
+  `Candidate` both already assume a stable `stage_id` — keeping `Stage`
+  rows immutable once created is the smaller, more honest contract than
+  either alternative. A `BenchmarkSet` is always created for the run;
+  named `f"{pipeline_name} benchmark"` for the original import (unchanged)
+  or `f"Run {n}"` (n = existing `BenchmarkSet` count + 1) for an attached
+  run, so repeat runs don't all share one indistinguishable name.
+  Dependency-edge wiring guards against re-appending an edge a reused
+  `Stage` row already has (the `stage_dependencies` association table's
+  composite PK would otherwise raise on a duplicate insert).
+- `apps/api/src/reprompt_api/pipelines.py`: extracted
+  `_parse_upload_to_trace_file()` out of the existing `POST /import`
+  handler (validate-UTF8 → validate-JSON → `parse_trace_file`) so the new
+  endpoint below shares the exact same validation path rather than
+  duplicating it. New `POST /pipelines/{pipeline_id}/import` — 404s if the
+  pipeline doesn't exist, otherwise identical upload/validation flow,
+  passes the loaded `Pipeline` to `persist_trace_file`, and catches the new
+  `StageDriftError` → 422 (alongside the pre-existing `CycleError` → 422
+  pattern already used by `POST /import`). New `GET
+  /pipelines/{pipeline_id}/runs` → `RunOut[]` (`{id, name, created_at,
+  trace_count}`), one row per `BenchmarkSet` for that pipeline, oldest
+  first, `trace_count` via a `LEFT JOIN` + `COUNT`/`GROUP BY` on `Trace`
+  (not N+1 queries per `BenchmarkSet`); 404s the same way every other
+  `/{pipeline_id}/...` route here does for an unknown pipeline.
+- Tests: new `apps/api/tests/test_pipelines_runs.py` (6 new) — reusing a
+  matching stage set (`Stage` row count unchanged, exactly 2
+  `BenchmarkSet`s), a genuinely new stage added (5th `Stage` row, wired
+  to its `depends_on`), a drifted stage rejected with 422 naming it and
+  nothing persisted (`BenchmarkSet`/`Stage` counts unchanged, the
+  original `prompt_template` intact), 404 for an unknown pipeline on
+  import, `GET .../runs`'s exact shape/`trace_count` across two runs with
+  different trace counts, 404 for an unknown pipeline on `/runs`.
+  `apps/api`: **137 passed** (131 baseline + 6 new).
+
+**Frontend**:
+- `apps/web/src/lib/api.ts`: `RunOut` interface,
+  `importIntoExistingPipeline(pipelineId, file)` (same
+  `FormData`-with-one-file shape as the existing `importPipeline`, just
+  posted to `/pipelines/{id}/import`), `getRuns(pipelineId)`.
+- `apps/web/src/routes/pipeline-workspace.tsx`: new "Import new run"
+  button in the header, next to the pipeline name (not a separate route —
+  the task brief called for an action in the header area, and this
+  workspace is already the single unified screen per Phase 1's "Unified
+  pipeline workspace"). Opens an `ImportRunDrawer` built on the same
+  `DrawerRoot`/`DrawerContent` primitives the existing stage-rubric drawer
+  already uses, reusing `components/dropzone.tsx` wholesale for the actual
+  upload UI (the same component `routes/pipelines-import.tsx`'s wizard
+  uses) rather than rebuilding drag-and-drop. On a successful import,
+  invalidates the `["pipelines"]`, `["pipeline-dag", pipelineId]`,
+  `["rubrics", pipelineId]`, and `["runs", pipelineId]` query keys so the
+  Canvas/Rubrics tabs and stage/trace counts reflect the new run without a
+  manual refresh. A `StageDriftError`'s 422 detail (naming the conflicting
+  stage) surfaces verbatim in the drawer's error panel, with a "Try a
+  different file" button that resets the mutation without closing the
+  drawer.
+- Tests: `pipeline-workspace.test.tsx` gained 1 new test (`imports a new
+  run into the pipeline via the 'Import new run' action`) — clicks the
+  button, drives the drawer's file input directly (queried off
+  `document.body`, not the RTL render root, since the drawer portals
+  outside it — see the test's own comment), asserts
+  `importIntoExistingPipeline` was called with the right pipeline id/File
+  and the drawer shows the success message. `apps/web`: **86 passed** (85
+  baseline + 1 new), clean `tsc --noEmit`.
+
+**What a user actually sees**: on any pipeline's workspace, "Import new
+run" next to the pipeline name opens a drop-zone drawer; dropping a
+compatible trace file (same stage definitions, or new stages appended)
+succeeds silently into the pipeline's existing DAG — no duplicate pipeline
+appears in the Pipelines-home list. Dropping a file where an existing
+stage's model/prompt/params changed is rejected with a clear inline error
+naming the conflicting stage, instead of silently corrupting an
+already-reviewed rubric.
+
+**Explicitly out of scope, not built this phase**: no UI list of past runs
+(the `GET .../runs` endpoint exists and is tested, but nothing in the
+workspace renders it yet — `docs/TESTING.md`'s new §3.1c walkthrough
+verifies it via curl/devtools instead); "Pipeline"→"Project" stays a
+UI-label naming question for a future pass, not touched here per the
+task's own instruction to leave `pipeline_id`/route params/backend names
+alone. `packages/core` and the optimizer loop untouched (confirmed via
+`git status` before commit).
+
+## Phase B — Live reasoning feed + activity log [DONE — 2026-07-16]
+
+The gap: two real LLM outputs were already being paid for and then thrown
+away. `_optimize_stage_prism`'s `critique_and_refine()` (`mutator.py`)
+generates a `critique: str` explaining why a candidate underperformed and
+what changed — parsed out of the model's JSON response, then discarded;
+only `refined_prompt` survived into `PromptMutationResult`. Separately,
+Phase A's `on_phase` callback only ever carried a bare phase name (e.g.
+`"refining"`), never the reasoning text produced *during* that phase. This
+phase plumbs both through to the UI — purely additive, no optimizer
+decision logic (mutation/critique/refine/sweep/select) touched.
+
+**`packages/core`**:
+- `optimizer/mutator.py`: `PromptMutationResult` gained `critique: str |
+  None = None`. `critique_and_refine` now sets it from the parsed
+  response's `critique` field (empty/whitespace-only normalized to `None`,
+  same convention as every other optional text field in this module).
+  `generate_prompt_mutations` leaves it `None` (no code change needed — it
+  never had a critique to report; a dedicated test
+  (`test_generate_prompt_mutations_critique_is_always_none`) pins this).
+- `optimizer/loop.py`: `StagePhaseEvent` gained `detail: str | None = None`
+  (trailing field, existing `StagePhaseEvent(stage_id=..., phase=...)`
+  call sites everywhere are unaffected). New `_judge_reasoning_summary()`
+  helper builds a short summary from a `JudgeResult` for the case the
+  critique text itself came back empty. In `_optimize_stage_prism`, the
+  `"refining"` phase event is now fired *after* a successful
+  `critique_and_refine()` call (previously fired just before it, since
+  that's the only point in the round where the real critique text actually
+  exists) — `detail=refinement.critique or _judge_reasoning_summary(judge_result)`.
+  Still fires at most once per round (same `refining_phase_fired` guard as
+  before); if every candidate's refinement call in a round fails, that
+  round simply has no `"refining"` event instead of one with `detail=None`
+  — nothing to plumb in that case anyway, and no existing test depends on
+  the old always-fires-even-on-failure timing. `"critiquing"` and every
+  other phase/strategy deliberately keep `detail=None` — nothing real is
+  available to attach at those transition points without moving decision
+  logic around, which was explicitly out of scope.
+- Tests (4 new): `test_optimizer_mutator.py` —
+  `test_critique_and_refine_critique_is_none_when_model_returns_empty_critique_text`,
+  `test_generate_prompt_mutations_critique_is_always_none`, plus the two
+  existing `critique_and_refine` tests extended to assert `.critique`.
+  `test_optimizer_loop.py` — `test_prism_refining_phase_event_carries_the_critique_text`
+  (asserts the `"refining"` event's `.detail` equals the critique text, and
+  that every other phase in the same run keeps `detail=None`),
+  `test_stage_phase_event_detail_defaults_to_none` (backward-compat pin).
+  `packages/core`: **290 passed, 2 skipped** (286 baseline + 4 new, same 2
+  environment-only skips as baseline — confirmed additive).
+
+**`apps/api`**:
+- `models.py`: `Migration.activity_log: list[dict] | None` — new nullable
+  `JSON` column. Alembic migration
+  `apps/api/alembic/versions/d3f7a2c1e5b6_add_migration_activity_log.py`
+  (`450ae8aefaa7` → `d3f7a2c1e5b6`, single head confirmed via `alembic
+  heads` both before and after — see the root-cause section above for why
+  that check matters every time). Verified a full upgrade chain applies
+  cleanly on a fresh SQLite DB.
+- `optimizer_runner.py`: the existing `on_phase` closure (which already
+  writes `Migration.progress_substep`) now also appends
+  `{"stage_id", "phase", "detail", "timestamp"}` to `Migration.activity_log`
+  on every call, capped at the most recent `MAX_ACTIVITY_LOG_ENTRIES = 100`
+  entries (oldest dropped from the front). Reassigns the whole list rather
+  than mutating in place — in-place mutation of a JSON-mapped column is a
+  well-known SQLAlchemy footgun that silently no-ops on commit (nothing to
+  detect the change against).
+- `migrations.py`: `MigrationOut.activity_log: list[dict] | None` exposed
+  in `GET .../status`, same polling pattern as `progress_substep`/
+  `stage_states` — no computation, just what `optimizer_runner.py` last
+  wrote.
+- Tests (4 new): `test_migrations.py` —
+  `test_status_activity_log_defaults_to_none_before_a_run_starts`,
+  `test_status_exposes_activity_log_entries`. New
+  `test_optimizer_runner.py` (no such file existed before this phase) —
+  monkeypatches `reprompt_core.optimizer.loop.run_optimizer` (imported into
+  `optimizer_runner`'s own namespace) with a fake that fires a
+  caller-controlled `StagePhaseEvent` sequence through the real `on_phase`
+  closure, so these tests exercise the actual DB-writing logic without a
+  real LLM call:
+  `test_on_phase_appends_events_to_activity_log`,
+  `test_activity_log_is_capped_at_max_entries_keeping_the_most_recent`
+  (150 events fired, asserts exactly the most recent 100 survive, oldest
+  20 dropped from the front). `apps/api`: **147 passed** (143 baseline + 4
+  new).
+
+**`apps/web`**:
+- `lib/api.ts`: `ActivityLogEntry` interface (mirrors what
+  `optimizer_runner.py` appends) and `MigrationOut.activity_log:
+  ActivityLogEntry[] | null`.
+- `components/stage-node.tsx`: `SUBSTEP_LABEL` (the `StagePhase` →
+  human-readable label map, previously module-private) now exported for
+  reuse by the activity log list — same "never render the raw enum value"
+  rule applies there too.
+- `components/migration-success-screen.tsx`:
+  - New `stageId` click handling on the live `<PipelineCanvas>`: clicking a
+    node only opens the new reasoning drawer when
+    `status.stage_states[stageId] === "running"` — a done/idle/failed node
+    click is a no-op here (unlike the Canvas tab's rubric drawer, which
+    opens for any node).
+  - New `StageReasoningDrawer` — reuses the existing `DrawerRoot`/
+    `DrawerContent`/`DrawerHeader`/`DrawerBody` primitives
+    (`components/ui/drawer.tsx`) `pipeline-workspace.tsx`'s
+    `StageRubricDrawer` already established for stage-scoped side panels,
+    rather than a new panel component. Shows the latest activity log entry
+    for the clicked stage (its human-readable phase label + real detail
+    text if any) plus a collapsed "earlier this run" list of that stage's
+    prior entries.
+  - New `ActivityLogList` — the whole run's activity log below the canvas,
+    one line per entry ("Stage {name}: {detail or phase label}"), newest
+    at the bottom, auto-scrolling via a `scrollTop = scrollHeight` effect
+    keyed on the entries array (same polling cadence as everything else on
+    this screen — no new poll interval introduced). Stage names resolved
+    via a `useQuery` on the same `["pipeline-dag", pid]` key
+    `<PipelineCanvas>` itself already uses, so it reads from the shared
+    React Query cache rather than issuing a second fetch.
+- Tests: new `components/migration-success-screen.test.tsx` (no test file
+  existed for this component before this phase) — 3 tests: the activity
+  log renders stage names + detail/phase-label lines in the right order,
+  clicking a running node opens the drawer with the real critique text,
+  clicking a non-running node is a no-op (drawer never opens). One real
+  gotcha hit and worth recording: Testing Library's default `getByText`
+  only matches an element's *direct* text-node children (not full
+  recursive `textContent`), so it can never match a string split across
+  `<span>{name}</span>: {detail}` markup as one query — waits in these
+  tests use the real DOM `.textContent` (via `waitFor` + `.toContain`)
+  instead of `findByText` on the combined string. Two pre-existing test
+  fixtures (`new-migration-wizard.test.tsx`, `pipeline-workspace.test.tsx`)
+  needed `activity_log: null` added to satisfy `MigrationOut`'s now-required
+  field, same pattern as Phase A's `progress_substep` fixture fix.
+  `apps/web`: **93 passed** (90 baseline + 3 new), clean `tsc --noEmit`.
+
+**What a user actually sees**: on the live migration run screen, clicking
+the currently-pulsing (running) stage node opens a drawer showing the
+optimizer's actual critique of its weakest candidate this round — not just
+"refining prompt" but *why* the candidate scored the way it did and what's
+being changed. Below the DAG, a scrolling activity log shows every phase
+transition across every stage in the run so far, in plain English,
+updating live as the run progresses.
+
+**Explicitly out of scope, not built this phase**: `"critiquing"`/every
+other phase besides `"refining"` still fire with `detail=None` — no
+reasoning text exists at those transition points without restructuring
+where in the round loop they fire, which risked behavior drift for little
+product value (the critique text is the one piece of real, previously-
+discarded reasoning this phase was scoped to surface). No SSE/websocket —
+this still rides the existing ~2s polling `GET .../status` pattern, per
+the codebase's established "poll a status endpoint" convention.
+
+## Root-cause investigation — "the flow is broken, nothing is working" [FIXED — 2026-07-15]
+
+Product owner reported the app broken after several rounds of merged work
+(Prism fixes, live DAG view, model-card info, live sub-step signal,
+`target_model` fix). Actually started both servers and drove the real
+golden path (import → DAG → rubrics → migration wizard → start → live
+status, via curl against the API directly — no browser-driving tool
+available in this environment) instead of assuming it was a UX opinion.
+Found one genuine, concrete regression:
+
+**Root cause: two divergent Alembic heads, silently broken migrations.**
+`8c4f6d1a3e9b` (`add_target_model_to_candidates`, from this file's own
+"`target_model` tracking fix") and `b8e1c4a7f209` (`add_migration_progress_substep`,
+from "Phase A — Live optimizer sub-step signal") were both built in
+parallel worktrees against the same parent revision (`f3a7b1c9d2e4`) and
+never rebased onto each other before merging — `down_revision =
+'f3a7b1c9d2e4'` on both. Confirmed via `uv run alembic heads`: two heads,
+not one. `uv run alembic upgrade head` failed outright with "Multiple head
+revisions are present" — meaning nobody could migrate a fresh dev DB past
+`f3a7b1c9d2e4` since whichever of those two phases merged second. This
+repo's own dev DB (`apps/api/test.db`) was confirmed stuck exactly there
+(`select version_num from alembic_version` → `f3a7b1c9d2e4`) — neither
+`Candidate.target_model` nor `Migration.progress_substep` existed as real
+columns despite both being "done" per this file, so any code path touching
+either (which is most of the live-status/candidate-tracking work from the
+last two rounds) would throw a real `sqlite3.OperationalError: no such
+column` at runtime. This is concretely "nothing is working," not a vague
+complaint.
+
+**Fix**: `uv run alembic merge -m "merge target_model and progress_substep
+heads" 8c4f6d1a3e9b b8e1c4a7f209` — the standard Alembic resolution, a new
+no-op revision (`450ae8aefaa7`) whose `down_revision` is the tuple of both
+former heads. Verified against both a fresh SQLite DB (full chain applies
+cleanly start to finish, single resulting head) and this repo's actual dev
+DB (`apps/api/test.db`, upgraded from the stuck `f3a7b1c9d2e4` all the way
+to `450ae8aefaa7` with no errors). **Lesson for next time two people build
+migrations in parallel worktrees**: `alembic heads` should be run (not just
+`alembic upgrade head`, which silently "works" for whoever merged first and
+only fails for the second) as part of every merge's own verification step,
+same discipline as re-running the test suites — a green test suite in each
+worktree individually said nothing about this, since neither worktree's
+own tests exercised a migration chain the other worktree also touched.
+
+**Also verified, not bugs**: `apps/api/src/reprompt_api/migrations.py`'s
+`CURATED_MODELS` list looked like it had a `"ollama\qwen2.5:14b"` backslash
+typo when read via a grep tool — checked against the actual file content
+and a live `GET /pipelines/{id}/models` response, both confirm it's really
+`"ollama/qwen2.5:14b"` (forward slash, correct); the backslash was an
+artifact of how one tool's output got escaped in transcript, not real file
+content. Full three-suite baseline reconfirmed clean after the alembic fix
+alone, before any other change: `packages/core` 286 passed/2 skipped,
+`apps/api` 124 passed, `apps/web` 74 passed + clean `tsc --noEmit`.
+
+**Golden path, actually driven end-to-end (curl, no BYOK key available in
+this environment so the optimizer's real LLM calls couldn't be exercised
+for real — verified instead that the no-key path degrades correctly
+rather than crashing, see below)**: imported a converted `Sample Queries/`
+trace file → `GET /pipelines/{id}/dag` → seeded rubrics → approved all →
+`GET /pipelines/{id}/models` (curated model list) → created a migration
+(`POST .../migrations`) → started it (`POST .../migrations/{id}/start`) →
+polled `GET .../status`, confirmed `stage_states` and `progress_substep`
+both populate correctly. Without a workspace BYOK key, each stage's
+optimizer call raises `ProviderKeyNotConfigured` — caught per-stage by
+`optimizer_runner.py` (logged, stage marked failed, migration still
+reaches a terminal `"completed"` state rather than crashing the whole
+request) — this is the correct, already-built graceful-degradation
+behavior, not a bug. **One pre-existing gap, not a regression**: dropping
+a raw `Sample Queries/*.txt` file straight into the import wizard fails
+validation — `reprompt_api`'s `/pipelines/import` expects the universal
+trace schema already, and nothing wires
+`reprompt_core.importers.query_log.convert_file` into an API endpoint;
+`docs/TESTING.md` already documented this as a manual offline-conversion
+step before this session, so it's a known, standing gap worth closing
+later, not something the recent merges broke.
+
+## Settings page — real model-configuration content [DONE — 2026-07-15]
+
+Per `START_HERE.md`/this file's own standing note, Settings was BYOK-key
+CRUD + workspace rename only, flagged as needing real content from the
+first planning round and deferred every round since. Built the missing
+piece, reusing existing infrastructure wholesale — no new model registry,
+no new provider-onboarding flow:
+
+- **`apps/api/src/reprompt_api/model_cards.py`**: extracted
+  `build_family_card(model) -> FamilyCardOut` out of the `GET
+  /model-cards/{model}` route handler (which now just calls it) so another
+  router can reuse the exact same family/rule resolution without an
+  internal HTTP round-trip.
+- **`apps/api/src/reprompt_api/settings.py`**: new `GET /settings/models`
+  (auth-required, workspace-scoped) → `ConfiguredModelOut` — every model
+  from `migrations.py`'s existing `CURATED_MODELS` list that either needs
+  no key (local/self-hosted, e.g. `ollama/...`) or whose provider has a
+  BYOK key configured for this workspace, each with its `model_card` info
+  attached via `build_family_card`. Reuses `migrations.py`'s
+  `CURATED_MODELS`/`ModelOption`/`_to_option` directly (imported, not
+  duplicated) — confirmed no import-cycle risk (`migrations.py` doesn't
+  import `settings.py`).
+- **`apps/web`**: `lib/api.ts` gained `ConfiguredModel` +
+  `listConfiguredModels()`. `routes/settings.tsx` gained a new
+  `ConfiguredModelsCard`, rendered below the existing workspace-name and
+  API-keys cards — models grouped by provider, each showing input/output
+  cost per 1M tokens (or "Free (local)"), resolved prompt family, and a
+  pill per model-card transform rule that will actually apply to it (only
+  `will_apply: true` rules shown, never the full inapplicable set).
+- **What a user actually sees**: Settings now has a third section,
+  "Configured models" — before adding any BYOK key it shows just the
+  no-key-required local models; adding a key for a provider immediately
+  surfaces that provider's curated models with real cost and prompt-style
+  info, the same data previously only visible by opening a specific
+  pipeline's migration wizard.
+- **Tests**: `apps/api/tests/test_settings.py` — 5 new (`test_list_configured_models_*`):
+  no-key-models-only before any BYOK key, provider's models appear after a
+  key is added, model-card info present, workspace isolation (one user's
+  key never leaks another's model list), unauthenticated rejection folded
+  into the existing all-endpoints test. `apps/web/src/routes/settings.test.tsx`
+  — 3 new: grouped-by-provider rendering with model-card info, only
+  no-key models shown before any key, empty state. Final: `apps/api`
+  **128 passed**, `apps/web` **77 passed** + clean `tsc --noEmit`,
+  `packages/core` untouched (**286 passed, 2 skipped**, unaffected).
 
 Full **Refract → Reprompt** rename completed 2026-07-14: both Python
 packages (`refract_core`→`reprompt_core`, `refract_api`→`reprompt_api`,
@@ -68,6 +703,350 @@ fine in light mode but hasn't been checked/tuned for dark mode yet. A
 more distinctive monogram direction was explored and parked (not lost —
 worth revisiting, just not now).
 
+## Phase 1 — Prism optimizer quality fixes [DONE — 2026-07-15]
+
+A separate audit pass (not one of the phases 0-6 above — a later, independent
+review of the already-shipped Prism engine) found six real quality issues in
+`packages/core/src/reprompt_core/optimizer/` and the modules it leans on
+(`judge.py`, `scoring.py`, `embedding.py`). All six addressed in this pass,
+`packages/core` only (no `apps/api`/`apps/web` changes — those were
+explicitly out of scope, being worked in parallel on a different worktree).
+Ran against this worktree's own clean baseline first (`254 passed, 21
+skipped` — the 21 skips are environment-only: no `Sample Queries` fixtures,
+no `NVIDIA_NIM_API_KEY`, no local Ollama server in this checkout; this
+worktree's baseline is *not* the `273 passed, 2 skipped` figure quoted
+elsewhere in this file for a fuller dev environment — same code, different
+local environment, worth knowing if you hit this again). Final:
+**264 passed, 21 skipped** (254 + the 10 new tests below, same 21
+environment-only skips, unrelated to this work).
+
+1. **Critique loop was judge-blind.** `_optimize_stage_prism`'s ranking
+   pass (`_cheap_score_candidate`) deliberately never runs the judge (by
+   design — it's the *cheap* pass), but `critique_and_refine` was then
+   always told "AI judge was not run for this candidate" — even though the
+   judge is `DEFAULT_WEIGHTS.judge=0.45`, the *largest* weight in the real
+   composite score (`scoring.py`), bigger than deterministic (0.25) and
+   embedding (0.30) combined with neither. The critique loop was optimizing
+   against a signal that structurally excluded the dominant one. Fixed by
+   adding `judge.judge_single_pass()` — one real judge call, no
+   position-swap (the swap's bias-cancelling value is reserved for the
+   *persisted* score from the final full sweep's `judge_pairwise` call) —
+   run on each of a round's weakest 1-2 candidates right before critiquing
+   them, with its per-criterion `reasoning` text threaded into
+   `critique_and_refine` (new optional `judge_result: JudgeResult | None`
+   param) and rendered by `_format_score_feedback` in `mutator.py`. Chose
+   "pass `JudgeResult` alongside `CompositeScore`" over "extend
+   `CompositeScore` with a reasoning field" — keeps `CompositeScore`'s shape
+   (used broadly, including by `apps/api`'s `Candidate.scores`) untouched.
+   Follows the same harness discipline as every other call site: retry-once
+   on malformed JSON (new, since `judge_pairwise`/`_run_judge_call` didn't
+   already have a retry policy — added `JudgeResponseError.response`, the
+   raw failed `LLMResponse`, so a caller can still recover its cost for
+   `budget.record_spend()` even on a failed attempt), a typed exception,
+   and a `try/except` in `loop.py` that degrades to "critique without judge
+   reasoning" rather than aborting the stage. Cost is bounded: at most one
+   extra judge call per weakest candidate per round (≤2 per round) — ranking
+   itself is unchanged and still judge-free.
+   Files: `packages/core/src/reprompt_core/judge.py` (new
+   `judge_single_pass()`, `JudgeResponseError.response`),
+   `packages/core/src/reprompt_core/optimizer/mutator.py`
+   (`_format_score_feedback`/`_build_critique_messages`/`critique_and_refine`
+   all gained an optional `judge_result` parameter),
+   `packages/core/src/reprompt_core/optimizer/loop.py`
+   (`_optimize_stage_prism`'s critique/refine block, ~line 686-731).
+
+2. **`max_refine_rounds=1` made plateau early-stopping dead code.** The
+   plateau check (`candidate_baseline`/`PLATEAU_EPSILON`, see this file's
+   own "Loop & harness engineering discipline" section above) needs a
+   *second* round to compare a refined candidate's new score against — at
+   the old default of 1, `_optimize_stage_prism`'s round loop
+   (`for _round_num in range(max_refine_rounds)`) could only ever execute
+   once, so the comparison could never happen. Fixed by raising
+   `DEFAULT_MAX_REFINE_ROUNDS` from 1 to 3
+   (`packages/core/src/reprompt_core/optimizer/loop.py`). The existing
+   plateau check plus `budget.is_exhausted` already bound the cost of
+   unhelpful further rounds, so no new cost-control mechanism was needed.
+   `test_prism_plateau_early_stop` (pre-existing) already passed
+   `max_refine_rounds=3` explicitly, so it wasn't relying on the old
+   default and needed no changes — confirmed it still passes. Added two new
+   tests: `test_prism_default_max_refine_rounds_is_three` (the constant
+   itself) and `test_prism_default_rounds_engages_all_three_rounds_when_improving`
+   (an end-to-end demonstration, using the default with no
+   `max_refine_rounds` override, that all 3 rounds actually execute when
+   each round's cheap_score clears `PLATEAU_EPSILON` over its parent's
+   baseline — 6 critique calls total, 2 per round × 3 rounds).
+
+3. **"Weakest-2 gets refined" heuristic — confirmed correct, no code
+   change.** The heuristic itself (`ranked[:2]`) was never the bug; Fix 1
+   above (the judge-blind ranking feeding *into* it) was. No action needed
+   here beyond this note.
+
+4. **Judge disagreement/low_confidence computed then discarded.**
+   `judge.py`'s position-swap design (`judge_pairwise`) already computed
+   `JudgeResult.disagreement`/`low_confidence` to flag an unreliable
+   judgment, but `run_sweep_for_stage` only ever read
+   `judge_result.overall_score` — the disagreement signal never survived
+   onto anything persisted. Fixed by adding two keys,
+   `"judge_disagreement"` and `"judge_low_confidence"`, to the `scores`
+   dict `run_sweep_for_stage` builds for each `StageAttempt` (only set —
+   non-`None` — when a real judge call actually ran and succeeded). Pure
+   plumbing, no new LLM calls. `StageAttempt.scores`'s type widened from
+   `dict[str, float | None]` to `dict[str, float | bool | None]` to fit the
+   new boolean value — a `packages/core`-only type change; `apps/api`
+   persists this dict as an opaque JSON blob, so this doesn't require any
+   change on that side to keep working at runtime.
+   File: `packages/core/src/reprompt_core/optimizer/loop.py`,
+   `run_sweep_for_stage` (~line 366-419) and the `StageAttempt` model
+   definition (~line 178-196).
+
+5. **`num_prompt_variants=3` — confirmed as the wrong lever, left
+   unchanged.** Raising it would scale the expensive full-sweep stage
+   linearly; Fix 2 (more refine rounds) was the correct lever for more
+   exploration. No code change.
+
+6. **No near-duplicate filtering on mutations.** Dedup was exact-string-
+   match only (`if variant not in prompt_candidates`) — two near-identical
+   mutation/refinement variants (differing by a sentence) would each still
+   consume a full, real sweep slot. Fixed by adding `_is_near_duplicate()`
+   in `loop.py`, using `embedding.embedding_similarity` (already local/free,
+   no API key — bge-m3) to compare a candidate variant against every
+   already-kept candidate before it's added; dropped if similarity exceeds
+   the new named constant `NEAR_DUPLICATE_SIMILARITY_THRESHOLD = 0.97`
+   (deliberately high — must only catch genuinely near-identical rewrites,
+   not merely similar-topic variants, since real diversity across variants
+   is the mutator's whole point). Applied at all three places a new
+   variant/refinement gets added to a candidate set: `_optimize_stage_simple`'s
+   mutation loop, `_optimize_stage_prism`'s round-1 mutation loop, and
+   `_optimize_stage_prism`'s refined-variant loop.
+
+**Tests added** (10 total, all passing; see file:line above for where each
+fix landed):
+- `packages/core/tests/test_judge.py`: 3 new tests for `judge_single_pass`
+  (one call not two, retry-once-on-malformed-JSON, raises with recoverable
+  cost after retry also fails).
+- `packages/core/tests/test_optimizer_mutator.py`: 2 new tests for
+  `critique_and_refine`'s `judge_result` parameter (reasoning text reaches
+  the prompt when supplied; falls back to the prior "judge was not run"
+  framing when not).
+- `packages/core/tests/test_optimizer_loop.py`: 5 new tests — real judge
+  call in the critique-ranking pass with reasoning reaching the prompt
+  (Fix 1), the new `DEFAULT_MAX_REFINE_ROUNDS=3` constant and an end-to-end
+  3-round demonstration (Fix 2), `judge_disagreement`/`judge_low_confidence`
+  appearing in `StageAttempt.scores` (Fix 4), near-duplicate mutation
+  filtering (Fix 6).
+
+**One spec/reality drift worth recording**: the audit that produced this
+Phase's spec suggested `run_sweep_for_stage`'s judge call site (~line 373)
+was "around line 377" and `_format_score_feedback` "around line 218-243" —
+both were off by a handful of lines from actual file state at the time this
+work started (harmless; line numbers drift as a file is edited, not a sign
+of a deeper mismatch — the described *behavior* at each site matched
+exactly). No other assumption in the spec (`CompositeScore`'s shape,
+`StageAttempt`'s definition, the plateau test's existing
+`max_refine_rounds=3`, etc.) needed correcting.
+
+## Phase 2 — Live DAG/run status view [DONE — 2026-07-15]
+
+Built on top of Phase 4/4b's polling `GET .../status` endpoint — no new
+concurrency, no new DB columns, `packages/core` untouched throughout (a
+separate agent was working there in a parallel worktree at the same time).
+
+**Backend** — `apps/api/src/reprompt_api/migrations.py`:
+- `MigrationOut.stage_states: dict[str, str]` (new field, `_compute_stage_states`
+  helper just above `_to_out`) — a derived `{stage_id (as string) ->
+  "idle"|"running"|"done"|"failed"}` map, computed fresh on every read from
+  the same `status`/`progress_stage_name` fields `optimizer_runner.py` already
+  writes sequentially. Stage order reused as-is from `optimizer_runner._run`'s
+  own query (`Stage` filtered by `pipeline_id`, ordered by `id`) — no second
+  ordering invented. Rule: stages before the current `progress_stage_name` =
+  `"done"`, the matching stage = `"running"` (`"failed"` if
+  `status == "failed"`, `"done"` if `status == "stopped_early"` since that
+  stage had already gotten at least one attempt before the budget hard-stop),
+  stages after = `"idle"`; `status == "completed"` short-circuits to all
+  `"done"`; before anything starts (`progress_stage_name` still `None`), all
+  `"idle"`. `_to_out` now takes `db` (needs it to query stage order) — every
+  call site updated.
+- Keys are the stage's DB id as a string (`str(stage.id)`), matching the DAG
+  canvas's React Flow node ids (`String(stageId)` in the frontend) so the
+  frontend can index `stage_states` directly by node id with no translation.
+- Tests: `apps/api/tests/test_migrations.py` — 5 new cases (`test_stage_states_*`):
+  all-idle before a run starts, mid-run done/running/idle split, terminal
+  `failed` (current stage marked `"failed"`), terminal `stopped_early`
+  (current stage marked `"done"`), terminal `completed` (all `"done"`).
+
+**Frontend**:
+- `apps/web/src/components/pipeline-canvas.tsx` (new) — extracted the React
+  Flow DAG-building logic (nodes/edges from `getPipelineDag`) out of
+  `pipeline-detail.tsx` into a shared `PipelineCanvas` component taking an
+  optional `stageStates` prop, so both the static pipeline-canvas screen and
+  the live migration-run view render the exact same DAG component rather than
+  two divergent copies. `apps/web/src/routes/pipeline-detail.tsx` now just
+  wraps it (unchanged behavior, confirmed via the same `pnpm test` pass).
+- `apps/web/src/components/stage-node.tsx` — `StageNodeData` gained an
+  optional `runState?: StageRunState`. Renders a small state dot + a
+  `border-2` card color: idle = hairline (`border-line`), running =
+  `border-beam` + a `bg-beam animate-pulse` dot (same pulsing-dot vocabulary
+  already used for the "Optimizing…" indicator in `new-migration.tsx`, not a
+  new animation), done = `border-parity-pass`/`bg-parity-pass`, failed =
+  `border-parity-fail`/`bg-parity-fail` — reusing `tokens.css`'s existing
+  parity semantic colors and `--beam` accent, no new tokens added. No
+  `@keyframes` needed — Tailwind's built-in `animate-pulse` utility (already
+  in use elsewhere) covers the "running" pulse.
+- `apps/web/src/components/migration-run-bar.tsx` (new) — slim status strip:
+  a status dot + label (pulsing while running), "N / M stages" + a progress
+  bar while running, `total_cost_usd` ("Cost so far") whenever the backend
+  has set it, and the `stop_reason` in `--parity-fail` text for a
+  `failed`/`stopped_early` terminal state.
+- `apps/web/src/routes/new-migration.tsx`'s `MigrationSuccessScreen` — the
+  existing 2s `refetchInterval` poll (`useQuery` on `getMigrationStatus`,
+  stops once `status !== "running"`) is unchanged; its old inline
+  numeric-only progress block was replaced with `<MigrationRunBar
+  status={status} .../>` followed by `<PipelineCanvas pipelineId={pid}
+  stageStates={status?.stage_states} />` once the run is `running` or
+  terminal — starting a migration now shows the live-colored DAG, not just a
+  "3 of 7" counter.
+- `apps/web/src/lib/api.ts` — `MigrationOut.stage_states` and the new
+  `StageRunState` type added to match the backend response.
+
+**What a user actually sees**: after clicking "Start migration," the wizard's
+success screen now shows a slim status bar (pulsing dot + which stage is
+optimizing + stage count + cost-so-far once available) directly above the
+pipeline's DAG canvas, with each stage node's border/dot live-updating every
+~2s as the run progresses — indigo pulsing while a stage is being optimized,
+green once done, red if that stage's the one a failure or budget hard-stop
+landed on. On completion every node turns green; on a budget/error stop, the
+run-bar surfaces the plain-English `stop_reason` in red beneath the bar.
+
+**Verified**: `cd apps/api && uv run pytest -q` → 109 passed (104 baseline +
+5 new `stage_states` tests). `cd apps/web && npx tsc --noEmit` → clean.
+`cd apps/web && pnpm test` → 69 passed (65 baseline + 4 new `StageNode`
+runState tests). `packages/core` not touched (confirmed via `git status`
+before commit — only `apps/api`/`apps/web` files changed).
+
+**Explicitly out of scope, not built**: rubric generation still has no live
+view (it's a synchronous blocking call with no run object to poll — needs
+its own deferred async-rubric-gen phase first, per the task brief). No new
+concurrency was introduced — stages still run strictly sequentially
+server-side, this phase only makes that existing sequential progress
+*visible* in real time.
+
+## Phase A — Live optimizer sub-step signal [DONE — 2026-07-15]
+
+The gap Phase 2's live DAG view (above) left open: `on_attempt` only fires
+once per finished, scored sweep attempt, so a "running" stage's node had no
+signal for what was actually happening *inside* it — no distinction between
+"generating variants" and "waiting on a full sweep." Built on top of Phase
+2's `stage_states`/DAG-coloring work, no changes to that mechanism, only
+additive: a new, finer-grained `on_phase` callback alongside the existing
+`on_attempt`.
+
+**Actual phase sequence found in `loop.py`** (confirms the task brief's
+assumption, with one correction — critiquing and refining are two separate
+calls per candidate within the same round, not one merged step): both
+strategies share `run_sweep_for_stage`, which now fires `"sweeping"` once on
+entry and `"scoring"` once the grid is done, right before selection — so
+every strategy ends `sweeping → scoring`. **"simple"**: `mutating` (one
+`generate_prompt_mutations` call) → `sweeping` → `scoring`. **"prism"**:
+`mutating` (round-1 variants) → per round (bounded by `max_refine_rounds`,
+plateau-stopped early per candidate — see the "Loop & harness engineering
+discipline" section above, unchanged by this phase): `cheap_scoring` (the
+judge-free ranking pass) → `critiquing` (the new-in-Phase-1
+`judge_single_pass` call feeding reasoning into critique) → `refining` (the
+`critique_and_refine` call itself) — then, after all rounds, `sweeping` →
+`scoring` → optional few-shot selection (no phase event; it's a single
+targeted call on the already-selected winner, not a distinct stage-wide
+phase).
+
+**`packages/core`** (`packages/core/src/reprompt_core/optimizer/loop.py`):
+- `StagePhase` (`Literal["mutating","cheap_scoring","critiquing","refining","sweeping","scoring"]`)
+  and `StagePhaseEvent` (plain `NamedTuple`: `stage_id: int`, `phase:
+  StagePhase`) — no DB/FastAPI imports, same headless convention as
+  `StageAttempt`.
+- `on_phase: Callable[[StagePhaseEvent], None] | None = None` threaded
+  through `run_optimizer()` → `_optimize_stage_simple`/
+  `_optimize_stage_prism` → `run_sweep_for_stage` — every new parameter
+  defaults to `None` and is a true no-op when omitted, confirmed by
+  `test_on_phase_is_optional_and_defaults_to_no_op`.
+- `run_sweep_for_stage` fires `sweeping`/`scoring` (shared by both
+  strategies, so they can never drift on these two). `_optimize_stage_simple`
+  fires `mutating`. `_optimize_stage_prism` fires `mutating` once (round 1),
+  then `cheap_scoring`/`critiquing`/`refining` once each per round —
+  `refining` specifically only fires for a candidate that actually reaches
+  the `critique_and_refine` call (not for one skipped by the plateau check
+  or a budget hard-stop that lands between `critiquing` and `refining`),
+  via a per-round `refining_phase_fired` flag so it's one event per round,
+  not one per candidate.
+- Tests (3 new, `test_optimizer_loop.py`): the exact phase sequence for
+  "simple" and for "prism" (asserting the full ordered list, not just
+  membership), plus the no-op-safe default. `packages/core`:
+  **267 passed, 21 skipped** (264 + 3 new, same 21 environment-only skips
+  as the Phase 1 quality-fixes baseline).
+
+**`apps/api`**:
+- `models.py`: `Migration.progress_substep: str | None` — new column, right
+  next to `progress_stage_name`. Alembic migration
+  `apps/api/alembic/versions/b8e1c4a7f209_add_migration_progress_substep.py`
+  (new head, `f3a7b1c9d2e4` → `b8e1c4a7f209`), mirroring
+  `f3a7b1c9d2e4_add_base_url_and_migration_progress.py`'s precedent for a
+  single nullable `String` column add via `batch_alter_table`.
+- `optimizer_runner.py`: a new `on_phase` closure alongside the existing
+  `on_attempt`, writing `migration.progress_substep = event.phase` and
+  `db.commit()` at the same cadence as `on_attempt` (every call, not
+  batched) — threaded into the `run_optimizer(...)` call as `on_phase=on_phase`.
+  Deliberately additive/narrow here and in `models.py`/`migrations.py`: a
+  separate agent is working on `target_model` tracking in these same two
+  files in a parallel worktree (see "Real gap, not yet fixed" under "PR
+  #3/#4 review notes" below) — nothing in this phase restructures an
+  existing function, only new fields/params/closures.
+- `migrations.py`: `MigrationOut.progress_substep: str | None` — chosen
+  over folding it into `stage_states`'s values because `progress_substep`
+  is a single migration-level field (only one stage is ever "running" at a
+  time in this sequential engine), so a top-level field is the smaller,
+  more honest diff than making every `stage_states` entry a richer object
+  for a value that's only ever non-null for one of them.
+- Test: `test_status_reflects_progress_fields` extended to assert
+  `progress_substep` round-trips through `GET .../status`, plus a new
+  `test_status_progress_substep_defaults_to_none_before_a_run_starts`.
+  `apps/api`: **110 passed** (109 baseline + 1 new test file-level count;
+  the extended existing test doesn't add a count but the new one does).
+
+**`apps/web`**:
+- `lib/api.ts`: `StagePhase` type (mirrors `packages/core`'s exactly) and
+  `MigrationOut.progress_substep: StagePhase | null`.
+- `components/pipeline-canvas.tsx`: new `runningSubstep?: StagePhase | null`
+  prop — attached only to the one DAG node whose derived `runState` is
+  `"running"` (`progress_substep` is a migration-level field, not
+  per-stage, so it would be misleading to attach it to every node).
+- `components/stage-node.tsx`: `StageNodeData` gained `substep?: StagePhase
+  | null`; a new small `text-beam` line renders under the existing pulsing
+  dot only when `runState === "running" && substep` — human-readable via a
+  new `SUBSTEP_LABEL` map (`mutating` → "Generating prompt variants",
+  `cheap_scoring` → "Ranking candidates", `critiquing` → "Critiquing
+  weakest candidates", `refining` → "Refining prompt", `sweeping` →
+  "Running parameter sweep", `scoring` → "Scoring candidates") — never the
+  raw enum value.
+- `routes/new-migration.tsx`: `<PipelineCanvas runningSubstep={status?.progress_substep} />`
+  added alongside the existing `stageStates` prop.
+- Tests: 4 new in `stage-node.test.tsx` (the label renders while running,
+  every `StagePhase` maps to its human label, no label when not running,
+  no label when running with no substep known yet). Fixed one pre-existing
+  test fixture (`new-migration.test.tsx`) that needed `progress_substep:
+  null` added to satisfy `MigrationOut`'s now-required field.
+  `npx tsc --noEmit` clean. `apps/web`: **73 passed** (69 baseline + 4 new),
+  9 test files.
+
+**What a user actually sees**: while a stage's node is pulsing indigo
+("running") on the live migration screen, a small indigo sub-line now
+appears under the stage name reading e.g. "Running — critiquing weakest
+candidates" or "Running — running parameter sweep," updating roughly every
+poll interval (~2s, same `refetchInterval` Phase 2 already set up) as the
+optimizer moves through mutation, critique/refine rounds (Prism only), and
+the final sweep/score pass for whichever stage is currently active.
+
+**Explicitly out of scope, not touched**: `Candidate`'s schema/`target_model`
+(a different agent's parallel work — see "PR #3/#4 review notes" below);
+the migration wizard's model picker.
+
 ## PR #3/#4 review notes — Phase 4 landed differently than originally spec'd
 
 An external contributor (`shreychechani`) built Phase 4 + 4b independently
@@ -87,13 +1066,16 @@ worth knowing before touching `optimizer_runner.py`/`migrations.py` again:
   schema — but note it only reads the old shape's `default`, silently
   dropping any old per-stage `stages` overrides (acceptable: no real
   migrations existed under the old schema yet at merge time).
-- **Real gap, not yet fixed**: neither `StageAttempt` (packages/core) nor
-  `Candidate` (apps/api) records *which* target model produced a given
-  attempt. Once a migration tries multiple models, there's no way to tell
-  from a `Candidate` row which model the winning prompt was actually tuned
-  for. Cheap to fix now (add a `target_model` field to both), will be
-  painful once the Phase 5/scorecard screen is built assuming the current
-  schema. **Next concrete task**, not yet started.
+- **Real gap, now FIXED (2026-07-15)**: `Candidate` (apps/api) now records
+  *which* target model produced a given attempt. Added non-nullable
+  `Candidate.target_model: str` field, Alembic migration
+  `8c4f6d1a3e9b_add_target_model_to_candidates.py`, and wiring in
+  `optimizer_runner.py`'s `on_attempt` callback to pass the current
+  target_model from the loop context. Test: `test_candidate_rows_populated_with_target_model`
+  verifies candidates get correct target_model when migration tries
+  multiple models. Once a migration tries multiple models, each `Candidate`
+  row now explicitly records which model it was tuned for. Enables future
+  scorecard/cross-model comparison logic.
 - Two trivial issues found and fixed directly (not worth a follow-up PR):
   an unused `ModelOption` import in `new-migration.tsx` (real `tsc
   --noEmit` error), and a missing `db.rollback()` in
@@ -106,6 +1088,18 @@ worth knowing before touching `optimizer_runner.py`/`migrations.py` again:
 
 ## Working in parallel (more than one developer/AI at once)
 
+- **2026-07-16**: "Phase 2 — Project/multi-run ingestion" (this file's own
+  dated section above) was built in `.worktrees/phase2`
+  (`phase2-project-multirun` branch) while a second agent worked in
+  `.worktrees/phase3` on unrelated work also touching
+  `apps/api/src/reprompt_api/pipelines.py` and
+  `apps/web/src/routes/pipeline-workspace.tsx`. Phase 2's changes to both
+  files are additive only (new endpoints/route in `pipelines.py`; a new
+  header button + a new drawer component in `pipeline-workspace.tsx`, no
+  existing function bodies restructured) specifically to keep the eventual
+  hand-merge low-risk — check `git log`/the diff on both files at merge
+  time for what phase3 added before assuming a conflict is real vs. two
+  clean additive diffs that just happen to touch the same file.
 - **Check "Current state" above before claiming a phase.** It says what's
   actually done vs. not — if two people start Phase 4 without checking
   here first, that's wasted work for one of them. If you start a phase,
@@ -141,11 +1135,22 @@ worth knowing before touching `optimizer_runner.py`/`migrations.py` again:
 **Prism** is our own implementation of PromptWizard's published technique
 (mutate → score → critique → refine, iterate; plus synthetic few-shot
 example generation) — the essence of the approach, extracted and
-rebuilt in-house rather than depending on their package. Built entirely
-on the engine's own already-universal `llm/client.py`, so it works with
-any provider (OpenAI, Anthropic, Gemini, self-hosted Ollama/vLLM/etc.)
-uniformly, with no proxy and no extra dependency. Named to match the
-existing brand — the logo and `ParityBeam` UI component already use a
+rebuilt in-house rather than depending on their package. We describe it
+externally as **a self-evolving prompt optimizer**: within a single run
+it genuinely revises its own output based on its own critique — mutate,
+get judge-aware critique (real reasoning from the AI judge, not just a
+score), refine against that specific feedback for up to 3 rounds per
+stage, sweep, select the best-scoring candidate — which is honest
+framing for what's actually built, not a stretch. **This is per-migration,
+not cross-migration**: each migration evolves its own prompt from
+scratch, and Prism doesn't yet carry learnings between separate
+migrations — there's no persistence of "what worked" across runs today,
+so this should never be described as "getting smarter over time" or
+"learning from your migrations." Built entirely on the engine's own
+already-universal `llm/client.py`, so it works with any provider
+(OpenAI, Anthropic, Gemini, self-hosted Ollama/vLLM/etc.) uniformly,
+with no proxy and no extra dependency. Named to match the existing
+brand — the logo and `ParityBeam` UI component already use a
 beam-splitting-into-spectrum visual; Prism is exactly that: one prompt
 refracted into multiple analyzed, refined variants, vs. **simple** (the
 existing one-shot mutation strategy) being a beam that passes straight
@@ -855,6 +1860,52 @@ section for what `prism` does.
       summarizing the phase(s) completed, and `git push origin master`
       left for the user to actually run.
 
+## Phase D(a) — Model-card info in wizard [DONE — 2026-07-15]
+
+Read-only display of model card transform rules in the migration wizard's
+model picker, so users can see what prompt rewrites will be applied to each
+target model's variants. No changes to `packages/core/src/reprompt_core/llm/model_card.py`
+itself (read-only use only); no changes to `migrations.py`, `optimizer_runner.py`,
+or `loop.py` (other agents own those files in parallel worktrees).
+
+**Backend** — `apps/api/src/reprompt_api/model_cards.py` (new):
+- `GET /{model:path}` endpoint (using `path` type to allow "/" in model names
+  like `ollama/llama3`)
+- Returns `FamilyCardOut` schema with resolved family, version, description,
+  `is_small_variant` boolean, and `rules: list[TransformRuleOut]`
+- Each rule includes `name`, `description`, `applies_to` ("all" or "small_only"),
+  and `will_apply` boolean (reflects whether the rule fires for this specific model)
+- Pure in-memory computation, zero DB queries, zero LLM calls
+- Registered in `main.py` via `app.include_router(model_cards_router)`
+- `tests/test_model_cards.py`: 13 tests covering all families, size detection,
+  rule applicability, and public (no-auth) access
+
+**Frontend** — `apps/web/src/routes/new-migration.tsx`:
+- Added `useEffect` to fetch model card for each available model when
+  `modelsQuery.data` loads
+- Model picker now displays a "Model transform rules" info panel below each
+  model's cost/capabilities badges
+- Rules rendered with checkmark (✓) if will apply, strikethrough (—) if not
+- Panel shows rule name and description in human-readable form
+- On fetch error, card silently fails gracefully (no error shown, just no panel)
+- `new-migration.test.tsx`: added mock for `getModelCard`, updated test suite
+  to verify model card display appears with correct rules
+- `src/lib/api.ts`: added `ModelCardInfo` and `TransformRuleInfo` types,
+  `getModelCard(model)` function using URL-safe encoding for model names
+
+**Tests**:
+- `packages/core`: 264 passed, 21 skipped (unaffected — verified clean run)
+- `apps/api`: 122 passed (109 baseline + 13 new)
+- `apps/web`: 68 passed (65 baseline + 3 new), clean `tsc --noEmit`
+
+**What a user sees**: in the migration wizard's "Target models" step, each model
+card now has a small info section below the existing cost/capability badges,
+titled "Model transform rules", listing which prompt transform rules apply to
+this specific model — e.g. "xml_wrap_sections: Wrap recognized labeled sections
+in XML tags" with a checkmark, and "terseify_if_small: Strip hedging... (only
+for small models)" with a strikethrough for a large model. Clicking Continue
+is unaffected; this is purely informational UI.
+
 ## Known constraints to respect while building the above
 
 - **No Docker, no LiteLLM proxy, no external framework dependency** for
@@ -873,3 +1924,613 @@ section for what `prism` does.
   "Remaining plan") — it is *not* built yet, so don't assume
   `budget_usd=None` works anywhere in Phases 1-6 above; that was a
   mismatch an earlier build spec incorrectly assumed already existed.
+
+## Phase 1 — Unified pipeline workspace [DONE — 2026-07-15]
+
+A separate frontend-shape track, independent of the optimizer phase
+numbering above (same relationship as "Phase D(a)" — parallel work, not a
+continuation of Phase 6). Replaced the three previously-separate screens
+(`/pipelines/$id` canvas, `/pipelines/$id/rubrics`,
+`/pipelines/$id/migrations/new`) with one route,
+`/pipelines/$id?tab=canvas|data|rubrics|migrations`, tab state living in the
+URL search param. No changes to `packages/core`, the optimizer loop, judge,
+mutator, or anything under `packages/core/src/reprompt_core/optimizer/`.
+
+**Backend** — `apps/api/src/reprompt_api/pipelines.py`:
+- New `PATCH /pipelines/{pipeline_id}` endpoint (`update_pipeline`, body
+  `{name: str}`, same PATCH-whole-resource pattern as
+  `settings.py`'s `update_workspace_settings`) — powers the workspace
+  header's click-to-edit-inline pipeline name. Returns the updated
+  `PipelineSummary`; 404s for an unknown pipeline, 422s for an empty name
+  (`Field(min_length=1)`).
+- `tests/test_pipelines.py`: 3 new tests (rename + persists, empty-name
+  422, unknown-pipeline 404).
+
+**Frontend**:
+- `apps/web/src/router.tsx`: `pipelineWorkspaceRoute` replaces the old
+  `pipelineDetailRoute`, with `validateSearch` defaulting `tab` to
+  `"canvas"` for anything missing/unrecognized. The two old paths
+  (`/pipelines/$id/rubrics`, `/pipelines/$id/migrations/new`) are now
+  `beforeLoad`-only stub routes that `redirect()` into the matching
+  `?tab=` on the new route — no bookmarked/shared link breaks.
+- `apps/web/src/routes/pipeline-workspace.tsx` (new): persistent header
+  (click-to-edit-inline name, `PATCH /pipelines/{id}` via
+  `updatePipeline` in `api.ts`) + tab bar (Canvas · Data · Rubrics ·
+  Migrations) + body switching on the `tab` search param. Also owns the
+  canvas tab's stage-rubric drawer (`StageRubricDrawer`, built on the
+  existing `apps/web/src/components/ui/drawer.tsx` — a vaul-based
+  primitive that already existed, not built new): fetches
+  `listRubrics(pipelineId)` and filters by `stage_id` (no new endpoint),
+  shows format checks/content criteria plus an inline Approve button
+  (reuses `approveRubric`), and a "View full rubric →" link that switches
+  to the Rubrics tab and sets `window.location.hash = "rubric-${stage_id}"`.
+- `apps/web/src/components/pipeline-canvas.tsx`: added optional
+  `onNodeClick?: (stageId: number) => void` prop, wired to React Flow's own
+  `onNodeClick`. Omitted (as before) by the read-only canvas embed inside
+  `MigrationSuccessScreen` — only the workspace's Canvas tab passes it.
+- `apps/web/src/components/rubric-review-panel.tsx` (new, extracted from
+  the deleted `routes/rubric-review.tsx`): identical logic, `pipelineId`
+  now arrives as a prop instead of `useParams` (no longer its own route),
+  no more of its own `<AppShell>`/header/back-link. Each stage's `Card`
+  now carries `id={rubric-${stage_id}}`, and a `useEffect` scrolls to
+  `window.location.hash` once rubrics load — this is what makes the
+  drawer's "View full rubric →" deep link land on the right card.
+- `apps/web/src/components/new-migration-wizard.tsx` +
+  `migration-success-screen.tsx` (new, extracted from the deleted
+  `routes/new-migration.tsx`): the wizard now calls an `onCreated`
+  callback instead of rendering the success screen itself; the success
+  screen takes an `onBackToCanvas` callback (switches tabs) instead of
+  navigating away, and initializes its `started` state from
+  `migration.status !== "pending"` so a migration discovered already-running
+  (not just one freshly created this session) shows its live run state
+  immediately.
+- `pipeline-workspace.tsx`'s `MigrationsTab` decides wizard vs. success
+  screen by calling the pre-existing `GET /pipelines/{id}/migrations`
+  (`listMigrations` — already existed, no new endpoint needed): empty list
+  → wizard; otherwise → success screen for the most recent migration (or
+  whichever one was just created this session, tracked in local state so
+  there's no flicker waiting on the list query to refetch).
+- Deleted: `routes/pipeline-detail.tsx`, `routes/rubric-review.tsx` (+
+  test), `routes/new-migration.tsx` (+ test) — fully replaced by the above.
+
+**Tests**:
+- `apps/api`: 131 passed (128 baseline + 3 new for `PATCH /pipelines/{id}`).
+- `apps/web`: 85 passed (77 baseline − 11 from the two deleted route test
+  files + 19 new across `rubric-review-panel.test.tsx`,
+  `new-migration-wizard.test.tsx`, and `pipeline-workspace.test.tsx`),
+  clean `npx tsc --noEmit`, clean `npx vite build`.
+- `packages/core`: untouched — confirmed via `git status` (no files under
+  `packages/core` appear in the diff).
+
+**What a user sees**: opening any pipeline now lands on one page with a
+tab bar (Canvas · Data · Rubrics · Migrations) instead of three separate
+screens reached by different buttons/links. Clicking the pipeline name in
+the header turns it into an editable text field. Clicking a stage node on
+the Canvas tab opens a right-side drawer with that stage's rubric and an
+Approve button, without leaving the canvas; "View full rubric →" jumps to
+the full editor on the Rubrics tab, scrolled to that exact stage. Any old
+`/rubrics` or `/migrations/new` link still works, landing on the right tab.
+The Data tab currently just says "Coming soon" (Phase 3, not part of this
+work — see "Phase 3 — Data dashboard tab" below for what replaced it).
+
+## Phase 3 — Data dashboard tab [DONE — 2026-07-16]
+
+Another separate frontend-shape track, independent of the optimizer phase
+numbering (same relationship as "Phase 1 — Unified pipeline workspace" and
+"Phase D(a)" above — parallel work, not a continuation of Phase 6). Replaces
+the Data tab's "Coming soon" placeholder from Phase 1 above with a real,
+read-only spreadsheet-style browser over every `StageRecord` (input,
+rendered prompt, output, tokens/cost/latency) for a pipeline. Built in a
+separate worktree (`phase3-data-tab`) in parallel with another agent's
+`phase2-*` work on multi-run support (`GET /pipelines/{id}/runs`) touching
+`pipelines.py`/`pipeline-workspace.tsx` at the same time — kept additive/
+narrow in both shared files (new router file instead of extending
+`pipelines.py`; only the Data-tab `{tab === "data" && ...}` block changed in
+`pipeline-workspace.tsx`) per that hand-merge constraint. No changes to
+`packages/core`, the optimizer loop, or anything under
+`packages/core/src/reprompt_core/optimizer/`.
+
+**Deliberate scope cut, not forgotten**: only a **Stage filter** is built
+here. A **Run filter/dropdown** is an explicit fast follow-on, blocked on
+the parallel `phase2` work's `GET /pipelines/{id}/runs` endpoint landing
+first (this phase was built without depending on that endpoint existing
+yet, per this phase's own brief) — pick it up once that merges, don't
+re-derive whether it's in scope. No text search box either (out of scope,
+would need real indexing, not part of this phase's brief).
+
+**Backend** — new `apps/api/src/reprompt_api/stage_records.py` (deliberately
+its own file, not folded into the already-large, actively-edited-in-parallel
+`pipelines.py`):
+- `GET /pipelines/{pipeline_id}/stage-records?stage_id=&trace_id=&cursor=&limit=`
+  → `{records: StageRecordOut[], next_cursor: int | None}`. Cursor
+  pagination is the simplest possible form — `StageRecord.id > cursor ORDER
+  BY id LIMIT limit` (+1 row fetched to know if a next page exists without
+  a second COUNT query) — `id` is an autoincrementing surrogate with no
+  updates/deletes on this table, so it's stable across pages. Always scoped
+  to `pipeline_id` via a `StageRecord → Stage`/`Trace → BenchmarkSet` join
+  (a `StageRecord` has no direct `pipeline_id` column); `stage_id`/
+  `trace_id` are additional optional equality filters applied in the same
+  query — all filtering is server-side SQL, never fetch-all-then-filter in
+  Python. An unknown `pipeline_id` returns an empty `records` list (200),
+  not a 404 — matches this router's read-only, listing-style contract
+  (same as `GET /pipelines` never erroring on an empty result).
+- `StageRecordOut`: `id, stage_id, stage_name, trace_id, input,
+  rendered_prompt, output, tokens_in, tokens_out, latency_ms, cost` — no
+  `tokens_thinking`/`documents`/`meta` (present on the `StageRecord` model
+  but not needed by this browser's columns or drawer).
+- Registered in `apps/api/src/reprompt_api/main.py` (one import + one
+  `app.include_router(...)` line, additive).
+- Tests: new `apps/api/tests/test_stage_records.py`, 6 cases — full-field
+  response shape, cursor pagination walks every page with no
+  overlap/gaps/duplicates across a 10-record set paginated 4-at-a-time,
+  `stage_id` filter (cross-checked against the DAG's stage ids), `trace_id`
+  filter, pipeline-scoping (no cross-pipeline leakage between two imported
+  pipelines), unknown pipeline → empty list not an error.
+
+**Frontend**:
+- Added `@tanstack/react-virtual` (`apps/web/package.json`) — row
+  virtualization for the record table, pairs with the already-used
+  `@tanstack/react-query`.
+- New `apps/web/src/components/data-table.tsx` (`DataTable`): toolbar with
+  a Stage `<Select>` ("All stages" default, options from `getPipelineDag`
+  under the same `["pipeline-dag", pipelineId]` query key the Canvas tab's
+  `PipelineCanvas` already uses, so switching Canvas ↔ Data tabs in one
+  session doesn't re-fetch the DAG) above a CSS-grid-based virtualized
+  table (`useVirtualizer` over a `useInfiniteQuery` against
+  `listStageRecords`, `getNextPageParam: (page) => page.next_cursor`, 50
+  records/page, auto-fetches the next page once the last rendered virtual
+  row nears the end of what's loaded). Columns: Trace (id) · Stage (badge)
+  · Input/Rendered Prompt/Output (all truncated ~80 chars) · Tok in · Tok
+  out · Cost · Latency. Whole row is a clickable `<button>` that opens a
+  drawer with the full untruncated input (pretty-printed JSON), rendered
+  prompt, output, and exact token/cost/latency figures — reuses the
+  existing `apps/web/src/components/ui/drawer.tsx` primitive (the same
+  vaul-based one Phase 1's stage-rubric drawer uses), not a second drawer
+  implementation.
+- `apps/web/src/lib/api.ts`: additive `StageRecordOut`/`StageRecordsPage`
+  types + `listStageRecords()`, right before the existing "Trace format
+  reference" section.
+- `apps/web/src/routes/pipeline-workspace.tsx`: only the
+  `{tab === "data" && ...}` block changed — now renders
+  `<DataTable pipelineId={pid} />` instead of the "Coming soon" `<div>`;
+  everything else in the file (header, tab bar, canvas/rubrics/migrations
+  tabs, the stage-rubric drawer) is untouched, per the hand-merge
+  constraint noted above.
+- Read-only throughout, by design — no edit/approve affordance anywhere in
+  this tab; that stays exclusive to the Rubrics tab.
+- Tests: new `apps/web/src/components/data-table.test.tsx`, 4 cases — stage
+  filter populated from the DAG fetch, empty state, row truncation +
+  drawer shows full untruncated content on click, changing the stage
+  filter re-fetches scoped to the selected `stage_id`. One jsdom-specific
+  setup note worth knowing if this file is touched again: `jsdom` gives
+  every element a `0` `offsetHeight`/`offsetWidth` by default (no real
+  layout engine), which makes `useVirtualizer` think the viewport is
+  zero-sized and render no rows at all — the test file stubs
+  `HTMLElement.prototype.offsetHeight`/`offsetWidth` and a no-op
+  `ResizeObserver` in a `beforeAll`, same spirit as
+  `pipeline-workspace.test.tsx`'s existing note on `@xyflow/react` needing
+  browser APIs jsdom doesn't provide.
+
+**Verified**: `cd apps/api && uv run pytest -q` → **137 passed** (131
+baseline + 6 new). `cd apps/web && pnpm exec tsc --noEmit` → clean.
+`cd apps/web && pnpm test` → **89 passed** (85 baseline + 4 new), 11 test
+files. `packages/core` untouched — confirmed via `git status` (only
+`apps/api`/`apps/web` files plus this doc and `docs/TESTING.md` appear in
+the diff).
+
+**What a user sees**: `/pipelines/$id?tab=data` now shows a real table —
+every benchmark trace's stage-by-stage input/prompt/output with token,
+cost, and latency figures, filterable by stage, scrolling to load more
+rows automatically, click any row for the full untruncated record in a
+side drawer. No Run filter yet (see the deliberate-scope-cut note above).
+
+**Where this leaves off**: the Run filter/dropdown is the next piece once
+`phase2`'s `GET /pipelines/{id}/runs` lands and is merged in — add a second
+`<Select>` next to the Stage one in `data-table.tsx`'s toolbar, threading a
+`runId`/similar param through `listStageRecords`/`stage_records.py` the
+same way `stage_id` is threaded today (the backend's cursor-pagination
+query already has the right shape to add one more optional equality
+filter). Nothing else about this phase is mid-flight.
+
+## Pipeline delete [DONE — 2026-07-16]
+
+Another separate frontend-shape track, independent of the optimizer phase
+numbering (same relationship as "Phase 1 — Unified pipeline workspace" and
+"Phase 3 — Data dashboard tab" above). Closes out the **Pipeline CRUD**
+backlog item: rename already existed (Phase 1's `PATCH /pipelines/{id}`,
+the workspace header's click-to-edit-inline name) and naming-at-import
+already worked (a pipeline's name always comes from the imported trace
+file's `pipeline.name` — see `pipelines.py`'s `import_pipeline` /
+`ImportResult.name`, unchanged here); the only missing piece was delete.
+All three are now built. No changes to `packages/core`, the optimizer
+loop, or anything under `packages/core/src/reprompt_core/optimizer/`.
+
+**Backend** — `apps/api/src/reprompt_api/pipelines.py`:
+- New `DELETE /pipelines/{pipeline_id}` (`delete_pipeline`) — 404 if the
+  pipeline doesn't exist, else a single `db.delete(pipeline); db.commit()`
+  and `204 No Content`. Same 404-if-missing / 204-on-success shape as
+  `settings.py`'s `delete_api_key`.
+- **Cascade check done before writing this, not assumed**: read every FK
+  in `models.py` that points at `Pipeline` (`Stage.pipeline_id`,
+  `BenchmarkSet.pipeline_id`, `Migration.pipeline_id`) and one level
+  further down (`StageRecord.stage_id`/`trace_id`, `Rubric.stage_id`,
+  `Candidate.migration_id`/`stage_id`, `Trace.benchmark_set_id`). Every
+  one of them already carries both `ForeignKey(..., ondelete="CASCADE")`
+  *and* the matching ORM `relationship(..., cascade="all, delete-orphan")`
+  on the parent side (`Pipeline.stages`/`.benchmark_sets`/`.migrations`,
+  `Stage.stage_records`/`.rubric`/`.candidates`, `BenchmarkSet.traces`,
+  `Trace.stage_records`, `Migration.candidates`) — confirmed "cascades
+  already work" was accurate, not stale. A single `db.delete(pipeline)`
+  is therefore sufficient; no manual child-deletion-in-order code needed.
+  (Note for later: SQLite FK enforcement itself is off in `db.py` — no
+  `PRAGMA foreign_keys=ON` — so the DB-level `ondelete="CASCADE"` is inert
+  on SQLite today; the ORM-level `cascade="all, delete-orphan"` is what
+  actually does the work in tests/dev, and would keep working unchanged
+  if this project moves to Postgres later where the DB-level cascade
+  would also kick in.)
+- `tests/test_pipelines.py`: 2 new tests —
+  `test_delete_pipeline_removes_pipeline_and_cascades_to_children` (seeds
+  one row in every child table — rubric, migration, candidate, on top of
+  the diamond import's existing stages/benchmark_set/traces/stage_records
+  — deletes the pipeline, then asserts all seven tables are empty
+  afterward, not just `pipelines`) and
+  `test_delete_pipeline_for_unknown_pipeline_returns_404`.
+
+**Frontend**:
+- `apps/web/src/lib/api.ts`: new `deletePipeline(pipelineId)` — same
+  bare-`fetch`-with-manual-error-handling shape as the existing
+  `deleteApiKey` (not the shared `request<T>()` helper, since that always
+  calls `.json()` and a `204 No Content` response has no body).
+- `apps/web/src/routes/home.tsx`: each pipeline row in the Pipelines home
+  table gets a trash-icon `Button` (`lucide-react`'s `Trash2`,
+  `variant="ghost" size="icon"`, `aria-label="Delete {name}"`). Click
+  handler calls `event.stopPropagation()` first (the row itself navigates
+  to the pipeline on click) then `window.confirm(...)` naming the
+  pipeline and warning that stages/rubrics/runs/migrations are all
+  permanently removed — only on confirm does it call the new
+  `deletePipeline` mutation. **`window.confirm` was a deliberate choice,
+  not a placeholder**: no modal/dialog primitive exists anywhere in
+  `apps/web/src/components/ui/` yet (checked before building this), and
+  adding one purely to gate a single destructive button would be more new
+  surface area than the task warrants — it still satisfies the real
+  requirement (an explicit confirm step, not a bare click). On success,
+  invalidates the `["pipelines"]` query so the row disappears without a
+  full reload; on failure, shows the error inline above the table (same
+  `ApiError`-aware pattern as the page's existing load-error banner).
+- Tests: new `apps/web/src/routes/home.test.tsx`, 5 cases — delete button
+  present per row, cancelling the confirm dialog makes no request,
+  confirming calls `deletePipeline` with the right id and the row is gone
+  after refetch, clicking delete never navigates into the pipeline (stays
+  on `/`), and a failed delete surfaces the error message.
+
+**Verified**: `cd apps/api && uv run pytest -q` → **149 passed** (147
+baseline + 2 new). `cd apps/web && pnpm exec tsc --noEmit` → clean.
+`cd apps/web && pnpm test` → **98 passed** (93 baseline + 5 new), 13 test
+files. `packages/core` untouched — confirmed via `git status` (only
+`apps/api/src/reprompt_api/pipelines.py`, `apps/api/tests/test_pipelines.py`,
+`apps/web/src/lib/api.ts`, `apps/web/src/routes/home.tsx` (modified) and
+`apps/web/src/routes/home.test.tsx` (new) appear in the diff, plus this
+doc and `docs/TESTING.md`).
+
+**What a user sees**: on the Pipelines home screen, each row now has a
+trash icon at the right edge. Clicking it (without navigating into the
+pipeline, even though the row itself is normally a click-to-open target)
+pops a browser confirm dialog naming the pipeline and warning the delete
+is permanent; confirming removes it — and everything under it — for good,
+and it disappears from the list immediately.
+
+**Pipeline CRUD backlog item: fully closed.** Create (import), Read
+(list/DAG/data tab), Update (rename), Delete are all built and tested —
+nothing left open under this item.
+
+## Phase C — Before/after prompt diff [DONE — 2026-07-16]
+
+Another separate, narrow display-only track (parallel work in its own
+worktree, `phase-c`, off the same base commit as `branding`,
+`pipeline-delete`, `model-auto-select`, all needing hand-merging
+afterward) — not a continuation of Phase 6. The gap: `Candidate.
+prompt_variant` (every attempt tried) and `Stage.prompt_template` (the
+original) already existed and were fully populated by the M3 optimizer
+wiring, but nothing ever showed a user the *winning* prompt next to the
+original — a reviewer had no way to see exactly what the optimizer changed
+without reading raw `Candidate` rows out of the DB directly.
+
+**No "winner" flag exists on `Candidate`** — checked `selection.py`
+(`packages/core/src/reprompt_core/selection.py`) and `optimizer_runner.py`'s
+`on_attempt` closure first: `select_best_candidate` picks a winner
+in-memory per stage per target-model run and only its `StageAttempt` (via
+`on_attempt`) gets persisted as a `Candidate` row alongside every other
+non-winning attempt from the sweep — none of them carry a boolean marking
+which one actually won that stage's optimization. What *is* persisted:
+`Candidate.scores` is the full `{"deterministic":, "judge":, "embedding_sim":,
+"final":, "judge_disagreement":, "judge_low_confidence":}` dict `packages/
+core`'s `run_sweep_for_stage` builds (see `reprompt_core.optimizer.loop`
+around its `StageAttempt(...)` construction) — `scores["final"]` is the
+same composite score `select_best_candidate` itself uses to rank
+candidates. So "the winner" is recomputed at read time: highest
+`scores["final"]` among a stage's `Candidate` rows for this migration,
+ties broken by row-insertion order (`Candidate.id` ascending) — the same
+tie-break rule `select_best_candidate` already uses (Python `max()` keeps
+the first element attaining the max), so a recomputed "winner" here always
+agrees with what the optimizer itself picked, not a second competing
+notion of "best." No schema change, no Alembic migration.
+
+**Backend** — `apps/api/src/reprompt_api/migrations.py`:
+- New `GET /pipelines/{pipeline_id}/migrations/{migration_id}/results` →
+  `list[StageResultOut]`, `StageResultOut = {stage_id, stage_name,
+  original_prompt, winning_prompt, winning_model, score}`.
+- **Not gated on `Migration.status` being terminal** (the task's own
+  "your call, document which" — documented here and in the endpoint's own
+  docstring): a stage only appears in the response once it has at least
+  one `Candidate` row for `(migration_id, stage_id)`. For a `pending`
+  migration that's an empty list; for `running`, whichever stages have
+  already finished at least one attempt; for a terminal state, the full
+  per-stage set. This matches every other read endpoint in this router's
+  own "return what's available" contract (e.g. `list_migrations` on an
+  empty pipeline) rather than adding a second, endpoint-specific
+  not-ready-yet error shape. The frontend still only *fetches* this once
+  terminal (see below) since there's nothing worth showing/polling for
+  mid-run, but the endpoint itself doesn't enforce that.
+- `scores.get("final") or 0.0` guards a `Candidate` row saved without a
+  `"final"` key (older/partial data, or a directly-seeded test row) —
+  treated as the worst possible score rather than raising, covered by
+  `test_results_treats_missing_final_score_as_zero`.
+- Tests: 7 new cases in `apps/api/tests/test_migrations.py` — empty before
+  any candidate, picks the highest-`final`-score candidate across multiple
+  target models for one stage (and only includes stages with >=1
+  candidate), missing `"final"` key treated as zero, available for a
+  still-`running` migration, no cross-migration candidate leakage on the
+  same pipeline/stage, unknown migration/pipeline → 404.
+
+**Frontend**:
+- No diff library added — `package.json` untouched (checked first per the
+  task's own "keep it minimal" framing; prompts are short enough that a
+  hand-rolled diff is simpler than vetting/adding a dependency, and it
+  avoids a `package.json`/lockfile merge conflict with the three sibling
+  worktrees). New `apps/web/src/lib/text-diff.ts`: pure `diffWords(before,
+  after) -> DiffOp[]` — whitespace-preserving tokenization + a standard
+  O(n·m) LCS table (prompt-sized inputs, not documents — this is plenty
+  fast) — `DiffOp = {type: "equal"|"insert"|"delete", text: string}`,
+  consecutive same-type tokens coalesced so the renderer emits one `<span>`
+  per changed run, not one per word. Zero React/DOM — unit-tested on its
+  own in `apps/web/src/lib/text-diff.test.ts` (9 cases: identity, isolated
+  single-word change, pure insertion/deletion including empty-string
+  before/after, and two round-trip checks that concatenating equal+insert
+  reproduces `after` exactly and equal+delete reproduces `before` exactly).
+- `apps/web/src/components/migration-success-screen.tsx`: added a
+  `resultsQuery` (`getMigrationResults`, `enabled: isTerminal`) and, when
+  terminal, a **"Results — before / after prompts"** section below the
+  existing Activity log — one card per stage with its name, winning
+  model, score, and the word diff rendered inline (deletions
+  strikethrough in `parity-fail`, insertions highlighted in `parity-pass`
+  — reusing the existing design-token colors the pass/fail `Badge`
+  variants already use, not new arbitrary Tailwind colors). Added as two
+  new functions (`StageResultsSection`, `StageResultCard`) at the bottom
+  of the file, same convention this file already established with
+  `ActivityLogList`/`StageReasoningDrawer` (Phase B) — one file, several
+  small presentational components, not a new file per component.
+- `apps/web/src/lib/api.ts`: additive `StageResultOut` type +
+  `getMigrationResults()`, placed right after `getMigrationStatus`.
+- Tests: 3 new cases in `apps/web/src/components/migration-success-
+  screen.test.tsx` — fetches and renders once terminal (diff spans present,
+  winning model/score shown, correct `pipelineId`/`migrationId` args),
+  does **not** fetch while still `running`, empty-state message when no
+  stage has a candidate yet. Needed a `beforeEach(() =>
+  vi.mocked(getMigrationResults).mockReset())` scoped to just this
+  `describe` block — the file's mocks aren't reset globally between tests
+  (no `beforeEach` at file scope), so a mock call count asserted in one
+  test would otherwise leak into the next; same pattern `data-table.test.
+  tsx`/`new-migration-wizard.test.tsx`/`rubric-review-panel.test.tsx`
+  already use for their own `beforeEach`, just scoped narrower here since
+  the file's *other* (Phase B) tests don't need resetting.
+
+**Verified**: `cd apps/api && uv run pytest -q` → **154 passed** (147
+baseline + 7 new). `cd apps/web && npx tsc --noEmit` → clean. `cd apps/web
+&& npx vitest run` → **105 passed** (93 baseline + 12 new: 9 in
+`text-diff.test.ts`, 3 in `migration-success-screen.test.tsx`), 13 test
+files. `packages/core` untouched and `package.json`/lockfile untouched —
+confirmed via `git status` (only `apps/api/src/reprompt_api/migrations.py`,
+`apps/api/tests/test_migrations.py`, `apps/web/src/lib/api.ts`,
+`apps/web/src/lib/text-diff.ts` (new), `apps/web/src/lib/text-diff.test.ts`
+(new), `apps/web/src/components/migration-success-screen.tsx`,
+`apps/web/src/components/migration-success-screen.test.tsx`, plus this doc
+and `docs/TESTING.md` appear in the diff).
+
+**What a user sees**: once a migration finishes (completed, stopped early,
+or failed), the Migrations tab's run screen gains a "Results — before /
+after prompts" section below the Activity log — one card per stage that
+got at least one attempt, showing the winning target model, its composite
+score, and the original prompt against the winning prompt as an inline
+word diff (struck-through red for removed text, highlighted green for
+added text, unchanged words plain). Nothing to click/expand — it's visible
+as soon as the section renders, no separate "view diff" action.
+
+## Planned, not yet built — LLM call telemetry + scorecard (multi-model report)
+
+Design pass completed 2026-07-16 (Plan agent, grounded in actual code, not
+guessed) — full detail below, this is the concrete next-up work, not a
+vague idea. Triggered by the product owner's explicit architecture
+clarification: a migration's `target_model_config.models` are the user's
+own choice of model(s) to compare — the thing being tested. Rubric
+generation, judging, and the mutate/critique/refine harness are
+Reprompt's own infrastructure and must use an independently-selected
+model (via `select_model()`), never the model under test — see "Fix
+judge/mutator self-grading bias" section (below, or being merged
+concurrently) for the bug this surfaced.
+
+**The ask**: (1) store stats for every LLM call the system makes, not
+just the subset that becomes a `Candidate` row today: (2) a real
+per-target-model report — winning prompt, model-card info, cost, latency
+— organized per stage; (3) when a migration tried multiple target
+models, a clear side-by-side with a decisive "which is actually best"
+verdict, not just raw numbers.
+
+**Key facts the design is grounded in**: every LLM call in the codebase
+flows through exactly 2 closures (`rubrics.py`'s per-stage `_call`,
+`optimizer_runner.py`'s per-target-model lambda) — both call
+`llm_context.complete_with_workspace_credentials`, which already returns
+a fully-populated `LLMResponse` (tokens/cost/latency/model/provider).
+`BudgetTracker` is pure in-memory today (`packages/core/src/reprompt_core
+/budget.py`) — per-call detail dies once a run finishes for anything
+that isn't a sweep attempt. `Candidate` already has `target_model`
+(fixed 2026-07-16), `cost`, `scores`, `prompt_variant` per attempt — the
+scorecard's per-stage-per-model data is a read-time rollup over what's
+already there, no new schema needed for that half.
+
+**Decisions made** (see the full design in this session's planning
+output if picking this up — summarized here):
+- **New `LLMCall` table** (`apps/api` only, `packages/core` stays
+  headless — only gains two additive, provider-stripped string kwargs
+  `purpose`/`stage_id` threaded through ~9 existing `call(...)` sites).
+  Logs every call including failures (`succeeded=false`), best-effort
+  (never allowed to raise into/block the call path it's observing, same
+  philosophy as `BudgetTracker.record_spend`). Purposes: `rubric_generation`,
+  `judge`, `mutator_mutate`, `mutator_critique_refine`,
+  `mutator_few_shot_select`, `optimizer_cheap_score`, `sweep_attempt`.
+- **New `GET .../scorecard` endpoint** — does NOT replace or modify the
+  existing `GET .../results` (Phase C's before/after diff keeps working
+  as-is, stays the smaller/faster single-winner read). Scorecard returns
+  per stage: every target model tried, its winning prompt, model-card
+  info (reuses `model_cards.build_family_card()`, zero duplication),
+  cost, latency, a `is_recommended` flag + human `recommendation_reason`.
+  Rolls up to an `overall` per-target-model summary + `overall_recommended_model`.
+- **"Best" is not raw score** — a model within `SCORE_PARITY_EPSILON` of
+  the top score (reuse Prism's existing `PLATEAU_EPSILON` constant/value,
+  don't invent a new number) wins on lowest cost, tie-broken by latency,
+  tie-broken by position in `target_model_config.models`. Same rule
+  applies at both per-stage and overall altitude. This directly answers
+  "give the best," not "show the highest number."
+- **UI**: extends `migration-success-screen.tsx`'s existing "Results"
+  section (renamed "Scorecard") — single-model stages render like today,
+  multi-model stages get a side-by-side row per model with a
+  "Recommended" badge (reuses existing `Badge` "pass" token) and the
+  reason as a tooltip/caption.
+
+**Phasing**: (1) `LLMCall` telemetry, backend-only, invisible to users —
+pure groundwork; (2) scorecard endpoint + UI, the real consumer-facing
+feature; (3) a raw `LLMCall` ledger endpoint for debugging/cost-audit,
+no UI, low priority. Not started — pick up at Phase 1.
+
+**Invariants that must hold**: budget hard-stop untouched (telemetry is
+pure side-observation, never a pre-check/gate); rubric-approval gate
+untouched; per-stage failure isolation untouched (a telemetry write
+failure degrades silently, never becomes a stage/migration failure);
+`packages/core` stays headless.
+
+**Open, non-blocking**: whether `LLMCall.workspace_id` should eventually
+back a workspace-wide "Settings → Usage" cost dashboard (schema supports
+it, no UI scoped yet); whether `judge_pairwise` vs `judge_single_pass`
+need separate `purpose` values later (currently lumped as `"judge"`,
+one-value addition if ever needed, not a schema change).
+
+## Fix judge/mutator self-grading bias [DONE — 2026-07-16]
+
+Architectural intent, confirmed with the product owner: a migration's
+`target_model_config.models` is the user's own choice of model(s) to
+compare/test — the thing actually being optimized (candidate prompts run
+on it, compared against the original trace's output). Rubric generation,
+judging/validation, and the mutate/critique/refine harness are Reprompt's
+OWN infrastructure and must use an independently-selected model, decoupled
+entirely from whatever the user picked to test — so the model being
+evaluated never grades or refines its own output. Rubric generation was
+already fixed correctly in the prior "Model auto-selection for rubric
+generation" phase above (calls `select_model("rubric_generation", ...)`
+against the workspace's own available models); this phase extends the
+exact same pattern to the two remaining, deliberately-out-of-scope-until-now
+call sites, both in `apps/api/src/reprompt_api/optimizer_runner.py`.
+
+**The bug** (both violations confirmed by reading the code before touching
+anything):
+1. `judge_model = migration.target_model_config.get("judge_model") or
+   target_models[0]` — with no explicit override, the judge fell back to
+   the *first target model*, i.e. the model potentially under test judged
+   its own output.
+2. `run_optimizer(...)` was called with no `mutator_model` kwarg at all, so
+   `packages/core/src/reprompt_core/optimizer/loop.py`'s own `mutator_model
+   or stage_input.target_model` fallback (line ~865) silently used the
+   target model as the mutator too.
+
+**The fix** — `apps/api/src/reprompt_api/optimizer_runner.py`'s `_run()`:
+both `judge_model` and `mutator_model` are now `migration.target_model_
+config.get(...)` (explicit override, unchanged behavior when present) or
+`select_model("judge"/"mutator", available_models)`, where
+`available_models` comes from `reprompt_api.migrations.get_available_models
+(db, workspace)` — the workspace's own BYOK-filtered configured models,
+**never** `target_models`. `mutator_model=mutator_model` is now passed
+explicitly into the `run_optimizer(...)` call (previously missing
+entirely). `packages/core`'s `select_model()` itself was not touched — it
+already declared both `"judge"` and `"mutator"` as valid `Purpose` values
+from the rubric-generation phase, just unused until now; this phase is
+pure call-site plumbing, no new heuristic. Deliberately did **not** add
+logic to exclude target models from `available_models` — the architectural
+requirement is that the *selection* isn't driven by what the user picked
+to test, not that the two must never coincidentally match; if the
+genuinely best available judge model happens to equal a target model,
+that's fine and left alone.
+
+**Real gap found and also fixed**: `apps/api/src/reprompt_api/migrations.py`'s
+`TargetModelConfig` Pydantic model only declared `models: list[str]` — no
+`judge_model`/`mutator_model` fields at all, despite `optimizer_runner.py`
+already reading `.get("judge_model")` off the raw dict. Since `POST
+/pipelines/{id}/migrations` builds the stored `target_model_config` via
+`migration_in.target_model_config.model_dump()`, any `judge_model` a caller
+sent through the real API was silently stripped by Pydantic before ever
+reaching the DB — the "explicit override" path was dead code for any
+migration created through the actual endpoint (only reachable if a test
+wrote directly to the DB, bypassing the schema). Fixed by declaring both
+fields as `Optional[str] = None` on `TargetModelConfig`, with a docstring
+explaining the same target-vs-harness split. `model_dump()` at the create
+endpoint was changed to `model_dump(exclude_none=True)` so a migration that
+doesn't set either override still stores/round-trips the original bare
+`{"models": [...]}` shape (existing tests assert exact dict equality on
+this field — `exclude_none=True` keeps that assertion true rather than
+padding the dict with two `null` keys every caller would now see).
+
+**Circular import found and fixed**: `apps/api/src/reprompt_api/migrations.py`
+already imports `run_optimizer_for_migration` from `optimizer_runner.py` at
+module level (for its `BackgroundTasks.add_task()` call in `create_migration`'s
+sibling "start" endpoint). A naive top-level `from reprompt_api.migrations
+import get_available_models` in `optimizer_runner.py` would therefore be a
+genuine circular import (`ImportError` on the partially-initialized
+`migrations` module, since the cycle would resolve mid-way through
+`migrations.py`'s own top-level execution, before `get_available_models` is
+defined in that file). Fixed with a function-local import inside `_run()`
+— the standard, minimal-footprint fix for this shape of cycle; no
+restructuring of either module.
+
+**Tests** — `apps/api/tests/test_optimizer_runner.py` (3 new):
+`test_judge_and_mutator_auto_select_from_workspace_not_target_model` (a
+migration targeting a weak, always-available local model
+`ollama/llama3.1`, with an Anthropic BYOK key configured, auto-selects
+`claude-sonnet-4-5` — a stronger tier-1 model — for both judge and mutator,
+proving the selection is driven by the workspace's available models, not
+`target_models[0]`, and is genuinely decoupled since the two differ),
+`test_explicit_judge_model_override_wins_over_auto_select`,
+`test_explicit_mutator_model_override_wins_over_auto_select` (either
+override key still wins outright, unvalidated against available models,
+per `select_model()`'s existing contract). `apps/api/tests/test_migrations.py`
+(2 new): `test_create_migration_persists_explicit_judge_and_mutator_model_
+overrides` (round-trips through the real `POST .../migrations` endpoint —
+proves the schema gap above is actually fixed, not just the dict-reading
+side), `test_create_migration_omits_judge_and_mutator_model_when_not_given`
+(bare `{"models": [...]}` shape preserved when neither override is set).
+
+**Verified**: `cd apps/api && uv run pytest -q` → **165 passed** (160
+baseline + 5 new: 3 in `test_optimizer_runner.py`, 2 in
+`test_migrations.py`). `cd packages/core && uv run pytest -q` → **305
+passed, 2 skipped**, byte-for-byte unaffected — confirmed via `git status`
+that no `packages/core` file changed at all (only
+`apps/api/src/reprompt_api/migrations.py`,
+`apps/api/src/reprompt_api/optimizer_runner.py`,
+`apps/api/tests/test_migrations.py`,
+`apps/api/tests/test_optimizer_runner.py`, plus this doc and
+`docs/TESTING.md` appear in the diff).
+
+**Where this leaves things**: a target model can no longer silently become
+its own judge or mutator, in either the auto-select or (previously broken)
+explicit-override path, matching rubric generation's existing pattern
+exactly. No UI surfaces the effective/overridden judge or mutator model
+yet — see `docs/TESTING.md`'s new §3.3b for the current API-level manual
+check and the explicit note that a UI surface (e.g. showing the judge model
+next to a migration's results) is a real, not-yet-built follow-up, out of
+scope for this backend plumbing fix.

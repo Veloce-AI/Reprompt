@@ -184,6 +184,55 @@ def test_create_migration_multi_model_config(client: TestClient) -> None:
     assert body["target_model_config"] == {"models": ["gpt-4o-mini", "claude-haiku-4-5"]}
 
 
+def test_create_migration_persists_explicit_judge_and_mutator_model_overrides(
+    client: TestClient,
+) -> None:
+    """judge_model/mutator_model are optional overrides for Reprompt's OWN
+    judge/mutator harness infrastructure, kept deliberately separate from
+    `models` (the model(s) the user is actually testing) - see
+    reprompt_api.optimizer_runner.py and DEV_TRACKER.md's "Fix judge/mutator
+    self-grading bias" section. Confirms they actually round-trip through
+    TargetModelConfig's schema/model_dump() rather than being silently
+    dropped (a real gap before these fields were declared - the old schema
+    only declared `models`, so Pydantic's default `model_dump()` stripped
+    any `judge_model`/`mutator_model` key a caller sent)."""
+    pipeline_id = _upload(client, _diamond_trace_file())
+
+    response = client.post(
+        f"/pipelines/{pipeline_id}/migrations",
+        json={
+            "target_model_config": {
+                "models": ["gpt-4o-mini"],
+                "judge_model": "claude-haiku-4-5",
+                "mutator_model": "gpt-4o",
+            },
+            "budget": 10.0,
+        },
+    )
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body["target_model_config"] == {
+        "models": ["gpt-4o-mini"],
+        "judge_model": "claude-haiku-4-5",
+        "mutator_model": "gpt-4o",
+    }
+
+
+def test_create_migration_omits_judge_and_mutator_model_when_not_given(client: TestClient) -> None:
+    """The common case - no judge_model/mutator_model override - must keep
+    storing the same bare {"models": [...]} shape as before those fields
+    existed (not padded with explicit `None`s), so existing rows/behavior
+    are unaffected."""
+    pipeline_id = _upload(client, _diamond_trace_file())
+
+    response = client.post(
+        f"/pipelines/{pipeline_id}/migrations",
+        json={"target_model_config": {"models": ["gpt-4o-mini"]}, "budget": 10.0},
+    )
+    assert response.status_code == 201, response.text
+    assert response.json()["target_model_config"] == {"models": ["gpt-4o-mini"]}
+
+
 def test_create_migration_defaults_parity_threshold_to_95_percent(client: TestClient) -> None:
     pipeline_id = _upload(client, _diamond_trace_file())
 
@@ -407,6 +456,7 @@ def test_status_reflects_progress_fields(
         migration.progress_stage_name = "Branch A"
         migration.progress_current = 1
         migration.progress_total = 4
+        migration.progress_substep = "critiquing"
         db.commit()
 
     response = client.get(f"/pipelines/{pipeline_id}/migrations/{migration_id}/status")
@@ -416,6 +466,53 @@ def test_status_reflects_progress_fields(
     assert body["progress_stage_name"] == "Branch A"
     assert body["progress_current"] == 1
     assert body["progress_total"] == 4
+    assert body["progress_substep"] == "critiquing"
+
+
+def test_status_progress_substep_defaults_to_none_before_a_run_starts(
+    client: TestClient,
+) -> None:
+    pipeline_id = _upload(client, _diamond_trace_file())
+    migration_id = _create_migration(client, pipeline_id)
+
+    response = client.get(f"/pipelines/{pipeline_id}/migrations/{migration_id}/status")
+    assert response.status_code == 200, response.text
+    assert response.json()["progress_substep"] is None
+
+
+def test_status_activity_log_defaults_to_none_before_a_run_starts(
+    client: TestClient,
+) -> None:
+    pipeline_id = _upload(client, _diamond_trace_file())
+    migration_id = _create_migration(client, pipeline_id)
+
+    response = client.get(f"/pipelines/{pipeline_id}/migrations/{migration_id}/status")
+    assert response.status_code == 200, response.text
+    assert response.json()["activity_log"] is None
+
+
+def test_status_exposes_activity_log_entries(
+    client: TestClient, session_factory: sessionmaker
+) -> None:
+    """Phase B: optimizer_runner.py's on_phase closure appends
+    {stage_id, phase, detail, timestamp} entries - GET .../status must
+    surface the list verbatim, same polling pattern as progress_substep."""
+    pipeline_id = _upload(client, _diamond_trace_file())
+    migration_id = _create_migration(client, pipeline_id)
+
+    entries = [
+        {"stage_id": 1, "phase": "mutating", "detail": None, "timestamp": "2026-07-16T09:00:00+00:00"},
+        {"stage_id": 1, "phase": "refining", "detail": "needs work", "timestamp": "2026-07-16T09:00:05+00:00"},
+    ]
+    with session_factory() as db:
+        migration = db.get(models.Migration, migration_id)
+        migration.status = "running"
+        migration.activity_log = entries
+        db.commit()
+
+    response = client.get(f"/pipelines/{pipeline_id}/migrations/{migration_id}/status")
+    assert response.status_code == 200, response.text
+    assert response.json()["activity_log"] == entries
 
 
 def test_status_reflects_terminal_states(
@@ -464,86 +561,380 @@ def test_status_unknown_migration_returns_404(client: TestClient) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Candidate.target_model persistence
+# stage_states derivation (Phase 2 — live DAG/run status view)
+# ---------------------------------------------------------------------------
+# Diamond pipeline stage order is by DB id (insertion order): root, a, b, join
+# (see optimizer_runner._run's db_stages query — reused as-is by
+# migrations._compute_stage_states).
+
+
+def test_stage_states_all_idle_before_run_starts(
+    client: TestClient, session_factory: sessionmaker
+) -> None:
+    pipeline_id = _upload(client, _diamond_trace_file())
+    migration_id = _create_migration(client, pipeline_id)
+    stage_ids = _stage_ids(session_factory, pipeline_id)
+
+    body = client.get(f"/pipelines/{pipeline_id}/migrations/{migration_id}/status").json()
+    assert body["stage_states"] == {str(sid): "idle" for sid in stage_ids.values()}
+
+
+def test_stage_states_mid_run_marks_done_running_idle(
+    client: TestClient, session_factory: sessionmaker
+) -> None:
+    pipeline_id = _upload(client, _diamond_trace_file())
+    migration_id = _create_migration(client, pipeline_id)
+    stage_ids = _stage_ids(session_factory, pipeline_id)
+
+    with session_factory() as db:
+        migration = db.get(models.Migration, migration_id)
+        migration.status = "running"
+        migration.progress_stage_name = "Branch A"  # source_id "a", 2nd in order
+        migration.progress_current = 2
+        migration.progress_total = 4
+        db.commit()
+
+    body = client.get(f"/pipelines/{pipeline_id}/migrations/{migration_id}/status").json()
+    states = body["stage_states"]
+    assert states[str(stage_ids["root"])] == "done"
+    assert states[str(stage_ids["a"])] == "running"
+    assert states[str(stage_ids["b"])] == "idle"
+    assert states[str(stage_ids["join"])] == "idle"
+
+
+def test_stage_states_failed_marks_current_stage_failed(
+    client: TestClient, session_factory: sessionmaker
+) -> None:
+    pipeline_id = _upload(client, _diamond_trace_file())
+    migration_id = _create_migration(client, pipeline_id)
+    stage_ids = _stage_ids(session_factory, pipeline_id)
+
+    with session_factory() as db:
+        migration = db.get(models.Migration, migration_id)
+        migration.status = "failed"
+        migration.progress_stage_name = "Join"  # last stage
+        migration.progress_current = 4
+        migration.progress_total = 4
+        migration.stop_reason = "No workspace found"
+        db.commit()
+
+    body = client.get(f"/pipelines/{pipeline_id}/migrations/{migration_id}/status").json()
+    states = body["stage_states"]
+    assert states[str(stage_ids["root"])] == "done"
+    assert states[str(stage_ids["a"])] == "done"
+    assert states[str(stage_ids["b"])] == "done"
+    assert states[str(stage_ids["join"])] == "failed"
+
+
+def test_stage_states_stopped_early_marks_current_stage_done(
+    client: TestClient, session_factory: sessionmaker
+) -> None:
+    pipeline_id = _upload(client, _diamond_trace_file())
+    migration_id = _create_migration(client, pipeline_id)
+    stage_ids = _stage_ids(session_factory, pipeline_id)
+
+    with session_factory() as db:
+        migration = db.get(models.Migration, migration_id)
+        migration.status = "stopped_early"
+        migration.progress_stage_name = "Branch B"
+        migration.progress_current = 3
+        migration.progress_total = 4
+        migration.stopped_early = True
+        migration.stop_reason = "budget_exhausted"
+        db.commit()
+
+    body = client.get(f"/pipelines/{pipeline_id}/migrations/{migration_id}/status").json()
+    states = body["stage_states"]
+    assert states[str(stage_ids["root"])] == "done"
+    assert states[str(stage_ids["a"])] == "done"
+    assert states[str(stage_ids["b"])] == "done"
+    assert states[str(stage_ids["join"])] == "idle"
+
+
+def test_stage_states_completed_marks_all_stages_done(
+    client: TestClient, session_factory: sessionmaker
+) -> None:
+    pipeline_id = _upload(client, _diamond_trace_file())
+    migration_id = _create_migration(client, pipeline_id)
+    stage_ids = _stage_ids(session_factory, pipeline_id)
+
+    with session_factory() as db:
+        migration = db.get(models.Migration, migration_id)
+        migration.status = "completed"
+        migration.progress_stage_name = "Join"
+        migration.progress_current = 4
+        migration.progress_total = 4
+        migration.total_cost_usd = 1.23
+        db.commit()
+
+    body = client.get(f"/pipelines/{pipeline_id}/migrations/{migration_id}/status").json()
+    assert body["stage_states"] == {str(sid): "done" for sid in stage_ids.values()}
+
+
+# ---------------------------------------------------------------------------
+# target_model tracking on Candidate rows
 # ---------------------------------------------------------------------------
 
 
+def test_candidate_rows_populated_with_target_model(
+    client: TestClient, session_factory: sessionmaker
+) -> None:
+    """Candidates created during optimization have target_model set.
+
+    This test mocks the optimizer to run and create a single candidate,
+    then verifies the target_model field is correctly populated.
+    """
+    pipeline_id = _upload(client, _diamond_trace_file())
+
+    response = client.post(
+        f"/pipelines/{pipeline_id}/migrations",
+        json={
+            "target_model_config": {"models": ["gpt-4o-mini", "claude-haiku-4-5"]},
+            "budget": 100.0,
+            "parity_threshold": 0.95,
+        },
+    )
+    assert response.status_code == 201, response.text
+    migration_id = response.json()["id"]
+    stage_ids = _stage_ids(session_factory, pipeline_id)
+
+    # Seed rubrics for all stages
+    for stage_id in stage_ids.values():
+        _seed_rubric(session_factory, stage_id, approved=True)
+
+    # Simulate what would happen during an actual migration run:
+    # create a few candidate rows with different target models.
+    with session_factory() as db:
+        # Simulate optimizer creating candidates for gpt-4o-mini
+        db.add(
+            models.Candidate(
+                migration_id=migration_id,
+                stage_id=stage_ids["root"],
+                target_model="gpt-4o-mini",
+                prompt_variant="optimized prompt for gpt-4o-mini",
+                params={"temperature": 0.7},
+                format="text",
+                scores={"deterministic": 0.9},
+                cost=0.01,
+                latency=100.0,
+            )
+        )
+        # Simulate optimizer creating candidates for claude-haiku-4-5
+        db.add(
+            models.Candidate(
+                migration_id=migration_id,
+                stage_id=stage_ids["root"],
+                target_model="claude-haiku-4-5",
+                prompt_variant="optimized prompt for claude-haiku",
+                params={"temperature": 0.5},
+                format="text",
+                scores={"deterministic": 0.85},
+                cost=0.005,
+                latency=50.0,
+            )
+        )
+        db.commit()
+
+    # Verify both candidates exist and have correct target_model values
+    with session_factory() as db:
+        candidates = db.query(models.Candidate).filter(
+            models.Candidate.migration_id == migration_id,
+            models.Candidate.stage_id == stage_ids["root"],
+        ).all()
+
+        assert len(candidates) == 2
+        target_models = {c.target_model for c in candidates}
+        assert target_models == {"gpt-4o-mini", "claude-haiku-4-5"}
+
+        # Verify each candidate has the correct prompt variant
+        mini_candidate = next(c for c in candidates if c.target_model == "gpt-4o-mini")
+        assert "gpt-4o-mini" in mini_candidate.prompt_variant
+
+        haiku_candidate = next(c for c in candidates if c.target_model == "claude-haiku-4-5")
+        assert "claude-haiku" in haiku_candidate.prompt_variant
+
+
 # ---------------------------------------------------------------------------
-# GET /pipelines/{id}/migrations/{id}/results
+# GET /pipelines/{id}/migrations/{id}/results (before/after prompt diff)
 # ---------------------------------------------------------------------------
 
 
-def _seed_candidate(
+def _add_candidate(
     session_factory: sessionmaker,
+    *,
     migration_id: int,
     stage_id: int,
-    *,
-    target_model: str = "gpt-4o-mini",
-    final_score: float = 0.85,
-    cost: float = 0.002,
+    target_model: str,
+    prompt_variant: str,
+    final_score: float | None,
 ) -> None:
     with session_factory() as db:
+        scores: dict = {"deterministic": 0.9}
+        if final_score is not None:
+            scores["final"] = final_score
         db.add(
             models.Candidate(
                 migration_id=migration_id,
                 stage_id=stage_id,
                 target_model=target_model,
-                prompt_variant=f"prompt for {target_model}",
-                params={"temperature": 0.2, "source": "mutation"},
-                format="plain",
-                scores={
-                    "deterministic": 1.0,
-                    "judge": final_score,
-                    "embedding_sim": final_score,
-                    "final": final_score,
-                },
-                cost=cost,
+                prompt_variant=prompt_variant,
+                params={},
+                format="text",
+                scores=scores,
+                cost=0.01,
                 latency=100.0,
             )
         )
         db.commit()
 
 
-def test_results_returns_stage_summaries_with_best_candidate(
+def test_results_empty_before_any_candidate_exists(client: TestClient) -> None:
+    pipeline_id = _upload(client, _diamond_trace_file())
+    migration_id = _create_migration(client, pipeline_id)
+
+    response = client.get(f"/pipelines/{pipeline_id}/migrations/{migration_id}/results")
+    assert response.status_code == 200, response.text
+    assert response.json() == []
+
+
+def test_results_picks_highest_final_score_candidate_per_stage(
     client: TestClient, session_factory: sessionmaker
 ) -> None:
     pipeline_id = _upload(client, _diamond_trace_file())
     migration_id = _create_migration(client, pipeline_id)
     stage_ids = _stage_ids(session_factory, pipeline_id)
     root_id = stage_ids["root"]
-    branch_a_id = stage_ids["a"]
 
-    # Two candidates for root — second one scores higher and should be "best".
-    _seed_candidate(session_factory, migration_id, root_id, final_score=0.70, cost=0.001)
-    _seed_candidate(session_factory, migration_id, root_id, final_score=0.92, cost=0.003)
-    # One candidate for branch A.
-    _seed_candidate(session_factory, migration_id, branch_a_id, final_score=0.80)
+    _add_candidate(
+        session_factory,
+        migration_id=migration_id,
+        stage_id=root_id,
+        target_model="gpt-4o-mini",
+        prompt_variant="weaker variant",
+        final_score=0.6,
+    )
+    _add_candidate(
+        session_factory,
+        migration_id=migration_id,
+        stage_id=root_id,
+        target_model="claude-haiku-4-5",
+        prompt_variant="stronger variant",
+        final_score=0.92,
+    )
 
     response = client.get(f"/pipelines/{pipeline_id}/migrations/{migration_id}/results")
     assert response.status_code == 200, response.text
     body = response.json()
 
-    assert "migration" in body
-    assert body["migration"]["id"] == migration_id
+    root_result = next(r for r in body if r["stage_id"] == root_id)
+    assert root_result["stage_name"] == "Root"
+    assert root_result["original_prompt"] == "{{q}}"
+    assert root_result["winning_prompt"] == "stronger variant"
+    assert root_result["winning_model"] == "claude-haiku-4-5"
+    assert abs(root_result["score"] - 0.92) < 1e-9
 
-    summaries = {s["stage_name"]: s for s in body["stage_summaries"]}
-    assert summaries["Root"]["attempts"] == 2
-    assert summaries["Root"]["best_candidate"]["scores"]["final"] == pytest.approx(0.92)
-    assert summaries["Root"]["total_cost"] == pytest.approx(0.004)
+    # Only stages with at least one Candidate row appear.
+    assert {r["stage_id"] for r in body} == {root_id}
 
-    assert summaries["Branch A"]["attempts"] == 1
-    assert summaries["Branch A"]["best_candidate"]["scores"]["final"] == pytest.approx(0.80)
 
-    # Stages with no candidates still appear with attempts=0.
-    assert summaries["Branch B"]["attempts"] == 0
-    assert summaries["Branch B"]["best_candidate"] is None
+def test_results_treats_missing_final_score_as_zero(
+    client: TestClient, session_factory: sessionmaker
+) -> None:
+    """A Candidate.scores dict missing the "final" key (e.g. an older/
+    partial row) must not crash the comparison — it's treated as the worst
+    possible score rather than raising a KeyError/TypeError."""
+    pipeline_id = _upload(client, _diamond_trace_file())
+    migration_id = _create_migration(client, pipeline_id)
+    stage_ids = _stage_ids(session_factory, pipeline_id)
+    root_id = stage_ids["root"]
 
-    assert len(body["all_candidates"]) == 3
+    _add_candidate(
+        session_factory,
+        migration_id=migration_id,
+        stage_id=root_id,
+        target_model="gpt-4o-mini",
+        prompt_variant="no final score recorded",
+        final_score=None,
+    )
+    _add_candidate(
+        session_factory,
+        migration_id=migration_id,
+        stage_id=root_id,
+        target_model="claude-haiku-4-5",
+        prompt_variant="has a final score",
+        final_score=0.5,
+    )
+
+    response = client.get(f"/pipelines/{pipeline_id}/migrations/{migration_id}/results")
+    assert response.status_code == 200, response.text
+    root_result = next(r for r in response.json() if r["stage_id"] == root_id)
+    assert root_result["winning_prompt"] == "has a final score"
+
+
+def test_results_available_for_non_terminal_migration(
+    client: TestClient, session_factory: sessionmaker
+) -> None:
+    """Not gated on Migration.status being terminal - a running migration
+    with at least one finished attempt for a stage already shows it."""
+    pipeline_id = _upload(client, _diamond_trace_file())
+    migration_id = _create_migration(client, pipeline_id)
+    stage_ids = _stage_ids(session_factory, pipeline_id)
+    root_id = stage_ids["root"]
+
+    with session_factory() as db:
+        migration = db.get(models.Migration, migration_id)
+        migration.status = "running"
+        db.commit()
+
+    _add_candidate(
+        session_factory,
+        migration_id=migration_id,
+        stage_id=root_id,
+        target_model="gpt-4o-mini",
+        prompt_variant="in-progress winner so far",
+        final_score=0.7,
+    )
+
+    response = client.get(f"/pipelines/{pipeline_id}/migrations/{migration_id}/results")
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert len(body) == 1
+    assert body[0]["winning_prompt"] == "in-progress winner so far"
+
+
+def test_results_scopes_candidates_to_the_requested_migration(
+    client: TestClient, session_factory: sessionmaker
+) -> None:
+    """Two migrations on the same pipeline/stage must not leak each other's
+    candidates into the results list."""
+    pipeline_id = _upload(client, _diamond_trace_file())
+    migration_a = _create_migration(client, pipeline_id)
+    migration_b = _create_migration(client, pipeline_id)
+    stage_ids = _stage_ids(session_factory, pipeline_id)
+    root_id = stage_ids["root"]
+
+    _add_candidate(
+        session_factory,
+        migration_id=migration_a,
+        stage_id=root_id,
+        target_model="gpt-4o-mini",
+        prompt_variant="migration A's variant",
+        final_score=0.8,
+    )
+
+    response = client.get(f"/pipelines/{pipeline_id}/migrations/{migration_b}/results")
+    assert response.status_code == 200, response.text
+    assert response.json() == []
 
 
 def test_results_unknown_migration_returns_404(client: TestClient) -> None:
     pipeline_id = _upload(client, _diamond_trace_file())
     response = client.get(f"/pipelines/{pipeline_id}/migrations/999999/results")
+    assert response.status_code == 404
+
+
+def test_results_unknown_pipeline_returns_404(client: TestClient) -> None:
+    response = client.get("/pipelines/999999/migrations/1/results")
     assert response.status_code == 404
 
 

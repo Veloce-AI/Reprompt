@@ -60,10 +60,13 @@ is the interesting part — here's what's actually happening under it.
 | Method | What it does | Good for |
 |---|---|---|
 | **Simple** | Asks an AI to rewrite the prompt once, then tries a handful of settings (temperature, output format) around it. | Fast, cheap, the default. |
-| **Prism** | Rewrites the prompt, tries it, looks at *exactly why* the weak attempts fell short (which checks failed, how different the answer was), asks the AI to fix those specific problems, then tries again. | Harder migrations where a single rewrite isn't enough — a couple of rounds of "try → see what's wrong → fix it" beats guessing blindly, for far less cost than trying hundreds of random variations. |
+| **Prism** — a self-evolving prompt optimizer | Evolves the prompt through several rounds before locking in a winner: rewrites it, tries it, looks at *exactly why* the weak attempts fell short (which checks failed, how different the answer was, an AI judge's own reasoning), asks the AI to fix those specific problems, then tries again — up to 3 rounds. | Harder migrations where a single rewrite isn't enough — a couple of rounds of "try → see what's wrong → fix it" beats guessing blindly, for far less cost than trying hundreds of random variations. |
 
 Both are 100% our own code, calling any AI provider the same way — see
-["What it's built with"](#what-its-built-with) below.
+["What it's built with"](#what-its-built-with) below. **Prism evolves within
+one migration, not across migrations** — each migration starts from scratch
+and refines its own prompt during that run; nothing it learns carries over
+to the next migration yet.
 
 ### How it knows when to stop (loop engineering)
 
@@ -120,6 +123,10 @@ and all you need for local dev; Postgres is optional (see
 `docs/DEVELOPMENT.md` if you specifically want it). Then:
 
 - **First time setup + running it, step by step**: `docs/TESTING.md`
+- **Day to day**: `bash start.sh` opens the backend and frontend each in
+  their own terminal window (closing a window stops that one); `bash
+  stop.sh` stops both from wherever you are, Windows-specific process
+  quirks and all handled for you.
 - **Full technical plan**: `docs/DEVELOPMENT.md`
 - **Detailed, current build status of the optimizer**: `DEV_TRACKER.md`
 - **The exact data format it expects**: `docs/trace-format.md`

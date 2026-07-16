@@ -81,14 +81,14 @@ import json
 import logging
 import re
 from collections.abc import Callable, Sequence
-from typing import Any, Literal, TypeVar
+from typing import Any, Literal, NamedTuple, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from reprompt_core.budget import BudgetTracker
 from reprompt_core.deterministic import DeterministicCheck, evaluate_deterministic_checks, parse_deterministic_checks
 from reprompt_core.embedding import embedding_similarity
-from reprompt_core.judge import judge_pairwise
+from reprompt_core.judge import JudgeResponseError, JudgeResult, judge_pairwise, judge_single_pass
 from reprompt_core.llm.client import LLMResponse
 from reprompt_core.llm.model_card import apply_model_card_transform
 from reprompt_core.optimizer.mutator import (
@@ -105,6 +105,7 @@ from reprompt_core.sweep import SweepCandidate, generate_param_format_grid
 __all__ = [
     "StageOptimizationInput",
     "StageAttempt",
+    "StagePhaseEvent",
     "StageResult",
     "OptimizationResult",
     "run_optimizer",
@@ -126,10 +127,17 @@ calls (plus the mutation call itself) — kept small by default so a
 migration's cost stays predictable; BudgetTracker.is_exhausted remains the
 authoritative hard stop regardless of this default."""
 
-DEFAULT_MAX_REFINE_ROUNDS = 1
+DEFAULT_MAX_REFINE_ROUNDS = 3
 """Prism-only. Bounds how many critique-then-refine rounds run before the
 final full sweep. See ``_optimize_stage_prism`` and ``DEV_TRACKER.md``'s
-"Loop & harness engineering discipline" section."""
+"Loop & harness engineering discipline" section. Raised from 1 to 3 as part
+of the Phase 1 quality fixes (see ``DEV_TRACKER.md``'s dated Phase 1
+section) — at 1, the round loop below could only ever execute once, which
+made the plateau-detection logic (``candidate_baseline``/``PLATEAU_EPSILON``)
+dead code: there was never a second round to compare a candidate's score
+against. The plateau check plus ``budget.is_exhausted`` already bound the
+cost of unhelpful further rounds, so this is safe to raise without a new
+cost-control mechanism."""
 
 PLATEAU_EPSILON = 0.02
 """Prism-only. If a round's cheap-score improvement over the previous
@@ -137,6 +145,18 @@ round is below this, stop refining that candidate early even if
 ``max_refine_rounds`` would allow another round — see ``DEV_TRACKER.md``'s
 early-stopping-on-plateau design note (same 0-1 scale as every other score
 in this codebase)."""
+
+NEAR_DUPLICATE_SIMILARITY_THRESHOLD = 0.97
+"""Prism and simple both. A new mutation/refinement variant whose embedding
+similarity (:func:`reprompt_core.embedding.embedding_similarity` — local,
+free, no API key) to an already-kept candidate exceeds this is dropped as a
+near-duplicate before it can consume a full sweep slot — see
+``_is_near_duplicate`` and ``DEV_TRACKER.md``'s Phase 1 quality-fixes note.
+0.97 is deliberately high: this must only catch genuinely near-identical
+rewrites (differing by a sentence or two), not merely similar-topic
+variants — mutation is supposed to produce real diversity (see
+``mutator.py``'s system prompt), and this check exists to catch wasted
+sweep slots, not to second-guess the mutator's own diversity."""
 
 _MAX_MUTATION_EXAMPLES = 5
 """How many benchmark examples are shown to the mutator model for context
@@ -186,7 +206,12 @@ class StageAttempt(BaseModel):
     prompt_variant: str
     params: dict[str, Any]
     format_mode: str
-    scores: dict[str, float | None]
+    scores: dict[str, float | bool | None] = Field(
+        description="Deterministic/judge/embedding/final component scores (see run_sweep_for_stage), "
+        "plus judge_disagreement/judge_low_confidence (float|bool|None, set only when a real judge "
+        "call ran — see judge.JudgeResult.disagreement/low_confidence and DEV_TRACKER.md's Phase 1 "
+        "quality-fixes note on why these are now plumbed through instead of computed then discarded).",
+    )
     cost_usd: float
     latency_ms: float
     few_shot_examples: list[dict[str, Any]] | None = Field(
@@ -195,6 +220,45 @@ class StageAttempt(BaseModel):
         "winning candidate — the real benchmark examples selected as few-shot context. Never "
         "populated for non-winning attempts or the 'simple' strategy.",
     )
+
+
+StagePhase = Literal["mutating", "cheap_scoring", "critiquing", "refining", "sweeping", "scoring"]
+"""One stage's internal phase, in the order a run actually moves through
+them (see ``StagePhaseEvent`` and each strategy function's own comments):
+``"simple"`` only ever fires ``mutating`` -> ``sweeping`` -> ``scoring``
+(all three shared with "prism" via ``run_sweep_for_stage``, which is the
+function that fires ``sweeping``/``scoring`` for *both* strategies so they
+can never drift). ``"prism"`` additionally cycles ``cheap_scoring`` ->
+``critiquing`` -> ``refining`` once per critique/refine round (bounded by
+``max_refine_rounds``, see that constant) before its own ``sweeping``/
+``scoring`` pass."""
+
+
+class StagePhaseEvent(NamedTuple):
+    """Fired via the optional ``on_phase`` callback at each phase
+    transition within a stage — finer-grained than ``on_attempt`` (which
+    only fires once per finished, scored sweep attempt and says nothing
+    about what's happening during mutation or a critique/refine round).
+    Plain ``NamedTuple``, no DB/FastAPI imports — same headless-``packages/
+    core`` convention as every other public shape in this module; a caller
+    (``apps/api``'s ``optimizer_runner.py``) turns this into UI-visible
+    progress, this module has no opinion on how it's displayed.
+
+    ``detail``, added for the "live reasoning feed" phase (see
+    ``DEV_TRACKER.md``'s Phase B note): an optional text payload for
+    phases where real LLM-generated reasoning is available at the moment
+    the event fires. Currently only ``"refining"`` (Prism) populates it —
+    with the critique text from :func:`~reprompt_core.optimizer.mutator.critique_and_refine`
+    (falling back to a short judge-reasoning summary if the critique text
+    itself came back empty) — since that's the only phase transition where
+    real free-text reasoning actually exists at fire time. Every other
+    phase/strategy leaves it ``None``; existing callers that only read
+    ``.stage_id``/``.phase`` are unaffected.
+    """
+
+    stage_id: int
+    phase: StagePhase
+    detail: str | None = None
 
 
 class StageResult(BaseModel):
@@ -279,6 +343,43 @@ def _example_dict(example: MutationExample | dict[str, Any]) -> dict[str, Any]:
     return example
 
 
+def _judge_reasoning_summary(judge_result: JudgeResult | None) -> str | None:
+    """Short human-readable summary of a :class:`~reprompt_core.judge.JudgeResult`
+    for a ``StagePhaseEvent.detail`` payload — the ``"refining"`` phase's
+    fallback when the critique text itself came back empty (see that
+    phase's own comment in ``_optimize_stage_prism``). ``None`` in, ``None``
+    out; never raises."""
+    if judge_result is None or not judge_result.criteria:
+        return None
+    lead = judge_result.criteria[0]
+    return f"AI judge ({judge_result.overall_score:.2f}) — {lead.name}: {lead.reasoning}"
+
+
+def _is_near_duplicate(candidate: str, existing: Sequence[str]) -> bool:
+    """True if ``candidate``'s embedding similarity to any prompt text in
+    ``existing`` exceeds :data:`NEAR_DUPLICATE_SIMILARITY_THRESHOLD`.
+
+    Dedup before this check was exact-string-match only (``if variant not in
+    prompt_candidates``) — two near-identical mutation/refinement variants
+    (differing by a sentence) would each still consume a full sweep slot.
+    This is a small, local, no-cost check (bge-m3 runs locally, no API key)
+    run before a new variant is added to the candidate set. Never raises —
+    an empty candidate/existing string has no well-defined embedding
+    (:func:`~reprompt_core.embedding.embedding_similarity` raises
+    ``ValueError`` for that), which is treated as "not a duplicate" here
+    rather than propagated, since an empty variant is already a degenerate
+    case the downstream sweep will simply score poorly on its own.
+    """
+    for other in existing:
+        try:
+            similarity = embedding_similarity(other, candidate)
+        except ValueError:
+            continue
+        if similarity > NEAR_DUPLICATE_SIMILARITY_THRESHOLD:
+            return True
+    return False
+
+
 # ---------------------------------------------------------------------------
 # Shared sweep/score/select — reused by both the in-house and the
 # PromptWizard backend (reprompt_core.optimizer.promptwizard). Only *how
@@ -299,6 +400,7 @@ def run_sweep_for_stage(
     parity_threshold: float,
     max_sweep_candidates_per_prompt: int,
     on_attempt: Callable[[StageAttempt], None] | None,
+    on_phase: Callable[[StagePhaseEvent], None] | None = None,
 ) -> StageResult:
     """Run the param/format sweep, scoring, and selection for one stage
     against an already-decided list of candidate prompt texts.
@@ -312,7 +414,15 @@ def run_sweep_for_stage(
     for the rest) — callers should always include the stage's real
     original prompt template as the first entry, even if a mutation step
     failed and it ends up being the *only* entry.
+
+    ``on_phase``, if given, fires ``"sweeping"`` once on entry (this is the
+    shared function both strategies call for their param/format grid pass)
+    and ``"scoring"`` once the grid is done, right before selection — see
+    :class:`StagePhaseEvent`.
     """
+    if on_phase is not None:
+        on_phase(StagePhaseEvent(stage_id=stage_input.stage_id, phase="sweeping"))
+
     example = _example_dict(stage_input.examples[0])
     example_input = example.get("input", {})
     benchmark_output = example["output"]
@@ -369,6 +479,8 @@ def run_sweep_for_stage(
             judge_score: float | None = None
             judge_cost = 0.0
             judge_latency = 0.0
+            judge_disagreement: float | None = None
+            judge_low_confidence: bool | None = None
             if should_run and judge_criteria:
                 try:
                     judge_result = judge_pairwise(
@@ -378,6 +490,8 @@ def run_sweep_for_stage(
                     judge_score = judge_result.overall_score
                     judge_cost = judge_result.cost_usd or 0.0
                     judge_latency = judge_result.latency_ms
+                    judge_disagreement = judge_result.disagreement
+                    judge_low_confidence = judge_result.low_confidence
                 except Exception as exc:  # noqa: BLE001 - a failed judge call degrades the score, doesn't abort
                     logger.warning(
                         "Judge call failed for stage %s candidate %s: %s",
@@ -412,6 +526,8 @@ def run_sweep_for_stage(
                     "judge": composite.judge_score,
                     "embedding_sim": composite.embedding_score,
                     "final": composite.final_score,
+                    "judge_disagreement": judge_disagreement,
+                    "judge_low_confidence": judge_low_confidence,
                 },
                 cost_usd=total_cost,
                 latency_ms=total_latency,
@@ -419,6 +535,9 @@ def run_sweep_for_stage(
             stage_attempts.append((scored_candidate, attempt))
             if on_attempt is not None:
                 on_attempt(attempt)
+
+    if on_phase is not None:
+        on_phase(StagePhaseEvent(stage_id=stage_input.stage_id, phase="scoring"))
 
     if not stage_attempts:
         return StageResult(
@@ -459,7 +578,11 @@ def _optimize_stage_simple(
     num_prompt_variants: int,
     max_sweep_candidates_per_prompt: int,
     on_attempt: Callable[[StageAttempt], None] | None,
+    on_phase: Callable[[StagePhaseEvent], None] | None = None,
 ) -> StageResult:
+    if on_phase is not None:
+        on_phase(StagePhaseEvent(stage_id=stage_input.stage_id, phase="mutating"))
+
     prompt_candidates: list[str] = [stage_input.original_prompt_template]
     try:
         mutation = generate_prompt_mutations(
@@ -473,7 +596,7 @@ def _optimize_stage_simple(
         )
         budget.record_spend(mutation.cost_usd or 0.0, candidate_id=f"stage-{stage_input.stage_id}-mutation")
         for variant in mutation.variants:
-            if variant not in prompt_candidates:
+            if variant not in prompt_candidates and not _is_near_duplicate(variant, prompt_candidates):
                 prompt_candidates.append(variant)
     except PromptMutationError as exc:
         logger.warning(
@@ -490,6 +613,7 @@ def _optimize_stage_simple(
         parity_threshold=parity_threshold,
         max_sweep_candidates_per_prompt=max_sweep_candidates_per_prompt,
         on_attempt=on_attempt,
+        on_phase=on_phase,
     )
 
 
@@ -554,6 +678,7 @@ def _optimize_stage_prism(
     max_refine_rounds: int,
     include_few_shot: bool,
     on_attempt: Callable[[StageAttempt], None] | None,
+    on_phase: Callable[[StagePhaseEvent], None] | None = None,
 ) -> StageResult:
     example = _example_dict(stage_input.examples[0])
     example_input = example.get("input", {})
@@ -564,6 +689,9 @@ def _optimize_stage_prism(
     limited_examples = stage_input.examples[:_MAX_MUTATION_EXAMPLES]
 
     # Step 1: generate variants (round 1) - same call as "simple"'s only step.
+    if on_phase is not None:
+        on_phase(StagePhaseEvent(stage_id=stage_input.stage_id, phase="mutating"))
+
     prompt_candidates: list[str] = [stage_input.original_prompt_template]
     try:
         mutation = generate_prompt_mutations(
@@ -577,13 +705,15 @@ def _optimize_stage_prism(
         )
         budget.record_spend(mutation.cost_usd or 0.0, candidate_id=f"stage-{stage_input.stage_id}-mutation")
         for variant in mutation.variants:
-            if variant not in prompt_candidates:
+            if variant not in prompt_candidates and not _is_near_duplicate(variant, prompt_candidates):
                 prompt_candidates.append(variant)
     except PromptMutationError as exc:
         logger.warning(
             "Prompt mutation failed for stage %s (%s): %s — continuing with the original prompt only.",
             stage_input.stage_id, stage_input.stage_name, exc,
         )
+
+    judge_criteria = stage_input.rubric.get("judge_criteria") or []
 
     # Steps 2-4: bounded critique/refine rounds, with plateau early-stopping
     # (see DEV_TRACKER.md's "Loop & harness engineering discipline" #1).
@@ -605,7 +735,10 @@ def _optimize_stage_prism(
         if budget.is_exhausted or not candidates_to_rank:
             break
 
-        ranked: list[tuple[str, float, CompositeScore]] = []
+        if on_phase is not None:
+            on_phase(StagePhaseEvent(stage_id=stage_input.stage_id, phase="cheap_scoring"))
+
+        ranked: list[tuple[str, float, CompositeScore, str | None]] = []
         for prompt_text in candidates_to_rank:
             if budget.is_exhausted:
                 break
@@ -614,7 +747,7 @@ def _optimize_stage_prism(
                 call=call, budget=budget,
             )
             if composite is not None:
-                ranked.append((prompt_text, cheap_score, composite))
+                ranked.append((prompt_text, cheap_score, composite, candidate_output))
 
         if not ranked:
             break
@@ -622,22 +755,84 @@ def _optimize_stage_prism(
         ranked.sort(key=lambda entry: entry[1])  # ascending - weakest first
         weakest = ranked[:2]
 
+        if on_phase is not None:
+            on_phase(StagePhaseEvent(stage_id=stage_input.stage_id, phase="critiquing"))
+
+        refining_phase_fired = False
         next_round_candidates: list[str] = []
-        for prompt_text, cheap_score, composite in weakest:
+        for prompt_text, cheap_score, composite, candidate_output in weakest:
             baseline = candidate_baseline.get(prompt_text)
             if baseline is not None and (cheap_score - baseline) < PLATEAU_EPSILON:
                 continue  # this lineage's last refinement didn't help enough - stop refining it further
 
             if budget.is_exhausted:
                 break
+
+            # Fix (Phase 1 quality fixes): run one real, single-pass judge
+            # call on this weakest candidate before critiquing it, so the
+            # critique reasons against the judge's actual per-criterion
+            # feedback (the largest term in DEFAULT_WEIGHTS - see scoring.py)
+            # instead of always being told "the judge was not run", which is
+            # what happened when this cheap-score ranking pass's own
+            # judge_score=None was the only signal ever threaded into
+            # critique_and_refine. Bounded cost: at most one extra judge
+            # call per weakest candidate per round (<=2 per round), no swap
+            # (judge_single_pass, not judge_pairwise - the swap's bias-
+            # cancelling value is saved for the final, persisted sweep score).
+            judge_result: JudgeResult | None = None
+            if judge_criteria and candidate_output is not None and not budget.is_exhausted:
+                try:
+                    judge_result = judge_single_pass(
+                        benchmark_output, candidate_output, judge_criteria,
+                        model=judge_model, input=example_input,
+                    )
+                    budget.record_spend(
+                        judge_result.cost_usd or 0.0, candidate_id=f"stage-{stage_input.stage_id}-critique-judge"
+                    )
+                except JudgeResponseError as exc:
+                    failed_cost = exc.response.cost_usd if exc.response is not None else 0.0
+                    budget.record_spend(
+                        failed_cost or 0.0, candidate_id=f"stage-{stage_input.stage_id}-critique-judge"
+                    )
+                    logger.warning(
+                        "Judge call failed during Prism critique ranking for stage %s (%s): %s — "
+                        "critiquing without judge reasoning.",
+                        stage_input.stage_id, stage_input.stage_name, exc,
+                    )
+                except Exception as exc:  # noqa: BLE001 - transport failure, degrade gracefully, no cost to record
+                    logger.warning(
+                        "Judge call failed during Prism critique ranking for stage %s (%s): %s — "
+                        "critiquing without judge reasoning.",
+                        stage_input.stage_id, stage_input.stage_name, exc,
+                    )
+
             try:
                 refinement = critique_and_refine(
                     prompt_text, composite, limited_examples, stage_input.rubric, stage_input.target_model,
-                    call=call, mutator_model=mutator_model,
+                    call=call, mutator_model=mutator_model, judge_result=judge_result,
                 )
                 budget.record_spend(refinement.cost_usd or 0.0, candidate_id=f"stage-{stage_input.stage_id}-refine")
+
+                # Fire "refining" only now (not before the call, as before this
+                # phase gained a `detail` payload) — this is the first point in
+                # the round where real critique text actually exists to attach.
+                # Still fires at most once per round (refining_phase_fired),
+                # same as before; if every candidate's critique_and_refine call
+                # in this round fails, the round simply has no "refining" event
+                # instead of one with detail=None - there is nothing to plumb
+                # in that case anyway.
+                if on_phase is not None and not refining_phase_fired:
+                    detail = refinement.critique or _judge_reasoning_summary(judge_result)
+                    on_phase(StagePhaseEvent(stage_id=stage_input.stage_id, phase="refining", detail=detail))
+                    refining_phase_fired = True
+
                 refined = refinement.variants[0]
-                if refined not in prompt_candidates and refined not in refined_variants:
+                already_kept = prompt_candidates + refined_variants
+                if (
+                    refined not in prompt_candidates
+                    and refined not in refined_variants
+                    and not _is_near_duplicate(refined, already_kept)
+                ):
                     refined_variants.append(refined)
                     candidate_baseline[refined] = cheap_score  # must beat the parent's score to refine again
                     next_round_candidates.append(refined)
@@ -661,6 +856,7 @@ def _optimize_stage_prism(
         parity_threshold=parity_threshold,
         max_sweep_candidates_per_prompt=max_sweep_candidates_per_prompt,
         on_attempt=on_attempt,
+        on_phase=on_phase,
     )
 
     # Step 6: optional few-shot selection on the winning candidate only.
@@ -699,6 +895,7 @@ def run_optimizer(
     max_refine_rounds: int = DEFAULT_MAX_REFINE_ROUNDS,
     include_few_shot: bool = False,
     on_attempt: Callable[[StageAttempt], None] | None = None,
+    on_phase: Callable[[StagePhaseEvent], None] | None = None,
 ) -> OptimizationResult:
     """Run the M3 optimizer loop across every stage of a migration.
 
@@ -739,6 +936,13 @@ def run_optimizer(
         in the order attempts complete — the caller's hook for progress
         reporting and persistence (e.g. writing a ``Candidate`` row). Not
         called for attempts that failed transport-side (never scored).
+    on_phase:
+        Optional callback invoked at each phase transition *within* a
+        stage — coarser than a per-attempt signal, but fires during
+        mutation and (for "prism") each critique/refine round, which
+        ``on_attempt`` alone says nothing about. See
+        :class:`StagePhaseEvent`. No-op-safe: omitting it changes nothing
+        about how either strategy runs.
 
     Returns
     -------
@@ -768,6 +972,7 @@ def run_optimizer(
                     max_refine_rounds=max_refine_rounds,
                     include_few_shot=include_few_shot,
                     on_attempt=on_attempt,
+                    on_phase=on_phase,
                 )
             else:
                 result = _optimize_stage_simple(
@@ -780,6 +985,7 @@ def run_optimizer(
                     num_prompt_variants=num_prompt_variants,
                     max_sweep_candidates_per_prompt=max_sweep_candidates_per_prompt,
                     on_attempt=on_attempt,
+                    on_phase=on_phase,
                 )
         except Exception as exc:  # noqa: BLE001 - one stage's failure must never abort the whole run
             logger.error("Stage %s failed unexpectedly: %s", stage_input.stage_id, exc, exc_info=True)

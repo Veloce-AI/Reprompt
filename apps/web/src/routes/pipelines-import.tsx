@@ -200,6 +200,7 @@ export default function PipelinesImport() {
                   navigate({
                     to: "/pipelines/$pipelineId",
                     params: { pipelineId: String(result.pipeline_id) },
+                    search: { tab: "canvas" },
                   })
                 }
               >

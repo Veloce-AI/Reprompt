@@ -19,6 +19,7 @@ import pytest
 from reprompt_core.budget import BudgetTracker
 from reprompt_core.llm.client import LLMResponse
 from reprompt_core.optimizer.loop import (
+    DEFAULT_MAX_REFINE_ROUNDS,
     PLATEAU_EPSILON,
     OptimizationResult,
     StageOptimizationInput,
@@ -224,6 +225,188 @@ def test_prism_budget_hard_stop_mid_loop() -> None:
     assert isinstance(result, OptimizationResult)
 
 
+JUDGE_RUBRIC: dict = {
+    "judge_criteria": [{"name": "Accuracy", "weight": 1.0, "description": "Correct currency/revenue extraction."}],
+}
+
+
+def test_prism_critique_ranking_runs_a_real_judge_call_and_reasoning_reaches_the_prompt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Fix 1 (Phase 1 quality fixes): the cheap-score ranking pass itself
+    stays judge-free (unchanged), but before critiquing the round's weakest
+    candidate(s), _optimize_stage_prism now runs one real, single-pass judge
+    call (judge_single_pass) and threads its per-criterion reasoning into
+    the critique prompt - so the critique loop is no longer judge-blind."""
+    stage = StageOptimizationInput(
+        stage_id=1,
+        stage_name="Stage 1",
+        original_prompt_template="Extract data from: {{document}}",
+        target_model=TARGET_MODEL,
+        rubric=JUDGE_RUBRIC,
+        examples=EXAMPLES,
+    )
+
+    def fake_judge_complete(model, messages, **kwargs):
+        # judge.py calls reprompt_core.llm.client.complete directly (not the
+        # injected `call`) - see test_judge.py's own module docstring.
+        return _fake_response(
+            json.dumps(
+                {
+                    "criteria": [
+                        {
+                            "name": "Accuracy",
+                            "score": 0.4,
+                            "reasoning": "Missed the currency code entirely.",
+                        }
+                    ]
+                }
+            )
+        )
+
+    monkeypatch.setattr("reprompt_core.llm.client.complete", fake_judge_complete)
+
+    call, captured = _make_call(mutation_variants=["mutated variant"], refined_text="a genuinely refined prompt")
+    budget = BudgetTracker(budget_usd=10.0)
+
+    result = run_optimizer(
+        [stage], call=call, budget=budget, judge_model=JUDGE_MODEL,
+        strategy="prism", max_sweep_candidates_per_prompt=1, parity_threshold=0.0,
+        num_prompt_variants=1, max_refine_rounds=1,
+    )
+
+    assert result.stage_results[0].error is None
+    critique_calls = [c for c in captured if "critique" in c["messages"][0]["content"].lower()]
+    assert len(critique_calls) >= 1
+    assert any(
+        "Missed the currency code entirely." in c["messages"][1]["content"] for c in critique_calls
+    ), "the judge's real per-criterion reasoning must reach the critique prompt, not just a bare score"
+
+
+def test_prism_default_max_refine_rounds_is_three() -> None:
+    # Fix 2 (Phase 1 quality fixes): was 1, which made plateau early-stopping
+    # dead code (never a second round to compare against).
+    assert DEFAULT_MAX_REFINE_ROUNDS == 3
+
+
+def test_prism_default_rounds_engages_all_three_rounds_when_improving(monkeypatch: pytest.MonkeyPatch) -> None:
+    """With the (now default) max_refine_rounds=3 and a cheap_score that
+    keeps clearing PLATEAU_EPSILON every round, all 3 rounds should actually
+    run end to end - the concrete demonstration that raising
+    DEFAULT_MAX_REFINE_ROUNDS wasn't a no-op (at the old default of 1, a
+    second/third round could never be observed at all)."""
+    # Only the cheap-score ranking calls (whose `candidate` argument is
+    # always this stage's fixed sweep-output text - see `call` below) get
+    # the increasing sequence; the near-duplicate-filtering calls this test
+    # also triggers (comparing prompt TEXT, not completion output) get a
+    # constant, never-a-duplicate value so they don't consume from - or
+    # skew the count of - the same iterator.
+    embedding_scores = iter([0.3, 0.3, 0.5, 0.5, 0.7, 0.7])
+    sweep_output = '{"currency": "USD", "revenue": 4200000}'
+
+    def fake_similarity(benchmark_or_existing, candidate, **kw):
+        if candidate == sweep_output:
+            return next(embedding_scores, 0.7)
+        return 0.1
+
+    monkeypatch.setattr("reprompt_core.optimizer.loop.embedding_similarity", fake_similarity)
+
+    critique_counter = {"n": 0}
+
+    def call(model, messages, **kwargs):
+        response_format = kwargs.get("response_format")
+        system_content = messages[0]["content"] if messages else ""
+        if isinstance(response_format, type):
+            if "critique" in system_content.lower():
+                critique_counter["n"] += 1
+                return _fake_response(
+                    json.dumps({"critique": "needs work", "refined_prompt": f"refined variant #{critique_counter['n']}"})
+                )
+            return _fake_response(json.dumps({"variants": ["mutated variant"]}))
+        return _fake_response(sweep_output)
+
+    budget = BudgetTracker(budget_usd=10.0)
+    run_optimizer(
+        [_stage()], call=call, budget=budget, judge_model=JUDGE_MODEL,
+        strategy="prism", max_sweep_candidates_per_prompt=1, parity_threshold=0.0,
+        num_prompt_variants=1,  # max_refine_rounds intentionally omitted - exercises the new default
+    )
+
+    # 2 candidates refined per round (original's lineage + the one mutation's
+    # lineage) x 3 rounds, since each round's cheap_score clears
+    # PLATEAU_EPSILON over its parent's baseline every time.
+    assert critique_counter["n"] == 6
+
+
+def test_stage_attempt_scores_include_judge_disagreement_and_low_confidence(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Fix 4 (Phase 1 quality fixes): JudgeResult.disagreement/low_confidence
+    were computed by judge.py's position-swap design but silently discarded
+    by run_sweep_for_stage - only overall_score survived onto StageAttempt.
+    Now both are carried through into StageAttempt.scores."""
+    stage = StageOptimizationInput(
+        stage_id=1,
+        stage_name="Stage 1",
+        original_prompt_template="Extract data from: {{document}}",
+        target_model=TARGET_MODEL,
+        rubric=JUDGE_RUBRIC,
+        examples=EXAMPLES,
+    )
+
+    # The two position-swapped judge_pairwise calls disagree meaningfully on
+    # the single criterion (0.9 vs 0.2 -> disagreement 0.7 > the 0.3 default
+    # threshold), so low_confidence must be True.
+    swapped_scores = iter([0.9, 0.2])
+
+    def fake_judge_complete(model, messages, **kwargs):
+        score = next(swapped_scores)
+        return _fake_response(json.dumps({"criteria": [{"name": "Accuracy", "score": score, "reasoning": "ok"}]}))
+
+    monkeypatch.setattr("reprompt_core.llm.client.complete", fake_judge_complete)
+
+    def call(model, messages, **kwargs):
+        response_format = kwargs.get("response_format")
+        if isinstance(response_format, type):
+            return _fake_response(json.dumps({"variants": []}))  # mutation fails -> degrades to original only
+        return _fake_response('{"currency": "USD", "revenue": 4200000}')
+
+    budget = BudgetTracker(budget_usd=10.0)
+    result = run_optimizer(
+        [stage], call=call, budget=budget, judge_model=JUDGE_MODEL,
+        strategy="simple", max_sweep_candidates_per_prompt=1, parity_threshold=0.0,
+    )
+
+    best = result.stage_results[0].best
+    assert best is not None
+    assert best.scores["judge_disagreement"] == pytest.approx(0.7)
+    assert best.scores["judge_low_confidence"] is True
+
+
+def test_prism_near_duplicate_mutation_variant_is_filtered(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Fix 6 (Phase 1 quality fixes): dedup was exact-string-match only, so
+    two near-identical mutation variants would each consume a full sweep
+    slot. A variant whose embedding similarity to an already-kept candidate
+    exceeds NEAR_DUPLICATE_SIMILARITY_THRESHOLD must now be dropped before
+    it's ever added to prompt_candidates."""
+
+    def fake_similarity(benchmark_or_existing, candidate, **kw):
+        return 0.99 if candidate == "near-duplicate variant" else 0.5
+
+    monkeypatch.setattr("reprompt_core.optimizer.loop.embedding_similarity", fake_similarity)
+
+    call, _captured = _make_call(mutation_variants=["safely distinct variant", "near-duplicate variant"])
+    budget = BudgetTracker(budget_usd=10.0)
+    attempted_variants: list[str] = []
+
+    run_optimizer(
+        [_stage()], call=call, budget=budget, judge_model=JUDGE_MODEL,
+        strategy="simple", max_sweep_candidates_per_prompt=1, parity_threshold=0.0,
+        on_attempt=lambda attempt: attempted_variants.append(attempt.prompt_variant),
+    )
+
+    assert "safely distinct variant" in attempted_variants
+    assert "near-duplicate variant" not in attempted_variants
+
+
 def test_stage_attempt_carries_target_model() -> None:
     """Every StageAttempt passed to on_attempt must include the target_model
     string from StageOptimizationInput — so callers can persist which model
@@ -266,3 +449,100 @@ def test_prism_one_stage_failure_does_not_abort_run(monkeypatch: pytest.MonkeyPa
     # step; both must be recorded as failed, not raised - the run itself
     # must still complete and report on every stage.
     assert all(r.error is not None for r in result.stage_results)
+
+
+# ---------------------------------------------------------------------------
+# on_phase — Phase A live sub-step signal
+# ---------------------------------------------------------------------------
+
+
+def test_simple_strategy_fires_mutating_then_sweeping_then_scoring_on_phase() -> None:
+    call, _captured = _make_call(mutation_variants=["variant A"])
+    budget = BudgetTracker(budget_usd=10.0)
+    phases: list[tuple[int, str]] = []
+
+    run_optimizer(
+        [_stage()], call=call, budget=budget, judge_model=JUDGE_MODEL,
+        strategy="simple", max_sweep_candidates_per_prompt=1, parity_threshold=0.0,
+        on_phase=lambda event: phases.append((event.stage_id, event.phase)),
+    )
+
+    # "simple" never cheap-scores/critiques/refines - only mutate -> sweep -> score,
+    # all for the one stage.
+    assert phases == [(1, "mutating"), (1, "sweeping"), (1, "scoring")]
+
+
+def test_prism_strategy_fires_full_phase_sequence_including_critique_refine_rounds() -> None:
+    call, _captured = _make_call(mutation_variants=["mutated variant"], refined_text="a refined prompt")
+    budget = BudgetTracker(budget_usd=10.0)
+    phases: list[tuple[int, str]] = []
+
+    run_optimizer(
+        [_stage()], call=call, budget=budget, judge_model=JUDGE_MODEL,
+        strategy="prism", max_sweep_candidates_per_prompt=1, parity_threshold=0.0,
+        num_prompt_variants=1, max_refine_rounds=1,
+        on_phase=lambda event: phases.append((event.stage_id, event.phase)),
+    )
+
+    # mutate (round 1) -> [cheap_score -> critique -> refine] x1 round -> sweep -> score.
+    assert phases == [
+        (1, "mutating"),
+        (1, "cheap_scoring"),
+        (1, "critiquing"),
+        (1, "refining"),
+        (1, "sweeping"),
+        (1, "scoring"),
+    ]
+
+
+def test_prism_refining_phase_event_carries_the_critique_text() -> None:
+    """Phase B: StagePhaseEvent.detail carries the real critique text
+    critique_and_refine produced for the "refining" phase transition - not
+    just a bare phase name. _make_call's critique/refine fake always
+    returns critique="needs work" (see this file's own _make_call)."""
+    call, _captured = _make_call(mutation_variants=["mutated variant"], refined_text="a refined prompt")
+    budget = BudgetTracker(budget_usd=10.0)
+    events: list = []
+
+    run_optimizer(
+        [_stage()], call=call, budget=budget, judge_model=JUDGE_MODEL,
+        strategy="prism", max_sweep_candidates_per_prompt=1, parity_threshold=0.0,
+        num_prompt_variants=1, max_refine_rounds=1,
+        on_phase=lambda event: events.append(event),
+    )
+
+    refining_events = [e for e in events if e.phase == "refining"]
+    assert len(refining_events) == 1
+    assert refining_events[0].detail == "needs work"
+
+    # Every other phase in this run has nothing available to attach, so
+    # detail stays the None default - confirms this is additive, not a
+    # blanket change to every phase.
+    non_refining = [e for e in events if e.phase != "refining"]
+    assert all(e.detail is None for e in non_refining)
+
+
+def test_stage_phase_event_detail_defaults_to_none() -> None:
+    """Backward compatibility: existing callers that only ever built
+    StagePhaseEvent(stage_id=..., phase=...) (positionally or by keyword)
+    still work now that `detail` exists - it's a trailing optional field."""
+    from reprompt_core.optimizer.loop import StagePhaseEvent
+
+    event = StagePhaseEvent(stage_id=1, phase="mutating")
+    assert event.detail is None
+
+
+def test_on_phase_is_optional_and_defaults_to_no_op() -> None:
+    """Existing callers that never pass on_phase must be entirely
+    unaffected - the default is None and nothing inside either strategy
+    should assume it's callable."""
+    call, _captured = _make_call(mutation_variants=["variant A"])
+    budget = BudgetTracker(budget_usd=10.0)
+
+    result = run_optimizer(
+        [_stage()], call=call, budget=budget, judge_model=JUDGE_MODEL,
+        strategy="prism", max_sweep_candidates_per_prompt=1, parity_threshold=0.0,
+        num_prompt_variants=1, max_refine_rounds=1,
+    )
+
+    assert result.stage_results[0].error is None

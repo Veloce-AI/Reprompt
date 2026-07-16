@@ -35,6 +35,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from reprompt_core.judge import JudgeResult
 from reprompt_core.llm.client import LLMResponse
 from reprompt_core.scoring import CompositeScore
 
@@ -78,6 +79,13 @@ class PromptMutationResult(BaseModel):
     model: str = Field(description="The model that actually produced the (accepted) variants.")
     cost_usd: float | None = Field(description="Combined cost across the initial call and the retry, if one occurred.")
     latency_ms: float = Field(description="Combined wall-clock latency across the initial call and the retry, if one occurred.")
+    critique: str | None = Field(
+        default=None,
+        description="Why the candidate scored the way it did, in the model's own words — only "
+        "populated by critique_and_refine (which always has something to critique); left None by "
+        "generate_prompt_mutations, which has no prior candidate to critique. Previously computed "
+        "then discarded (only refined_prompt survived) - see DEV_TRACKER.md's Phase B note.",
+    )
 
 
 class PromptMutationError(Exception):
@@ -215,12 +223,22 @@ class _RawFewShotSelection(BaseModel):
     indices: list[int] = Field(default_factory=list)
 
 
-def _format_score_feedback(score: CompositeScore) -> str:
+def _format_score_feedback(score: CompositeScore, judge_result: JudgeResult | None = None) -> str:
     """Human-readable summary of why a candidate scored the way it did —
     the concrete context :func:`critique_and_refine` shows the model, drawn
     directly from :class:`~reprompt_core.scoring.CompositeScore` rather than
     a bare number, so the critique step can reason about *specific* failed
-    checks/criteria instead of guessing from a score alone."""
+    checks/criteria instead of guessing from a score alone.
+
+    ``judge_result``, when supplied, is a real
+    :class:`~reprompt_core.judge.JudgeResult` (e.g. from
+    :func:`reprompt_core.judge.judge_single_pass`) obtained for this specific
+    candidate — its per-criterion ``reasoning`` text is included so the
+    critique step can reason against the actual dominant scoring signal
+    (the judge is ``DEFAULT_WEIGHTS.judge``'s largest weight — see
+    ``scoring.py``) instead of always being told the judge "was not run",
+    which is what happened before this was threaded through (see
+    ``DEV_TRACKER.md``'s Phase 1 quality-fixes note)."""
     lines: list[str] = [f"Overall score: {score.final_score:.2f} (0.0-1.0 scale)"]
 
     if score.gated:
@@ -235,7 +253,17 @@ def _format_score_feedback(score: CompositeScore) -> str:
 
     lines.append(f"Embedding similarity to benchmark output: {score.embedding_score:.2f}")
 
-    if score.judge_score is not None:
+    if judge_result is not None:
+        lines.append(f"AI judge overall score: {judge_result.overall_score:.2f}")
+        lines.append("AI judge per-criterion reasoning:")
+        for criterion in judge_result.criteria:
+            lines.append(f"  - {criterion.name} (score {criterion.score:.2f}): {criterion.reasoning}")
+        if judge_result.low_confidence:
+            lines.append(
+                "Note: this judge call showed high disagreement risk; treat the reasoning above "
+                "as directional, not definitive."
+            )
+    elif score.judge_score is not None:
         lines.append(f"AI judge score: {score.judge_score:.2f}")
     elif not score.gated:
         lines.append("AI judge was not run for this candidate (skipped or not yet available).")
@@ -271,11 +299,12 @@ def _build_critique_messages(
     rubric: dict[str, Any],
     target_model: str,
     *,
+    judge_result: JudgeResult | None = None,
     corrective_note: str | None = None,
 ) -> list[dict[str, str]]:
     parts: list[str] = [
         f"CANDIDATE PROMPT (for target model {target_model}):\n{prompt_variant}",
-        f"WHY IT SCORED THE WAY IT DID:\n{_format_score_feedback(score)}",
+        f"WHY IT SCORED THE WAY IT DID:\n{_format_score_feedback(score, judge_result)}",
         _format_rubric(rubric),
     ]
 
@@ -319,6 +348,7 @@ def critique_and_refine(
     mutator_model: str | None = None,
     temperature: float = DEFAULT_MUTATOR_TEMPERATURE,
     timeout: float | None = None,
+    judge_result: JudgeResult | None = None,
 ) -> PromptMutationResult:
     """Prism's critique-then-refine step (see ``DEV_TRACKER.md``'s Phase 1
     spec for the full design rationale).
@@ -328,6 +358,17 @@ def critique_and_refine(
     real examples the original prompt reliably produces, produce a short
     critique and ONE refined prompt addressing it. Same
     retry-once-on-total-failure convention as :func:`generate_prompt_mutations`.
+
+    ``judge_result``, when supplied by the caller (``loop.py``'s
+    ``_optimize_stage_prism``, which runs one real single-pass judge call —
+    :func:`reprompt_core.judge.judge_single_pass` — on each of the round's
+    weakest candidates before critiquing them), is threaded into the
+    critique prompt via :func:`_format_score_feedback` so the critique
+    reasons against the judge's actual per-criterion feedback — the
+    dominant term in the real composite score formula (see
+    ``scoring.DEFAULT_WEIGHTS``) — instead of being told the judge simply
+    "was not run". ``None`` (the default) preserves the prior behavior for
+    any caller that doesn't have a judge result available.
 
     Returns
     -------
@@ -347,7 +388,7 @@ def critique_and_refine(
     coerced = [e if isinstance(e, MutationExample) else MutationExample.model_validate(e) for e in original_examples]
     model_for_call = mutator_model or target_model
 
-    messages = _build_critique_messages(prompt_variant, score, coerced, rubric, target_model)
+    messages = _build_critique_messages(prompt_variant, score, coerced, rubric, target_model, judge_result=judge_result)
     response = call(
         model_for_call,
         messages,
@@ -363,7 +404,8 @@ def critique_and_refine(
 
     if raw_output is None:
         retry_messages = _build_critique_messages(
-            prompt_variant, score, coerced, rubric, target_model, corrective_note=parse_error
+            prompt_variant, score, coerced, rubric, target_model,
+            judge_result=judge_result, corrective_note=parse_error,
         )
         retry_response = call(
             model_for_call,
@@ -388,6 +430,7 @@ def critique_and_refine(
         model=resolved_model,
         cost_usd=cost_usd,
         latency_ms=latency_ms,
+        critique=raw_output.critique.strip() or None,
     )
 
 

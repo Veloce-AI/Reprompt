@@ -15,11 +15,13 @@ import json
 import pytest
 
 from reprompt_core.deterministic import CheckResult, EvaluationResult
+from reprompt_core.judge import CriterionJudgment, JudgeResult
 from reprompt_core.llm.client import LLMResponse
 from reprompt_core.optimizer.mutator import (
     MutationExample,
     PromptMutationError,
     critique_and_refine,
+    generate_prompt_mutations,
     select_few_shot_examples,
 )
 from reprompt_core.scoring import DEFAULT_WEIGHTS, CompositeScore
@@ -117,6 +119,89 @@ def test_critique_and_refine_includes_score_context_in_the_prompt() -> None:
     assert "Missing required key 'revenue'" in user_message
     assert result.variants == [PROMPT_TEMPLATE + " Always include revenue."]
     assert result.cost_usd == 0.001
+    # Phase B: the critique text is now threaded through, not discarded -
+    # see PromptMutationResult.critique's docstring.
+    assert result.critique == "Missing revenue key."
+
+
+def test_critique_and_refine_includes_judge_reasoning_when_supplied() -> None:
+    """Fix 1 (Phase 1 quality fixes, DEV_TRACKER.md): the critique loop must
+    actually see real judge reasoning, not always be told "the judge was
+    not run" - loop.py's _optimize_stage_prism now runs one real
+    judge_single_pass call on each weakest candidate and passes the
+    resulting JudgeResult through to critique_and_refine."""
+    score = _make_score(failing_check=False)  # deterministic checks pass; judge is the interesting signal here
+    judge_result = JudgeResult(
+        overall_score=0.35,
+        criteria=[
+            CriterionJudgment(
+                name="Correct currency",
+                weight=1.0,
+                score=0.35,
+                reasoning="The candidate used 'USD' where the benchmark clearly expected 'EUR'.",
+                order_disagreement=0.0,
+            )
+        ],
+        model=TARGET_MODEL,
+        disagreement=0.0,
+        low_confidence=False,
+        cost_usd=0.0007,
+        latency_ms=90.0,
+    )
+    response = _fake_response(json.dumps({"critique": "wrong currency", "refined_prompt": "refined for currency"}))
+    call, captured = _make_call([response])
+
+    result = critique_and_refine(
+        PROMPT_TEMPLATE, score, EXAMPLES, RUBRIC, TARGET_MODEL, call=call, judge_result=judge_result,
+    )
+
+    assert len(captured) == 1
+    user_message = captured[0]["messages"][1]["content"]
+    assert "The candidate used 'USD' where the benchmark clearly expected 'EUR'." in user_message
+    assert "AI judge overall score: 0.35" in user_message
+    assert result.variants == ["refined for currency"]
+    assert result.critique == "wrong currency"
+
+
+def test_critique_and_refine_critique_is_none_when_model_returns_empty_critique_text() -> None:
+    """An empty (or whitespace-only) critique string is normalized to None,
+    same convention as every other optional text field in this module -
+    "not usable" collapses to None rather than an empty string a caller
+    would need to special-case."""
+    score = _make_score(failing_check=True)
+    response = _fake_response(json.dumps({"critique": "   ", "refined_prompt": "refined"}))
+    call, _captured = _make_call([response])
+
+    result = critique_and_refine(PROMPT_TEMPLATE, score, EXAMPLES, RUBRIC, TARGET_MODEL, call=call)
+
+    assert result.critique is None
+
+
+def test_generate_prompt_mutations_critique_is_always_none() -> None:
+    """generate_prompt_mutations has no prior candidate to critique - its
+    PromptMutationResult.critique must always be None, distinguishing it
+    from critique_and_refine's result at the type level for any caller
+    that branches on it (e.g. an on_phase detail payload)."""
+    response = _fake_response(json.dumps({"variants": ["variant A", "variant B"]}))
+    call, _captured = _make_call([response])
+
+    result = generate_prompt_mutations(PROMPT_TEMPLATE, TARGET_MODEL, RUBRIC, EXAMPLES, call=call)
+
+    assert result.variants == ["variant A", "variant B"]
+    assert result.critique is None
+
+
+def test_critique_and_refine_omits_judge_section_when_none_supplied() -> None:
+    """Regression guard: no judge_result -> falls back to the prior
+    "judge was not run" framing, never silently drops the whole section."""
+    score = _make_score(failing_check=True)
+    response = _fake_response(json.dumps({"critique": "ok", "refined_prompt": "refined"}))
+    call, captured = _make_call([response])
+
+    critique_and_refine(PROMPT_TEMPLATE, score, EXAMPLES, RUBRIC, TARGET_MODEL, call=call)
+
+    user_message = captured[0]["messages"][1]["content"]
+    assert "AI judge was not run for this candidate" in user_message
 
 
 def test_critique_and_refine_retries_once_on_malformed_json() -> None:

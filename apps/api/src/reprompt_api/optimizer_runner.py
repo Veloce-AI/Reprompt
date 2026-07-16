@@ -24,10 +24,12 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from reprompt_core.budget import BudgetTracker
+from reprompt_core.llm.model_select import select_model
 from reprompt_core.optimizer.loop import (
     OptimizationResult,
     StageAttempt,
     StageOptimizationInput,
+    StagePhaseEvent,
     run_optimizer,
 )
 
@@ -35,9 +37,24 @@ from reprompt_api import models
 from reprompt_api.db import SessionLocal
 from reprompt_api.llm_context import complete_with_workspace_credentials
 
+# NOTE: reprompt_api.migrations.get_available_models is imported lazily
+# inside _run() below, not here at module level - migrations.py itself
+# imports run_optimizer_for_migration (this module) at its own module level
+# for its BackgroundTasks.add_task() call, so a top-level import here would
+# be a circular import (ImportError on a partially-initialized module).
+# Deferring the import to call-time, after both modules have finished
+# loading, is the standard fix and requires no restructuring of either file.
+
 __all__ = ["run_optimizer_for_migration"]
 
 logger = logging.getLogger(__name__)
+
+MAX_ACTIVITY_LOG_ENTRIES = 100
+"""Caps Migration.activity_log length - a long migration (many stages *
+target models * critique/refine rounds) fires many on_phase events; without
+a cap the JSON column would grow unbounded. Only the most recent entries
+matter for the live activity-log UI, so older entries are dropped from the
+front as new ones are appended (see on_phase below)."""
 
 
 def run_optimizer_for_migration(migration_id: int) -> None:
@@ -89,9 +106,27 @@ def _run(db: Session, migration_id: int) -> None:  # noqa: C901
         if not target_models:
             raise RuntimeError("Migration has no target models configured")
 
-        # Use first model as judge for consistent cross-model scoring.
-        judge_model = (
-            migration.target_model_config.get("judge_model") or target_models[0]
+        # Judge/mutator are Reprompt's OWN harness infrastructure (scoring
+        # candidate outputs / mutating-critiquing-refining candidate
+        # prompts) - deliberately decoupled from `target_models` above
+        # (the user's own choice of model(s) being tested), so a target
+        # model never silently grades or refines its own output. An
+        # explicit override in target_model_config always wins; otherwise
+        # auto-select independently from the workspace's own available
+        # models (never from target_models) via the same select_model()
+        # pattern already used for rubric generation - see
+        # reprompt_api.migrations.get_available_models and
+        # reprompt_core.llm.model_select.select_model. See DEV_TRACKER.md's
+        # "Fix judge/mutator self-grading bias" section for the full
+        # rationale.
+        from reprompt_api.migrations import get_available_models  # local import - see note above imports
+
+        available_models = [option.model for option in get_available_models(db, workspace)]
+        judge_model = migration.target_model_config.get("judge_model") or select_model(
+            "judge", available_models
+        )
+        mutator_model = migration.target_model_config.get("mutator_model") or select_model(
+            "mutator", available_models
         )
 
         db_stages = db.scalars(
@@ -128,6 +163,36 @@ def _run(db: Session, migration_id: int) -> None:  # noqa: C901
                 migration.progress_total = total_work
             db.commit()
 
+        def on_phase(event: StagePhaseEvent) -> None:
+            # Finer-grained than on_attempt - fires during mutation and each
+            # Prism critique/refine round, not just once per finished attempt.
+            # progress_stage_name is set independently by on_attempt above;
+            # this only tracks the sub-step *within* whatever stage is
+            # currently running. Committed at the same cadence as
+            # progress_stage_name (every write) so a poller sees it live.
+            migration.progress_substep = event.phase
+
+            # Phase B: also append to the running activity log - real LLM
+            # reasoning (event.detail, when the phase carries it - see
+            # StagePhaseEvent's docstring in packages/core) previously had
+            # nowhere to land once on_phase returned. Reassigning the whole
+            # list (not .append()) so SQLAlchemy's change-tracking on a JSON
+            # column actually sees the mutation - in-place mutation of a
+            # JSON-mapped list/dict is a well-known SQLAlchemy footgun that
+            # silently no-ops on commit.
+            log = list(migration.activity_log or [])
+            log.append(
+                {
+                    "stage_id": event.stage_id,
+                    "phase": event.phase,
+                    "detail": event.detail,
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                }
+            )
+            migration.activity_log = log[-MAX_ACTIVITY_LOG_ENTRIES:]
+
+            db.commit()
+
         budget = BudgetTracker(budget_usd=migration.budget)
         total_cost = 0.0
         any_stopped_early = False
@@ -155,9 +220,11 @@ def _run(db: Session, migration_id: int) -> None:  # noqa: C901
                 ),
                 budget=budget,
                 judge_model=judge_model,
+                mutator_model=mutator_model,
                 strategy=strategy,
                 parity_threshold=migration.parity_threshold,
                 on_attempt=on_attempt,
+                on_phase=on_phase,
             )
 
             total_cost += result.total_cost_usd

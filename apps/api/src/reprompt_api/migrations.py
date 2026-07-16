@@ -92,9 +92,35 @@ class TargetModelConfig(BaseModel):
     """List of target models the optimizer will try per stage, keeping the
     best-scoring result. Replaces the old single-default + per-stage-override
     shape — backward-compat reading of the old shape is handled in
-    ``optimizer_runner._get_target_models``."""
+    ``optimizer_runner._get_target_models``.
+
+    ``models`` is the user's own choice of model(s) to test/compare — the
+    thing actually being optimized. ``judge_model``/``mutator_model`` are
+    optional overrides for Reprompt's OWN harness infrastructure (scoring
+    candidate outputs / mutating-critiquing-refining candidate prompts),
+    deliberately kept separate from ``models`` so a target model never
+    silently grades or refines its own output. When omitted, both are
+    auto-selected independently from the workspace's available models — see
+    ``optimizer_runner.py`` and DEV_TRACKER.md's "Fix judge/mutator
+    self-grading bias" section."""
 
     models: list[str] = Field(min_length=1)
+    judge_model: str | None = Field(
+        default=None,
+        description=(
+            "Optional explicit override for which model judges/scores candidate "
+            "outputs. Omit to auto-select from this workspace's available models, "
+            "independent of `models` above."
+        ),
+    )
+    mutator_model: str | None = Field(
+        default=None,
+        description=(
+            "Optional explicit override for which model mutates/critiques/refines "
+            "candidate prompts. Omit to auto-select from this workspace's available "
+            "models, independent of `models` above."
+        ),
+    )
 
 
 class MigrationCreate(BaseModel):
@@ -116,7 +142,24 @@ class MigrationOut(BaseModel):
     progress_stage_name: str | None = None
     progress_current: int | None = None
     progress_total: int | None = None
+    # Live sub-step within progress_stage_name - one of
+    # reprompt_core.optimizer.loop.StagePhase ("mutating"/"cheap_scoring"/
+    # "critiquing"/"refining"/"sweeping"/"scoring"), written by
+    # optimizer_runner.py's on_phase closure. Null before a run starts.
+    progress_substep: str | None = None
+    # Chronological {"stage_id", "phase", "detail", "timestamp"} entries -
+    # same polling pattern as progress_substep/stage_states, just a running
+    # list instead of a single latest value. Null before a run starts,
+    # capped at the last 100 entries by optimizer_runner.py's on_phase
+    # closure. See DEV_TRACKER.md's "Phase B" note.
+    activity_log: list[dict] | None = None
     completed_at: datetime.datetime | None = None
+    # Derived, not stored: {stage_id (as string, matching the DAG canvas's
+    # React Flow node ids) -> "idle" | "running" | "done" | "failed"}. See
+    # `_compute_stage_states` for the derivation rule — computed fresh on
+    # every read from the same progress_* fields optimizer_runner.py already
+    # writes sequentially; no new DB columns.
+    stage_states: dict[str, str] = Field(default_factory=dict)
 
 
 def _get_pipeline_or_404(db: Session, pipeline_id: int) -> models.Pipeline:
@@ -151,7 +194,87 @@ def _to_option(model: str) -> ModelOption:
     )
 
 
-def _to_out(migration: models.Migration) -> MigrationOut:
+def get_available_models(db: Session, workspace: models.Workspace) -> list[ModelOption]:
+    """Every curated model ``workspace`` can actually target right now:
+    every model that needs no API key (local/self-hosted, e.g. Ollama) plus
+    every model whose provider has a BYOK key configured for this workspace.
+
+    Extracted out of ``reprompt_api.settings.list_configured_models`` (which
+    now calls this) so a second caller — ``reprompt_api.rubrics``'s
+    auto-select-a-model-when-none-given path — can compute the same
+    "what can this workspace actually use" set without duplicating the
+    BYOK-provider-intersection logic or importing a route handler.
+    """
+    configured_providers = {
+        row.provider
+        for row in db.scalars(
+            select(models.WorkspaceApiKey).where(models.WorkspaceApiKey.workspace_id == workspace.id)
+        ).all()
+    }
+    options = [_to_option(model) for model in CURATED_MODELS]
+    return [
+        option
+        for option in options
+        if not option.requires_api_key or option.provider in configured_providers
+    ]
+
+
+def _compute_stage_states(
+    db_stages: list[models.Stage], migration: models.Migration
+) -> dict[str, str]:
+    """Derive a per-stage run state from the Migration's existing sequential
+    progress fields — no new DB columns, pure read-time derivation.
+
+    ``db_stages`` must be in the same order optimizer_runner.py iterates them
+    in (``Stage`` ordered by ``id`` — see ``optimizer_runner._run``'s
+    ``db_stages`` query, reused as-is here rather than inventing a second
+    ordering). Keys are the stage's DB id as a string, matching the DAG
+    canvas's React Flow node ids (``String(stage.id)`` in
+    ``pipeline-detail.tsx``).
+
+    Rule: stages before ``progress_stage_name`` = "done", the stage matching
+    it = "running" (or "failed"/"done" once the run is terminal), stages
+    after = "idle". ``status == "completed"`` short-circuits to all "done".
+    Before anything has run (``progress_stage_name`` is still None), every
+    stage is "idle".
+    """
+    if migration.status == "completed":
+        return {str(stage.id): "done" for stage in db_stages}
+
+    if not migration.progress_stage_name:
+        return {str(stage.id): "idle" for stage in db_stages}
+
+    current_index = next(
+        (i for i, s in enumerate(db_stages) if s.name == migration.progress_stage_name),
+        None,
+    )
+
+    states: dict[str, str] = {}
+    for i, stage in enumerate(db_stages):
+        if current_index is None:
+            states[str(stage.id)] = "idle"
+        elif i < current_index:
+            states[str(stage.id)] = "done"
+        elif i == current_index:
+            if migration.status == "failed":
+                states[str(stage.id)] = "failed"
+            elif migration.status == "stopped_early":
+                # The stage the run stopped on already had at least one
+                # attempt recorded before the budget hard-stop fired.
+                states[str(stage.id)] = "done"
+            else:
+                states[str(stage.id)] = "running"
+        else:
+            states[str(stage.id)] = "idle"
+    return states
+
+
+def _to_out(db: Session, migration: models.Migration) -> MigrationOut:
+    db_stages = db.scalars(
+        select(models.Stage)
+        .where(models.Stage.pipeline_id == migration.pipeline_id)
+        .order_by(models.Stage.id)
+    ).all()
     return MigrationOut(
         id=migration.id,
         pipeline_id=migration.pipeline_id,
@@ -165,36 +288,35 @@ def _to_out(migration: models.Migration) -> MigrationOut:
         progress_stage_name=migration.progress_stage_name,
         progress_current=migration.progress_current,
         progress_total=migration.progress_total,
+        progress_substep=migration.progress_substep,
+        activity_log=migration.activity_log,
         completed_at=migration.completed_at,
+        stage_states=_compute_stage_states(list(db_stages), migration),
     )
 
 
-class CandidateOut(BaseModel):
-    id: int
+class StageResultOut(BaseModel):
+    """One stage's before/after prompt for the results (diff) view.
+
+    Display-only — no new optimizer/scoring logic. ``winning_prompt``/
+    ``winning_model``/``score`` are read off whichever ``Candidate`` row for
+    this ``(migration_id, stage_id)`` pair has the highest
+    ``scores["final"]`` (the composite score ``packages/core``'s
+    ``run_sweep_for_stage`` already writes onto every attempt — see
+    ``reprompt_core.optimizer.loop``'s ``StageAttempt.scores`` and
+    ``optimizer_runner.py``'s ``on_attempt`` closure that persists it
+    verbatim as ``Candidate.scores``). There is no separate "winner" flag
+    persisted on ``Candidate`` — recomputing "best by score" at read time
+    is cheap (at most a few dozen rows per stage per migration) and keeps
+    this endpoint a pure read, no new columns/migrations.
+    """
+
     stage_id: int
     stage_name: str
-    target_model: str
-    prompt_variant: str
-    params: dict
-    format: str
-    scores: dict
-    cost: float
-    latency: float
-
-
-class StageSummary(BaseModel):
-    stage_id: int
-    stage_name: str
-    original_model: str
-    best_candidate: CandidateOut | None
-    attempts: int
-    total_cost: float
-
-
-class MigrationResultsOut(BaseModel):
-    migration: MigrationOut
-    stage_summaries: list[StageSummary]
-    all_candidates: list[CandidateOut]
+    original_prompt: str
+    winning_prompt: str
+    winning_model: str
+    score: float
 
 
 def _get_migration_or_404(db: Session, pipeline_id: int, migration_id: int) -> models.Migration:
@@ -230,7 +352,12 @@ def create_migration(
 
     migration = models.Migration(
         pipeline_id=pipeline_id,
-        target_model_config=migration_in.target_model_config.model_dump(),
+        # exclude_none: judge_model/mutator_model are optional overrides - a
+        # migration that doesn't set them should store/round-trip the same
+        # {"models": [...]} shape as before their fields existed (existing
+        # tests assert exact equality on this), not a dict padded with
+        # explicit `None`s for keys the caller never mentioned.
+        target_model_config=migration_in.target_model_config.model_dump(exclude_none=True),
         budget=migration_in.budget,
         parity_threshold=migration_in.parity_threshold,
         status="pending",
@@ -238,7 +365,7 @@ def create_migration(
     db.add(migration)
     db.commit()
     db.refresh(migration)
-    return _to_out(migration)
+    return _to_out(db, migration)
 
 
 @router.get("/{pipeline_id}/migrations", response_model=list[MigrationOut])
@@ -249,7 +376,7 @@ def list_migrations(pipeline_id: int, db: Session = Depends(get_db)) -> list[Mig
         .where(models.Migration.pipeline_id == pipeline_id)
         .order_by(models.Migration.id)
     ).all()
-    return [_to_out(migration) for migration in migrations]
+    return [_to_out(db, migration) for migration in migrations]
 
 
 @router.post("/{pipeline_id}/migrations/{migration_id}/start", response_model=MigrationOut)
@@ -299,79 +426,7 @@ def start_migration(
     db.refresh(migration)
 
     background_tasks.add_task(run_optimizer_for_migration, migration.id)
-    return _to_out(migration)
-
-
-@router.get("/{pipeline_id}/migrations/{migration_id}/results", response_model=MigrationResultsOut)
-def get_migration_results(
-    pipeline_id: int,
-    migration_id: int,
-    db: Session = Depends(get_db),
-) -> MigrationResultsOut:
-    """Full scorecard: per-stage best candidate + all attempts for a migration."""
-    _get_pipeline_or_404(db, pipeline_id)
-    migration = _get_migration_or_404(db, pipeline_id, migration_id)
-
-    db_stages = db.scalars(
-        select(models.Stage)
-        .where(models.Stage.pipeline_id == pipeline_id)
-        .order_by(models.Stage.id)
-    ).all()
-    stage_map: dict[int, models.Stage] = {s.id: s for s in db_stages}
-
-    candidates = db.scalars(
-        select(models.Candidate)
-        .where(models.Candidate.migration_id == migration_id)
-        .order_by(models.Candidate.id)
-    ).all()
-
-    def _to_candidate_out(c: models.Candidate) -> CandidateOut:
-        stage = stage_map.get(c.stage_id)
-        return CandidateOut(
-            id=c.id,
-            stage_id=c.stage_id,
-            stage_name=stage.name if stage else f"Stage {c.stage_id}",
-            target_model=c.target_model,
-            prompt_variant=c.prompt_variant,
-            params=c.params,
-            format=c.format,
-            scores=c.scores,
-            cost=c.cost,
-            latency=c.latency,
-        )
-
-    all_candidates = [_to_candidate_out(c) for c in candidates]
-
-    # Group by stage_id → build per-stage summaries.
-    stage_candidates: dict[int, list[CandidateOut]] = {}
-    for c in all_candidates:
-        stage_candidates.setdefault(c.stage_id, []).append(c)
-
-    stage_summaries: list[StageSummary] = []
-    for stage in db_stages:
-        stage_cands = stage_candidates.get(stage.id, [])
-        best: CandidateOut | None = None
-        if stage_cands:
-            best = max(
-                stage_cands,
-                key=lambda c: (c.scores.get("final") or 0.0),
-            )
-        stage_summaries.append(
-            StageSummary(
-                stage_id=stage.id,
-                stage_name=stage.name,
-                original_model=stage.model,
-                best_candidate=best,
-                attempts=len(stage_cands),
-                total_cost=sum(c.cost for c in stage_cands),
-            )
-        )
-
-    return MigrationResultsOut(
-        migration=_to_out(migration),
-        stage_summaries=stage_summaries,
-        all_candidates=all_candidates,
-    )
+    return _to_out(db, migration)
 
 
 @router.get("/{pipeline_id}/migrations/{migration_id}/status", response_model=MigrationOut)
@@ -388,4 +443,66 @@ def get_migration_status(
     """
     _get_pipeline_or_404(db, pipeline_id)
     migration = _get_migration_or_404(db, pipeline_id, migration_id)
-    return _to_out(migration)
+    return _to_out(db, migration)
+
+
+@router.get(
+    "/{pipeline_id}/migrations/{migration_id}/results",
+    response_model=list[StageResultOut],
+)
+def get_migration_results(
+    pipeline_id: int,
+    migration_id: int,
+    db: Session = Depends(get_db),
+) -> list[StageResultOut]:
+    """Before/after prompt per stage — the winning ``Candidate`` (highest
+    ``scores["final"]``) against ``Stage.prompt_template``.
+
+    Not gated on ``Migration.status`` being terminal: a stage only appears
+    once it has at least one ``Candidate`` row, which naturally means a
+    non-terminal (``running``/``pending``) migration returns whichever
+    stages have finished at least one attempt so far (often none yet, e.g.
+    right after ``start``) rather than erroring or returning a fixed
+    fully-populated shape — same "return what's available" contract this
+    router's other read endpoints already follow. Once ``status`` reaches a
+    terminal state this naturally returns the complete per-stage set.
+    """
+    _get_pipeline_or_404(db, pipeline_id)
+    _get_migration_or_404(db, pipeline_id, migration_id)
+
+    db_stages = db.scalars(
+        select(models.Stage)
+        .where(models.Stage.pipeline_id == pipeline_id)
+        .order_by(models.Stage.id)
+    ).all()
+
+    results: list[StageResultOut] = []
+    for stage in db_stages:
+        candidates = db.scalars(
+            select(models.Candidate)
+            .where(
+                models.Candidate.migration_id == migration_id,
+                models.Candidate.stage_id == stage.id,
+            )
+            .order_by(models.Candidate.id)
+        ).all()
+        if not candidates:
+            continue
+
+        # Ties broken by input-list order (Candidate.id ascending, i.e. the
+        # earliest-tried candidate wins) - same tie-break convention as
+        # reprompt_core.selection.select_best_candidate (Python's max()
+        # returns the first element attaining the maximum).
+        best = max(candidates, key=lambda c: c.scores.get("final") or 0.0)
+        results.append(
+            StageResultOut(
+                stage_id=stage.id,
+                stage_name=stage.name,
+                original_prompt=stage.prompt_template,
+                winning_prompt=best.prompt_variant,
+                winning_model=best.target_model,
+                score=best.scores.get("final") or 0.0,
+            )
+        )
+
+    return results

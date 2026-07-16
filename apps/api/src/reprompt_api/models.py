@@ -333,6 +333,19 @@ class Migration(Base):
     progress_stage_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     progress_current: Mapped[int | None] = mapped_column(Integer, nullable=True)
     progress_total: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # One of reprompt_core.optimizer.loop.StagePhase ("mutating"/"cheap_scoring"/
+    # "critiquing"/"refining"/"sweeping"/"scoring") - the live sub-step within
+    # progress_stage_name, written by optimizer_runner.py's on_phase closure.
+    # Null before a run starts or once it's terminal (mirrors progress_stage_name).
+    progress_substep: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    # Chronological log of on_phase events for this run - a running list of
+    # {"stage_id": int, "phase": str, "detail": str | None, "timestamp": str}
+    # dicts, appended to (never overwritten/reordered) by optimizer_runner.py's
+    # on_phase closure, capped at the last 100 entries (see that closure) so
+    # this can't grow unbounded across a long-running migration. Null before
+    # a run starts. See DEV_TRACKER.md's "Phase B — Live reasoning feed +
+    # activity log" for the full design.
+    activity_log: Mapped[list[dict] | None] = mapped_column(JSON, nullable=True)
     completed_at: Mapped[datetime.datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
@@ -353,7 +366,12 @@ class Candidate(Base):
     stage_id: Mapped[int] = mapped_column(
         ForeignKey("stages.id", ondelete="CASCADE"), nullable=False, index=True
     )
-    target_model: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    # The target model this candidate was optimized against. Non-nullable:
+    # every candidate is always produced for a specific target model.
+    # When a migration tries multiple models, this allows tracing which model
+    # produced which candidate (critical for cross-model comparison and
+    # scorecard logic).
+    target_model: Mapped[str] = mapped_column(String(255), nullable=False)
     prompt_variant: Mapped[str] = mapped_column(Text, nullable=False)
     params: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     format: Mapped[str] = mapped_column(String(32), nullable=False)

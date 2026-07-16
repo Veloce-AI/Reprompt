@@ -18,3 +18,60 @@
     box-shadow: var(--focus-ring);
   }
 }
+
+/* ============================================================
+   Pipeline canvas — live-migration edge/node treatments.
+   Every animation here maps to a real run state (see the
+   frontend-design skill: motion communicates, never decorates):
+   - .edge-beam    : edge touches the currently-running stage —
+                     a dash of --beam light flows along it.
+   - .edge-passed  : both endpoints are done — the beam has
+                     passed through; settles into the pass color.
+   - .stage-node-glow : soft --beam halo on the running node.
+   ============================================================ */
+
+@keyframes beam-flow {
+  to {
+    stroke-dashoffset: -24;
+  }
+}
+
+@keyframes beam-halo {
+  0%,
+  100% {
+    box-shadow: 0 0 6px 1px color-mix(in srgb, var(--beam) 35%, transparent);
+  }
+  50% {
+    box-shadow: 0 0 16px 4px color-mix(in srgb, var(--beam) 55%, transparent);
+  }
+}
+
+.react-flow__edge.edge-beam .react-flow__edge-path {
+  stroke: var(--beam);
+  stroke-width: 2;
+  stroke-dasharray: 8 4;
+  animation: beam-flow 0.8s linear infinite;
+  filter: drop-shadow(0 0 3px color-mix(in srgb, var(--beam) 60%, transparent));
+}
+
+.react-flow__edge.edge-passed .react-flow__edge-path {
+  stroke: var(--parity-pass);
+  stroke-width: 1.5;
+  opacity: 0.7;
+}
+
+.stage-node-glow {
+  animation: beam-halo 1.6s var(--ease-out) infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .react-flow__edge.edge-beam .react-flow__edge-path {
+    /* Keep the beam color as the "running" signal, drop the motion. */
+    animation: none;
+    stroke-dasharray: none;
+  }
+  .stage-node-glow {
+    animation: none;
+    box-shadow: 0 0 10px 2px color-mix(in srgb, var(--beam) 40%, transparent);
+  }
+}

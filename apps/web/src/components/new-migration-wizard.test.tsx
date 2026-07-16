@@ -13,10 +13,24 @@ vi.mock("@/lib/api", async () => {
     listModelOptions: vi.fn(),
     createMigration: vi.fn(),
     getModelCard: vi.fn(),
+    listApiKeys: vi.fn(),
+    addApiKey: vi.fn(),
   };
 });
 
-import { createMigration, getPipelineDag, listModelOptions, getModelCard } from "@/lib/api";
+import {
+  addApiKey,
+  createMigration,
+  getPipelineDag,
+  listApiKeys,
+  listModelOptions,
+  getModelCard,
+} from "@/lib/api";
+import type { ApiKeyOut } from "@/lib/api";
+
+function keyFor(provider: string, id = 1): ApiKeyOut {
+  return { id, provider, last_four: "abcd", created_at: "2026-01-15T12:00:00Z" };
+}
 
 function baseDag(): DagResponse {
   return {
@@ -104,6 +118,12 @@ beforeEach(() => {
   vi.mocked(listModelOptions).mockReset();
   vi.mocked(createMigration).mockReset();
   vi.mocked(getModelCard).mockReset();
+  vi.mocked(listApiKeys).mockReset();
+  vi.mocked(addApiKey).mockReset();
+  // Default: keys exist for both providers baseModels() uses, so every
+  // pre-existing test sees the wizard exactly as it behaved before the
+  // locked-model states existed. Lock-specific tests override this.
+  vi.mocked(listApiKeys).mockResolvedValue([keyFor("openai", 1), keyFor("anthropic", 2)]);
 });
 
 describe("NewMigrationWizard", () => {
@@ -376,5 +396,72 @@ describe("NewMigrationWizard", () => {
     expect(rules.length).toBeGreaterThanOrEqual(1);
     const descriptions = screen.getAllByText(/A test rule/);
     expect(descriptions.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("shows key-requiring models locked (visible but disabled) when their provider has no key", async () => {
+    vi.mocked(getPipelineDag).mockResolvedValue(baseDag());
+    vi.mocked(listModelOptions).mockResolvedValue(baseModels());
+    vi.mocked(getModelCard).mockRejectedValue(new Error("skip"));
+    // Only openai has a key - the anthropic model should be locked.
+    vi.mocked(listApiKeys).mockResolvedValue([keyFor("openai")]);
+
+    renderWizard(vi.fn());
+
+    const anthropicCheckbox = await screen.findByLabelText("claude-haiku-4-5");
+    await waitFor(() => expect(anthropicCheckbox).toBeDisabled());
+    expect(screen.getByLabelText("gpt-4o-mini")).toBeEnabled();
+    // Locked models stay discoverable, with an inline unlock affordance.
+    expect(screen.getByText("API key required")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Add API key" })).toBeInTheDocument();
+  });
+
+  it("never locks models that require no API key, even with zero keys configured", async () => {
+    vi.mocked(getPipelineDag).mockResolvedValue(baseDag());
+    vi.mocked(listModelOptions).mockResolvedValue([
+      {
+        ...baseModels()[0],
+        model: "ollama/llama3.1",
+        provider: "ollama",
+        requires_api_key: false,
+      },
+    ]);
+    vi.mocked(getModelCard).mockRejectedValue(new Error("skip"));
+    vi.mocked(listApiKeys).mockResolvedValue([]);
+
+    renderWizard(vi.fn());
+
+    expect(await screen.findByLabelText("ollama/llama3.1")).toBeEnabled();
+    expect(screen.queryByText("API key required")).not.toBeInTheDocument();
+  });
+
+  it("adds a key inline and unlocks the model without leaving the wizard", async () => {
+    vi.mocked(getPipelineDag).mockResolvedValue(baseDag());
+    vi.mocked(listModelOptions).mockResolvedValue(baseModels());
+    vi.mocked(getModelCard).mockRejectedValue(new Error("skip"));
+    // First fetch: no anthropic key. After the add succeeds and the query is
+    // invalidated, the refetch returns the new key - unlocking the model.
+    vi.mocked(listApiKeys)
+      .mockResolvedValueOnce([keyFor("openai")])
+      .mockResolvedValue([keyFor("openai", 1), keyFor("anthropic", 2)]);
+    vi.mocked(addApiKey).mockResolvedValue(keyFor("anthropic", 2));
+
+    renderWizard(vi.fn());
+
+    const anthropicCheckbox = await screen.findByLabelText("claude-haiku-4-5");
+    await waitFor(() => expect(anthropicCheckbox).toBeDisabled());
+
+    fireEvent.click(screen.getByRole("button", { name: "Add API key" }));
+    // The drawer portals outside the render root - query via document.
+    const keyInput = await screen.findByLabelText("API key");
+    fireEvent.change(keyInput, { target: { value: "sk-ant-test-key-000000000000" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save key & unlock models" }));
+
+    await waitFor(() => {
+      expect(addApiKey).toHaveBeenCalledWith("anthropic", "sk-ant-test-key-000000000000");
+    });
+    // Invalidation refetches the keys and the model unlocks in place.
+    await waitFor(() => expect(screen.getByLabelText("claude-haiku-4-5")).toBeEnabled());
+    fireEvent.click(screen.getByLabelText("claude-haiku-4-5"));
+    expect(screen.getByLabelText("claude-haiku-4-5")).toBeChecked();
   });
 });

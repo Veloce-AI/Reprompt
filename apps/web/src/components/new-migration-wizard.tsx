@@ -5,14 +5,17 @@ import {
   createMigration,
   getModelCard,
   getPipelineDag,
+  listApiKeys,
   listModelOptions,
   type MigrationOut,
   type ModelCardInfo,
+  type ModelOption,
 } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
+import { AddApiKeyDrawer } from "@/components/add-api-key-drawer";
 
 type WizardStep = "target-model" | "budget" | "confirm";
 
@@ -84,6 +87,8 @@ export function NewMigrationWizard({
   // every stage did before this section existed.
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [stageOverrides, setStageOverrides] = useState<Record<string, Set<string>>>({});
+  // Which provider the inline add-a-key drawer is open for; null = closed.
+  const [keyDrawerProvider, setKeyDrawerProvider] = useState<string | null>(null);
 
   const dagQuery = useQuery({
     queryKey: ["pipeline-dag", pipelineId],
@@ -93,6 +98,31 @@ export function NewMigrationWizard({
     queryKey: ["model-options", pipelineId],
     queryFn: () => listModelOptions(pipelineId),
   });
+  // Same query key as Settings' ApiKeysCard, so adding a key from either
+  // place updates both. `retry: false` + the isSuccess guard below mean an
+  // unauthenticated session (401 here) simply shows every model unlocked -
+  // exactly the wizard's pre-lock behavior, never a lockout.
+  const apiKeysQuery = useQuery({
+    queryKey: ["settings-api-keys"],
+    queryFn: listApiKeys,
+    retry: false,
+  });
+  const configuredProviders = new Set(
+    (apiKeysQuery.data ?? []).map((key) => key.provider.toLowerCase())
+  );
+
+  // A model is locked when it needs a provider API key this workspace
+  // doesn't have yet. Locked models stay visible (greyed out, with an
+  // inline "Add API key" affordance) rather than hidden - the user should
+  // see what's possible.
+  function isLocked(option: ModelOption): boolean {
+    return (
+      apiKeysQuery.isSuccess &&
+      option.requires_api_key &&
+      option.provider != null &&
+      !configuredProviders.has(option.provider.toLowerCase())
+    );
+  }
 
   // Fetch model card info for each available model
   useEffect(() => {
@@ -208,6 +238,16 @@ export function NewMigrationWizard({
         Pick a target model, set a budget and parity threshold, then run the migration.
       </p>
 
+      {keyDrawerProvider != null && (
+        <AddApiKeyDrawer
+          provider={keyDrawerProvider}
+          open
+          onOpenChange={(open) => {
+            if (!open) setKeyDrawerProvider(null);
+          }}
+        />
+      )}
+
       <ol className="my-6 flex gap-6" aria-label="Migration wizard steps">
         {STEPS.map((s, index) => {
           const isActive = s.id === step;
@@ -262,15 +302,20 @@ export function NewMigrationWizard({
               ) : (
                 <div className="grid grid-cols-2 gap-3">
                   {(modelsQuery.data ?? []).map((option) => {
-                    const checked = selectedModels.has(option.model);
+                    const locked = isLocked(option);
+                    const checked = !locked && selectedModels.has(option.model);
                     const family = resolveFamily(option.model);
                     const modelCard = modelCards[option.model];
                     return (
                       <label
                         key={option.model}
                         className={
-                          "flex cursor-pointer items-start gap-3 rounded-control border p-4 transition-colors " +
-                          (checked ? "border-beam bg-beam-soft/40" : "border-line hover:border-beam/40")
+                          "flex items-start gap-3 rounded-control border p-4 transition-colors " +
+                          (locked
+                            ? "cursor-default border-line opacity-60"
+                            : checked
+                              ? "cursor-pointer border-beam bg-beam-soft/40"
+                              : "cursor-pointer border-line hover:border-beam/40")
                         }
                       >
                         <input
@@ -278,12 +323,30 @@ export function NewMigrationWizard({
                           aria-label={option.model}
                           className="mt-0.5 accent-beam"
                           checked={checked}
+                          disabled={locked}
                           onChange={() => toggleModel(option.model)}
                         />
                         <div className="min-w-0 flex-1">
                           <p className="font-mono text-13 font-medium text-ink">{option.model}</p>
                           {option.provider && (
                             <p className="text-12 text-ink-soft capitalize">{option.provider}</p>
+                          )}
+                          {locked && option.provider && (
+                            <div className="mt-2 flex flex-wrap items-center gap-2">
+                              <Badge variant="neutral">API key required</Badge>
+                              <button
+                                type="button"
+                                className="text-12 font-medium text-beam hover:underline"
+                                onClick={(event) => {
+                                  // Inside a <label>: don't let the click
+                                  // also reach the (disabled) checkbox.
+                                  event.preventDefault();
+                                  setKeyDrawerProvider(option.provider);
+                                }}
+                              >
+                                Add API key
+                              </button>
+                            </div>
                           )}
                           <p className="mt-1 text-12 text-ink-soft">
                             {formatCostPer1M(option.input_cost_per_1m)} in /{" "}
@@ -380,17 +443,22 @@ export function NewMigrationWizard({
                             </div>
                             <div className="flex flex-wrap gap-3">
                               {(modelsQuery.data ?? []).map((option) => {
-                                const checked = stageModels.has(option.model);
+                                const locked = isLocked(option);
+                                const checked = !locked && stageModels.has(option.model);
                                 return (
                                   <label
                                     key={option.model}
-                                    className="flex cursor-pointer items-center gap-1.5 text-12 text-ink"
+                                    className={
+                                      "flex items-center gap-1.5 text-12 text-ink " +
+                                      (locked ? "cursor-default opacity-50" : "cursor-pointer")
+                                    }
                                   >
                                     <input
                                       type="checkbox"
                                       aria-label={`${option.model} for ${stage.name}`}
                                       className="accent-beam"
                                       checked={checked}
+                                      disabled={locked}
                                       onChange={() => toggleStageOverrideModel(stageId, option.model)}
                                     />
                                     <span className="font-mono">{option.model}</span>

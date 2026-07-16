@@ -28,6 +28,7 @@ vi.mock("@/lib/api", async () => {
     listModelOptions: vi.fn(),
     getModelCard: vi.fn(),
     createMigration: vi.fn(),
+    importIntoExistingPipeline: vi.fn(),
   };
 });
 
@@ -46,6 +47,7 @@ vi.mock("@/components/pipeline-canvas", () => ({
 import {
   approveRubric,
   getPipelineDag,
+  importIntoExistingPipeline,
   listMigrations,
   listModelOptions,
   listPipelines,
@@ -164,6 +166,7 @@ beforeEach(() => {
   vi.mocked(approveRubric).mockReset();
   vi.mocked(listMigrations).mockReset();
   vi.mocked(listModelOptions).mockReset();
+  vi.mocked(importIntoExistingPipeline).mockReset();
   window.location.hash = "";
 
   vi.mocked(listPipelines).mockResolvedValue([basePipeline()]);
@@ -286,5 +289,33 @@ describe("PipelineWorkspace", () => {
       expect(updatePipeline).toHaveBeenCalledWith(1, { name: "Renamed Pipeline" });
     });
     expect(await screen.findByRole("button", { name: "Renamed Pipeline" })).toBeInTheDocument();
+  });
+
+  it("imports a new run into the pipeline via the 'Import new run' action", async () => {
+    vi.mocked(importIntoExistingPipeline).mockResolvedValue({
+      pipeline_id: 1,
+      name: "Diamond Test Pipeline",
+      stage_count: 4,
+      trace_count: 2,
+    });
+
+    renderAt("/pipelines/1");
+    await screen.findByText("mock-node-10");
+
+    fireEvent.click(screen.getByRole("button", { name: "Import new run" }));
+    await screen.findByText("Upload another trace file for this pipeline.", { exact: false });
+
+    // The drawer renders into a portal outside RTL's render() root, so
+    // query document.body directly (same as `screen`'s own default scope).
+    const fileInput = document.body.querySelector('input[type="file"]') as HTMLInputElement;
+    expect(fileInput).toBeTruthy();
+    const file = new File(["{}"], "run2.json", { type: "application/json" });
+    fireEvent.change(fileInput, { target: { files: [file] } });
+
+    await waitFor(() => {
+      expect(importIntoExistingPipeline).toHaveBeenCalledWith(1, file);
+    });
+
+    expect(await screen.findByText("Run imported — 4 stages, 2 traces.")).toBeInTheDocument();
   });
 });

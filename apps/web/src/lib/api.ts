@@ -252,6 +252,36 @@ export async function importPipeline(file: File): Promise<ImportResult> {
 }
 
 // ---------------------------------------------------------------------------
+// Project/multi-run ingestion: attach a second (third, ...) run to an
+// existing pipeline instead of always creating a brand-new one. See
+// apps/api's reprompt_api.ingest.persist_trace_file for the reuse/drift
+// rule this hits server-side.
+// ---------------------------------------------------------------------------
+
+export interface RunOut {
+  id: number;
+  name: string;
+  created_at: string;
+  trace_count: number;
+}
+
+export async function importIntoExistingPipeline(
+  pipelineId: number,
+  file: File
+): Promise<ImportResult> {
+  const formData = new FormData();
+  formData.append("file", file);
+  return request<ImportResult>(`/pipelines/${pipelineId}/import`, {
+    method: "POST",
+    body: formData,
+  });
+}
+
+export function getRuns(pipelineId: number): Promise<RunOut[]> {
+  return request<RunOut[]>(`/pipelines/${pipelineId}/runs`);
+}
+
+// ---------------------------------------------------------------------------
 // Trace format reference (screen: /schema)
 // ---------------------------------------------------------------------------
 //

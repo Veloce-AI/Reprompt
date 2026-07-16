@@ -364,6 +364,37 @@ exclusive to the Rubrics tab.
    run/success screen (`GET /pipelines/{id}/migrations` finding the
    existing `Migration` row), not the wizard again — the wizard only shows
    when a pipeline has no `Migration` yet.
+9. Once the run reaches a terminal state (Completed/Failed/Stopped early —
+   step 6 above), scroll down past the Activity log → a **"Results —
+   before / after prompts"** section appears (Phase C — "Before/after
+   prompt diff", see `DEV_TRACKER.md`), one card per stage that got at
+   least one attempt: the stage name, which target model won, its
+   composite score, and the original prompt against the winning prompt
+   shown as an inline word diff — removed text struck through in red,
+   added text highlighted in green, unchanged text plain. No click needed,
+   it's visible as soon as the section renders. This section never appears
+   while the run is still "Running" (nothing worth showing yet).
+
+### 3.3a Migration results (before/after prompt diff)
+
+Added 2026-07-16 — see `DEV_TRACKER.md`'s "Phase C — Before/after prompt
+diff". Read-only, display-only: no new optimizer/scoring logic, just
+surfacing `Stage.prompt_template` against whichever `Candidate` row scored
+highest for that stage on this migration.
+
+1. `GET /pipelines/{id}/migrations/{migration_id}/results` (curl or
+   devtools network tab) on a migration that hasn't started yet → `[]`.
+2. Same request mid-run (any stage that's finished at least one attempt) →
+   already returns entries for those stages, even though the migration
+   itself is still `"running"` — this endpoint isn't gated on terminal
+   status, only on a stage actually having a `Candidate` row yet.
+3. Same request once the migration is terminal → one entry per stage that
+   ever got an attempt, each `{stage_id, stage_name, original_prompt,
+   winning_prompt, winning_model, score}`.
+4. In the UI (§3.3 step 9 above): the diff highlighting is genuinely
+   word-level, not whole-paragraph — only the changed words/phrases are
+   colored, everything the optimizer left untouched renders as plain text
+   in between.
 
 ### 3.4 Auth + Settings (M5)
 

@@ -2,11 +2,13 @@ import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import {
   ApiError,
+  getMigrationResults,
   getMigrationStatus,
   getPipelineDag,
   startMigration,
   type ActivityLogEntry,
   type MigrationOut,
+  type StageResultOut,
 } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -22,6 +24,7 @@ import {
 import { MigrationRunBar } from "@/components/migration-run-bar";
 import { PipelineCanvas } from "@/components/pipeline-canvas";
 import { SUBSTEP_LABEL } from "@/components/stage-node";
+import { diffWords } from "@/lib/text-diff";
 
 const STATUS_LABELS: Record<string, string> = {
   pending: "Pending",
@@ -103,6 +106,17 @@ export function MigrationSuccessScreen({
   const isRunning = status?.status === "running";
   const isTerminal = status && ["completed", "failed", "stopped_early"].includes(status.status);
 
+  // Results (before/after prompt diff) only becomes meaningful once the run
+  // has actually produced winning candidates — fetched once the migration
+  // reaches a terminal state. The endpoint itself doesn't error before
+  // then either (see migrations.py's get_migration_results docstring), but
+  // there's nothing worth showing/polling for while still running.
+  const resultsQuery = useQuery({
+    queryKey: ["migration-results", pid, migration.id],
+    queryFn: () => getMigrationResults(pid, migration.id),
+    enabled: Boolean(isTerminal),
+  });
+
   return (
     <Card>
       <CardContent className="p-8">
@@ -169,6 +183,13 @@ export function MigrationSuccessScreen({
               <ActivityLogList entries={status?.activity_log ?? null} stageName={stageName} />
             )}
 
+            {isTerminal && (
+              <StageResultsSection
+                results={resultsQuery.data}
+                isLoading={resultsQuery.isLoading}
+              />
+            )}
+
             <div className="mt-6">
               <Button variant="secondary" onClick={onBackToCanvas}>
                 Back to pipeline canvas
@@ -233,6 +254,94 @@ function ActivityLogList({
         ))}
       </div>
     </div>
+  );
+}
+
+/**
+ * Results section (Phase C — before/after prompt diff): once a migration
+ * reaches a terminal state, shows every stage's original prompt
+ * (`Stage.prompt_template`) against the winning candidate's prompt side by
+ * side as a unified word diff, plus which target model won and its
+ * composite score. Read-only, display-only — no new optimizer/scoring
+ * logic, just rendering what `GET .../results` already computed (see
+ * migrations.py's `get_migration_results`).
+ *
+ * A stage with no `Candidate` rows yet (e.g. it never got a chance to run
+ * before a `failed`/`stopped_early` stop) simply doesn't appear in
+ * `results` — same "only what's available" contract as the endpoint.
+ */
+function StageResultsSection({
+  results,
+  isLoading,
+}: {
+  results: StageResultOut[] | undefined;
+  isLoading: boolean;
+}) {
+  if (isLoading) {
+    return (
+      <div className="mt-6">
+        <p className="text-13 text-ink-soft">Loading results…</p>
+      </div>
+    );
+  }
+
+  if (!results || results.length === 0) {
+    return (
+      <div className="mt-6">
+        <p className="text-13 text-ink-soft">
+          No winning candidates were recorded for any stage yet.
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="mt-6">
+      <p className="mb-2 text-12 font-medium text-ink-soft">
+        Results — before / after prompts
+      </p>
+      <div className="space-y-3">
+        {results.map((result) => (
+          <StageResultCard key={result.stage_id} result={result} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function StageResultCard({ result }: { result: StageResultOut }) {
+  const ops = diffWords(result.original_prompt, result.winning_prompt);
+
+  return (
+    <Card>
+      <CardContent className="p-4">
+        <div className="mb-2 flex items-center justify-between gap-2">
+          <span className="text-13 font-medium text-ink">{result.stage_name}</span>
+          <span className="text-12 text-ink-soft">
+            {result.winning_model} · score {result.score.toFixed(2)}
+          </span>
+        </div>
+        <pre className="whitespace-pre-wrap rounded-control border border-line bg-paper p-3 font-mono text-12 leading-normal text-ink">
+          {ops.map((op, i) => {
+            if (op.type === "delete") {
+              return (
+                <span key={i} className="bg-parity-fail/10 text-parity-fail line-through">
+                  {op.text}
+                </span>
+              );
+            }
+            if (op.type === "insert") {
+              return (
+                <span key={i} className="bg-parity-pass/10 text-parity-pass">
+                  {op.text}
+                </span>
+              );
+            }
+            return <span key={i}>{op.text}</span>;
+          })}
+        </pre>
+      </CardContent>
+    </Card>
   );
 }
 

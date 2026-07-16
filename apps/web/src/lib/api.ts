@@ -234,6 +234,27 @@ export function getMigrationStatus(pipelineId: number, migrationId: number): Pro
   return request<MigrationOut>(`/pipelines/${pipelineId}/migrations/${migrationId}/status`);
 }
 
+// Before/after prompt diff (Results section, shown once a migration reaches
+// a terminal state) — see apps/api/src/reprompt_api/migrations.py's
+// get_migration_results. Not gated client-side on terminal status either;
+// the endpoint itself just returns whatever stages have at least one
+// Candidate row so far (see that endpoint's own docstring).
+export interface StageResultOut {
+  stage_id: number;
+  stage_name: string;
+  original_prompt: string;
+  winning_prompt: string;
+  winning_model: string;
+  score: number;
+}
+
+export function getMigrationResults(
+  pipelineId: number,
+  migrationId: number
+): Promise<StageResultOut[]> {
+  return request<StageResultOut[]>(`/pipelines/${pipelineId}/migrations/${migrationId}/results`);
+}
+
 // ---------------------------------------------------------------------------
 // Model cards (migration wizard): read-only info on model family transforms
 // ---------------------------------------------------------------------------

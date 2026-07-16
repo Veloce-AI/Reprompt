@@ -237,6 +237,30 @@ def _to_out(db: Session, migration: models.Migration) -> MigrationOut:
     )
 
 
+class StageResultOut(BaseModel):
+    """One stage's before/after prompt for the results (diff) view.
+
+    Display-only — no new optimizer/scoring logic. ``winning_prompt``/
+    ``winning_model``/``score`` are read off whichever ``Candidate`` row for
+    this ``(migration_id, stage_id)`` pair has the highest
+    ``scores["final"]`` (the composite score ``packages/core``'s
+    ``run_sweep_for_stage`` already writes onto every attempt — see
+    ``reprompt_core.optimizer.loop``'s ``StageAttempt.scores`` and
+    ``optimizer_runner.py``'s ``on_attempt`` closure that persists it
+    verbatim as ``Candidate.scores``). There is no separate "winner" flag
+    persisted on ``Candidate`` — recomputing "best by score" at read time
+    is cheap (at most a few dozen rows per stage per migration) and keeps
+    this endpoint a pure read, no new columns/migrations.
+    """
+
+    stage_id: int
+    stage_name: str
+    original_prompt: str
+    winning_prompt: str
+    winning_model: str
+    score: float
+
+
 def _get_migration_or_404(db: Session, pipeline_id: int, migration_id: int) -> models.Migration:
     migration = db.scalar(
         select(models.Migration).where(
@@ -357,3 +381,65 @@ def get_migration_status(
     _get_pipeline_or_404(db, pipeline_id)
     migration = _get_migration_or_404(db, pipeline_id, migration_id)
     return _to_out(db, migration)
+
+
+@router.get(
+    "/{pipeline_id}/migrations/{migration_id}/results",
+    response_model=list[StageResultOut],
+)
+def get_migration_results(
+    pipeline_id: int,
+    migration_id: int,
+    db: Session = Depends(get_db),
+) -> list[StageResultOut]:
+    """Before/after prompt per stage — the winning ``Candidate`` (highest
+    ``scores["final"]``) against ``Stage.prompt_template``.
+
+    Not gated on ``Migration.status`` being terminal: a stage only appears
+    once it has at least one ``Candidate`` row, which naturally means a
+    non-terminal (``running``/``pending``) migration returns whichever
+    stages have finished at least one attempt so far (often none yet, e.g.
+    right after ``start``) rather than erroring or returning a fixed
+    fully-populated shape — same "return what's available" contract this
+    router's other read endpoints already follow. Once ``status`` reaches a
+    terminal state this naturally returns the complete per-stage set.
+    """
+    _get_pipeline_or_404(db, pipeline_id)
+    _get_migration_or_404(db, pipeline_id, migration_id)
+
+    db_stages = db.scalars(
+        select(models.Stage)
+        .where(models.Stage.pipeline_id == pipeline_id)
+        .order_by(models.Stage.id)
+    ).all()
+
+    results: list[StageResultOut] = []
+    for stage in db_stages:
+        candidates = db.scalars(
+            select(models.Candidate)
+            .where(
+                models.Candidate.migration_id == migration_id,
+                models.Candidate.stage_id == stage.id,
+            )
+            .order_by(models.Candidate.id)
+        ).all()
+        if not candidates:
+            continue
+
+        # Ties broken by input-list order (Candidate.id ascending, i.e. the
+        # earliest-tried candidate wins) - same tie-break convention as
+        # reprompt_core.selection.select_best_candidate (Python's max()
+        # returns the first element attaining the maximum).
+        best = max(candidates, key=lambda c: c.scores.get("final") or 0.0)
+        results.append(
+            StageResultOut(
+                stage_id=stage.id,
+                stage_name=stage.name,
+                original_prompt=stage.prompt_template,
+                winning_prompt=best.prompt_variant,
+                winning_model=best.target_model,
+                score=best.scores.get("final") or 0.0,
+            )
+        )
+
+    return results

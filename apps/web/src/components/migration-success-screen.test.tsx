@@ -1,9 +1,9 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import { fireEvent } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MigrationSuccessScreen } from "./migration-success-screen";
-import type { ActivityLogEntry, DagResponse, MigrationOut } from "@/lib/api";
+import type { ActivityLogEntry, DagResponse, MigrationOut, StageResultOut } from "@/lib/api";
 
 vi.mock("@/lib/api", async () => {
   const actual = await vi.importActual<typeof import("@/lib/api")>("@/lib/api");
@@ -12,6 +12,7 @@ vi.mock("@/lib/api", async () => {
     getMigrationStatus: vi.fn(),
     getPipelineDag: vi.fn(),
     startMigration: vi.fn(),
+    getMigrationResults: vi.fn(),
   };
 });
 
@@ -29,7 +30,7 @@ vi.mock("@/components/pipeline-canvas", () => ({
   ),
 }));
 
-import { getMigrationStatus, getPipelineDag } from "@/lib/api";
+import { getMigrationResults, getMigrationStatus, getPipelineDag } from "@/lib/api";
 
 function baseDag(): DagResponse {
   return {
@@ -137,5 +138,73 @@ describe("MigrationSuccessScreen — activity log + live reasoning feed", () => 
 
     // A non-running node click is a no-op here - the drawer never opens.
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+  });
+});
+
+function baseResults(): StageResultOut[] {
+  return [
+    {
+      stage_id: 10,
+      stage_name: "Extract",
+      original_prompt: "Extract the revenue figure",
+      winning_prompt: "Extract the total figure",
+      winning_model: "claude-haiku-4-5",
+      score: 0.92,
+    },
+  ];
+}
+
+describe("MigrationSuccessScreen — Results section (before/after prompt diff)", () => {
+  beforeEach(() => {
+    vi.mocked(getMigrationResults).mockReset();
+  });
+
+  it("fetches and renders results once the migration is terminal, with the diff and winning model/score", async () => {
+    vi.mocked(getMigrationStatus).mockResolvedValue(baseMigration({ status: "completed" }));
+    vi.mocked(getPipelineDag).mockResolvedValue(baseDag());
+    vi.mocked(getMigrationResults).mockResolvedValue(baseResults());
+
+    renderScreen(baseMigration({ status: "completed" }));
+
+    const heading = await screen.findByText("Results — before / after prompts");
+    // Scoped to the Results section specifically - "Extract" (the stage
+    // name) also appears in the activity log above it.
+    const section = heading.parentElement as HTMLElement;
+    expect(within(section).getByText("Extract")).toBeInTheDocument();
+    expect(within(section).getByText(/claude-haiku-4-5/)).toBeInTheDocument();
+    expect(within(section).getByText(/score 0\.92/)).toBeInTheDocument();
+
+    // Unchanged words render as plain text, the changed word as a
+    // delete/insert pair - both "revenue" and "total" must appear.
+    expect(within(section).getByText("revenue")).toBeInTheDocument();
+    expect(within(section).getByText("total")).toBeInTheDocument();
+
+    expect(getMigrationResults).toHaveBeenCalledWith(1, 5);
+  });
+
+  it("does not fetch results while the migration is still running", async () => {
+    vi.mocked(getMigrationStatus).mockResolvedValue(baseMigration({ status: "running" }));
+    vi.mocked(getPipelineDag).mockResolvedValue(baseDag());
+    vi.mocked(getMigrationResults).mockResolvedValue(baseResults());
+
+    renderScreen(baseMigration({ status: "running" }));
+
+    // Let the running-state UI settle, then confirm the Results section
+    // never rendered and the endpoint was never called.
+    await screen.findByRole("log");
+    expect(screen.queryByText("Results — before / after prompts")).not.toBeInTheDocument();
+    expect(getMigrationResults).not.toHaveBeenCalled();
+  });
+
+  it("shows an empty-state message when no stage has a winning candidate yet", async () => {
+    vi.mocked(getMigrationStatus).mockResolvedValue(baseMigration({ status: "failed" }));
+    vi.mocked(getPipelineDag).mockResolvedValue(baseDag());
+    vi.mocked(getMigrationResults).mockResolvedValue([]);
+
+    renderScreen(baseMigration({ status: "failed" }));
+
+    expect(
+      await screen.findByText("No winning candidates were recorded for any stage yet.")
+    ).toBeInTheDocument();
   });
 });

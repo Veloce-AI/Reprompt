@@ -331,10 +331,18 @@ has nothing in it, Settings is empty, no rename'" section. Rename already
 existed one click deeper, in the workspace header (§3.1b step 1) — this
 adds it to the home list itself, same `PATCH /pipelines/{id}` endpoint.
 
+**Trigger via pipeline name click** (original affordance):
 1. On `/`, click directly on a pipeline's name in the table (not the row
    itself — clicking elsewhere in the row still navigates into the
    workspace as before) → it turns into a text input, same click-to-edit
    affordance as the workspace header.
+
+**Trigger via edit/pencil icon button** (added 2026-07-16 for discoverability):
+1. On `/`, click the pencil/edit icon in the row's action-icon area (same
+   cell as the trash/delete icon) → the pipeline name turns into a text
+   input, identical to the click-on-name behavior above.
+
+**Either trigger, then**:
 2. Change it, press Enter (or click away) → confirm it saves and the table
    cell shows the new name. Confirm the page does **not** navigate away
    (renaming from the list should never accidentally open the pipeline).

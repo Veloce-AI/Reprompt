@@ -154,4 +154,27 @@ describe("Home (pipelines list)", () => {
 
     expect(await screen.findByText(/Couldn't delete pipeline/)).toBeInTheDocument();
   });
+
+  it("shows an edit button per pipeline row", async () => {
+    vi.mocked(listPipelines).mockResolvedValue([basePipeline()]);
+
+    renderHome();
+
+    expect(
+      await screen.findByRole("button", { name: "Edit Financial Extraction Pipeline" })
+    ).toBeInTheDocument();
+  });
+
+  it("edit button triggers inline rename input, same as clicking the name", async () => {
+    vi.mocked(listPipelines).mockResolvedValue([basePipeline()]);
+
+    renderHome();
+
+    const editButton = await screen.findByRole("button", { name: "Edit Financial Extraction Pipeline" });
+    fireEvent.click(editButton);
+
+    const renameInput = await screen.findByRole("textbox", { name: "Pipeline name" });
+    expect(renameInput).toBeInTheDocument();
+    expect((renameInput as HTMLInputElement).value).toBe("Financial Extraction Pipeline");
+  });
 });

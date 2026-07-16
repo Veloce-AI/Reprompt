@@ -1,7 +1,7 @@
 import { useState, type KeyboardEvent, type MouseEvent } from "react";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Trash2 } from "lucide-react";
+import { Trash2, Pencil } from "lucide-react";
 import {
   ApiError,
   deletePipeline,
@@ -248,15 +248,25 @@ export default function Home() {
                   <ParityBeam />
                 </TableCell>
                 <TableCell>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    aria-label={`Delete ${pipeline.name}`}
-                    disabled={deleteMutation.isPending}
-                    onClick={(event) => handleDeleteClick(event, pipeline)}
-                  >
-                    <Trash2 className="h-4 w-4 text-parity-fail" />
-                  </Button>
+                  <div className="flex gap-2">
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      aria-label={`Edit ${pipeline.name}`}
+                      onClick={(event) => startEditingName(event, pipeline)}
+                    >
+                      <Pencil className="h-4 w-4" />
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      aria-label={`Delete ${pipeline.name}`}
+                      disabled={deleteMutation.isPending}
+                      onClick={(event) => handleDeleteClick(event, pipeline)}
+                    >
+                      <Trash2 className="h-4 w-4 text-parity-fail" />
+                    </Button>
+                  </div>
                 </TableCell>
               </TableRow>
             ))}

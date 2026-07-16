@@ -461,3 +461,43 @@ def test_status_unknown_migration_returns_404(client: TestClient) -> None:
     pipeline_id = _upload(client, _diamond_trace_file())
     response = client.get(f"/pipelines/{pipeline_id}/migrations/999999/status")
     assert response.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Candidate.target_model persistence
+# ---------------------------------------------------------------------------
+
+
+def test_candidate_target_model_is_persisted(
+    client: TestClient, session_factory: sessionmaker
+) -> None:
+    """Candidate rows written by on_attempt must record target_model so the
+    scorecard can tell which model produced each attempt (critical once a
+    migration runs multiple target models)."""
+    pipeline_id = _upload(client, _diamond_trace_file())
+    migration_id = _create_migration(client, pipeline_id)
+    stage_ids = _stage_ids(session_factory, pipeline_id)
+    any_stage_id = next(iter(stage_ids.values()))
+
+    with session_factory() as db:
+        db.add(
+            models.Candidate(
+                migration_id=migration_id,
+                stage_id=any_stage_id,
+                target_model="gpt-4o-mini",
+                prompt_variant="test prompt",
+                params={"temperature": 0.2},
+                format="plain",
+                scores={"final": 0.85},
+                cost=0.001,
+                latency=120.0,
+            )
+        )
+        db.commit()
+
+    with session_factory() as db:
+        candidate = db.query(models.Candidate).filter(
+            models.Candidate.migration_id == migration_id
+        ).first()
+        assert candidate is not None
+        assert candidate.target_model == "gpt-4o-mini"

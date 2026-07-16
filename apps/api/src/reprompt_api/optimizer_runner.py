@@ -111,6 +111,7 @@ def _run(db: Session, migration_id: int) -> None:  # noqa: C901
                 models.Candidate(
                     migration_id=migration.id,
                     stage_id=attempt.stage_id,
+                    target_model=attempt.target_model,
                     prompt_variant=attempt.prompt_variant,
                     params=attempt.params,
                     format=attempt.format_mode,

@@ -353,6 +353,7 @@ class Candidate(Base):
     stage_id: Mapped[int] = mapped_column(
         ForeignKey("stages.id", ondelete="CASCADE"), nullable=False, index=True
     )
+    target_model: Mapped[str] = mapped_column(String(255), nullable=False, default="")
     prompt_variant: Mapped[str] = mapped_column(Text, nullable=False)
     params: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     format: Mapped[str] = mapped_column(String(32), nullable=False)

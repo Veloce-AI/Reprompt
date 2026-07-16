@@ -182,6 +182,7 @@ class StageAttempt(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     stage_id: int
+    target_model: str = Field(description="LiteLLM model string this attempt was run against.")
     prompt_variant: str
     params: dict[str, Any]
     format_mode: str
@@ -398,6 +399,7 @@ def run_sweep_for_stage(
             scored_candidate = ScoredSweepCandidate(candidate=sweep_candidate, score=composite)
             attempt = StageAttempt(
                 stage_id=stage_input.stage_id,
+                target_model=stage_input.target_model,
                 prompt_variant=prompt_text,
                 params={
                     "temperature": sweep_candidate.temperature,

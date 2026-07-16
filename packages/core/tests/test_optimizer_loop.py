@@ -224,6 +224,27 @@ def test_prism_budget_hard_stop_mid_loop() -> None:
     assert isinstance(result, OptimizationResult)
 
 
+def test_stage_attempt_carries_target_model() -> None:
+    """Every StageAttempt passed to on_attempt must include the target_model
+    string from StageOptimizationInput — so callers can persist which model
+    produced each Candidate without reading it from context."""
+    call, _captured = _make_call(mutation_variants=["variant A"])
+    budget = BudgetTracker(budget_usd=10.0)
+    observed_target_models: list[str] = []
+
+    def on_attempt(attempt):
+        observed_target_models.append(attempt.target_model)
+
+    run_optimizer(
+        [_stage()], call=call, budget=budget, judge_model=JUDGE_MODEL,
+        strategy="simple", max_sweep_candidates_per_prompt=1, parity_threshold=0.0,
+        on_attempt=on_attempt,
+    )
+
+    assert len(observed_target_models) > 0
+    assert all(m == TARGET_MODEL for m in observed_target_models)
+
+
 def test_prism_one_stage_failure_does_not_abort_run(monkeypatch: pytest.MonkeyPatch) -> None:
     def broken_embedding_similarity(*args, **kwargs):
         raise RuntimeError("simulated unexpected failure")

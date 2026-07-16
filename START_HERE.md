@@ -22,6 +22,14 @@ proves the outputs still match. Full plain-language explanation: `README.md`.
 5. `docs/trace-format.md` — the data format the whole system is built on
 6. `docs/LESSONS.md` — real bugs found and why, worth reading before
    touching auth, React Query mutations, or Windows dev-server processes
+7. `.claude/skills/` — project skills, used automatically for relevant work:
+   `saas-product-design`/`frontend-design`/`system-design` (written for this
+   project specifically — read these especially before any UI/UX work,
+   they encode real bugs this project already hit), plus `impeccable`/
+   `design-system`/`ui-styling` (pulled from permissively-licensed external
+   repos — see `.claude/skills/ATTRIBUTION.md` for exact sources/licenses
+   before adding more; `anthropics/claude-code`'s own skills are NOT
+   available to pull from — checked, all-rights-reserved license).
 
 ## Current state (see docs/DEVELOPMENT.md for full detail)
 

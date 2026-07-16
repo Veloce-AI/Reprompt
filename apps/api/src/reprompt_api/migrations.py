@@ -169,6 +169,34 @@ def _to_out(migration: models.Migration) -> MigrationOut:
     )
 
 
+class CandidateOut(BaseModel):
+    id: int
+    stage_id: int
+    stage_name: str
+    target_model: str
+    prompt_variant: str
+    params: dict
+    format: str
+    scores: dict
+    cost: float
+    latency: float
+
+
+class StageSummary(BaseModel):
+    stage_id: int
+    stage_name: str
+    original_model: str
+    best_candidate: CandidateOut | None
+    attempts: int
+    total_cost: float
+
+
+class MigrationResultsOut(BaseModel):
+    migration: MigrationOut
+    stage_summaries: list[StageSummary]
+    all_candidates: list[CandidateOut]
+
+
 def _get_migration_or_404(db: Session, pipeline_id: int, migration_id: int) -> models.Migration:
     migration = db.scalar(
         select(models.Migration).where(
@@ -272,6 +300,78 @@ def start_migration(
 
     background_tasks.add_task(run_optimizer_for_migration, migration.id)
     return _to_out(migration)
+
+
+@router.get("/{pipeline_id}/migrations/{migration_id}/results", response_model=MigrationResultsOut)
+def get_migration_results(
+    pipeline_id: int,
+    migration_id: int,
+    db: Session = Depends(get_db),
+) -> MigrationResultsOut:
+    """Full scorecard: per-stage best candidate + all attempts for a migration."""
+    _get_pipeline_or_404(db, pipeline_id)
+    migration = _get_migration_or_404(db, pipeline_id, migration_id)
+
+    db_stages = db.scalars(
+        select(models.Stage)
+        .where(models.Stage.pipeline_id == pipeline_id)
+        .order_by(models.Stage.id)
+    ).all()
+    stage_map: dict[int, models.Stage] = {s.id: s for s in db_stages}
+
+    candidates = db.scalars(
+        select(models.Candidate)
+        .where(models.Candidate.migration_id == migration_id)
+        .order_by(models.Candidate.id)
+    ).all()
+
+    def _to_candidate_out(c: models.Candidate) -> CandidateOut:
+        stage = stage_map.get(c.stage_id)
+        return CandidateOut(
+            id=c.id,
+            stage_id=c.stage_id,
+            stage_name=stage.name if stage else f"Stage {c.stage_id}",
+            target_model=c.target_model,
+            prompt_variant=c.prompt_variant,
+            params=c.params,
+            format=c.format,
+            scores=c.scores,
+            cost=c.cost,
+            latency=c.latency,
+        )
+
+    all_candidates = [_to_candidate_out(c) for c in candidates]
+
+    # Group by stage_id → build per-stage summaries.
+    stage_candidates: dict[int, list[CandidateOut]] = {}
+    for c in all_candidates:
+        stage_candidates.setdefault(c.stage_id, []).append(c)
+
+    stage_summaries: list[StageSummary] = []
+    for stage in db_stages:
+        stage_cands = stage_candidates.get(stage.id, [])
+        best: CandidateOut | None = None
+        if stage_cands:
+            best = max(
+                stage_cands,
+                key=lambda c: (c.scores.get("final") or 0.0),
+            )
+        stage_summaries.append(
+            StageSummary(
+                stage_id=stage.id,
+                stage_name=stage.name,
+                original_model=stage.model,
+                best_candidate=best,
+                attempts=len(stage_cands),
+                total_cost=sum(c.cost for c in stage_cands),
+            )
+        )
+
+    return MigrationResultsOut(
+        migration=_to_out(migration),
+        stage_summaries=stage_summaries,
+        all_candidates=all_candidates,
+    )
 
 
 @router.get("/{pipeline_id}/migrations/{migration_id}/status", response_model=MigrationOut)

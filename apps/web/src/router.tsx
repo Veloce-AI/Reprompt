@@ -5,6 +5,7 @@ import PipelinesImport from "./routes/pipelines-import";
 import PipelineDetail from "./routes/pipeline-detail";
 import RubricReview from "./routes/rubric-review";
 import NewMigration from "./routes/new-migration";
+import MigrationDetail from "./routes/migration-detail";
 import Login from "./routes/login";
 import AuthVerify from "./routes/auth-verify";
 import Settings from "./routes/settings";
@@ -50,6 +51,12 @@ const newMigrationRoute = createRoute({
   component: NewMigration,
 });
 
+const migrationDetailRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/pipelines/$pipelineId/migrations/$migrationId",
+  component: MigrationDetail,
+});
+
 const loginRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/login",
@@ -87,6 +94,7 @@ const routeTree = rootRoute.addChildren([
   pipelineDetailRoute,
   rubricReviewRoute,
   newMigrationRoute,
+  migrationDetailRoute,
   loginRoute,
   authVerifyRoute,
   settingsRoute,

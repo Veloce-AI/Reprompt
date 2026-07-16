@@ -159,6 +159,43 @@ export interface MigrationOut {
   completed_at: string | null;
 }
 
+export interface CandidateOut {
+  id: number;
+  stage_id: number;
+  stage_name: string;
+  target_model: string;
+  prompt_variant: string;
+  params: Record<string, unknown>;
+  format: string;
+  scores: Record<string, number | null>;
+  cost: number;
+  latency: number;
+}
+
+export interface StageSummary {
+  stage_id: number;
+  stage_name: string;
+  original_model: string;
+  best_candidate: CandidateOut | null;
+  attempts: number;
+  total_cost: number;
+}
+
+export interface MigrationResultsOut {
+  migration: MigrationOut;
+  stage_summaries: StageSummary[];
+  all_candidates: CandidateOut[];
+}
+
+export function getMigrationResults(
+  pipelineId: number,
+  migrationId: number
+): Promise<MigrationResultsOut> {
+  return request<MigrationResultsOut>(
+    `/pipelines/${pipelineId}/migrations/${migrationId}/results`
+  );
+}
+
 export function listModelOptions(pipelineId: number): Promise<ModelOption[]> {
   return request<ModelOption[]>(`/pipelines/${pipelineId}/models`);
 }

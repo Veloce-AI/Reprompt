@@ -468,6 +468,85 @@ def test_status_unknown_migration_returns_404(client: TestClient) -> None:
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# GET /pipelines/{id}/migrations/{id}/results
+# ---------------------------------------------------------------------------
+
+
+def _seed_candidate(
+    session_factory: sessionmaker,
+    migration_id: int,
+    stage_id: int,
+    *,
+    target_model: str = "gpt-4o-mini",
+    final_score: float = 0.85,
+    cost: float = 0.002,
+) -> None:
+    with session_factory() as db:
+        db.add(
+            models.Candidate(
+                migration_id=migration_id,
+                stage_id=stage_id,
+                target_model=target_model,
+                prompt_variant=f"prompt for {target_model}",
+                params={"temperature": 0.2, "source": "mutation"},
+                format="plain",
+                scores={
+                    "deterministic": 1.0,
+                    "judge": final_score,
+                    "embedding_sim": final_score,
+                    "final": final_score,
+                },
+                cost=cost,
+                latency=100.0,
+            )
+        )
+        db.commit()
+
+
+def test_results_returns_stage_summaries_with_best_candidate(
+    client: TestClient, session_factory: sessionmaker
+) -> None:
+    pipeline_id = _upload(client, _diamond_trace_file())
+    migration_id = _create_migration(client, pipeline_id)
+    stage_ids = _stage_ids(session_factory, pipeline_id)
+    root_id = stage_ids["root"]
+    branch_a_id = stage_ids["a"]
+
+    # Two candidates for root — second one scores higher and should be "best".
+    _seed_candidate(session_factory, migration_id, root_id, final_score=0.70, cost=0.001)
+    _seed_candidate(session_factory, migration_id, root_id, final_score=0.92, cost=0.003)
+    # One candidate for branch A.
+    _seed_candidate(session_factory, migration_id, branch_a_id, final_score=0.80)
+
+    response = client.get(f"/pipelines/{pipeline_id}/migrations/{migration_id}/results")
+    assert response.status_code == 200, response.text
+    body = response.json()
+
+    assert "migration" in body
+    assert body["migration"]["id"] == migration_id
+
+    summaries = {s["stage_name"]: s for s in body["stage_summaries"]}
+    assert summaries["Root"]["attempts"] == 2
+    assert summaries["Root"]["best_candidate"]["scores"]["final"] == pytest.approx(0.92)
+    assert summaries["Root"]["total_cost"] == pytest.approx(0.004)
+
+    assert summaries["Branch A"]["attempts"] == 1
+    assert summaries["Branch A"]["best_candidate"]["scores"]["final"] == pytest.approx(0.80)
+
+    # Stages with no candidates still appear with attempts=0.
+    assert summaries["Branch B"]["attempts"] == 0
+    assert summaries["Branch B"]["best_candidate"] is None
+
+    assert len(body["all_candidates"]) == 3
+
+
+def test_results_unknown_migration_returns_404(client: TestClient) -> None:
+    pipeline_id = _upload(client, _diamond_trace_file())
+    response = client.get(f"/pipelines/{pipeline_id}/migrations/999999/results")
+    assert response.status_code == 404
+
+
 def test_candidate_target_model_is_persisted(
     client: TestClient, session_factory: sessionmaker
 ) -> None:

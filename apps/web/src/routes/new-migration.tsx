@@ -504,7 +504,20 @@ function MigrationSuccessScreen({
                   <p className="text-13 text-ink-soft">Connecting…</p>
                 )}
 
-                <div className="mt-6">
+                <div className="mt-6 flex gap-3">
+                  {isTerminal && (
+                    <Button
+                      variant="primary"
+                      onClick={() =>
+                        navigate({
+                          to: "/pipelines/$pipelineId/migrations/$migrationId",
+                          params: { pipelineId, migrationId: String(migration.id) },
+                        })
+                      }
+                    >
+                      View results →
+                    </Button>
+                  )}
                   <Button
                     variant="secondary"
                     onClick={() => navigate({ to: "/pipelines/$pipelineId", params: { pipelineId } })}

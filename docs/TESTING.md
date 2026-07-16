@@ -236,6 +236,34 @@ drawer.
    `/pipelines/$id?tab=rubrics` / `?tab=migrations` respectively, landing on
    the right tab with the right tab button visually active.
 
+### 3.1c Import new run (project/multi-run ingestion)
+
+Added 2026-07-16 — see `DEV_TRACKER.md`'s "Phase 2 — Project/multi-run
+ingestion". Lets a second (third, ...) trace file be attached to an
+*existing* pipeline as a new benchmark run, instead of always creating a
+brand-new pipeline.
+
+1. On `/pipelines/$id`, click "Import new run" in the header (next to the
+   pipeline name) → a drawer slides in from the right with a drop zone.
+2. Drop a trace file whose stages exactly match the pipeline's existing
+   ones (same `id`/model/prompt_template/system_prompt/params) →
+   `POST /pipelines/{id}/import` succeeds, the drawer shows "Run imported —
+   N stages, M traces.", and the existing `Stage` rows are reused (no
+   duplicate stages appear on the Canvas tab after closing the drawer).
+3. Drop a trace file that adds one genuinely new stage (a new `id` not seen
+   before) → succeeds, stage count grows by one; reopen the Canvas tab and
+   confirm the new node appears, wired to whatever it `depends_on`.
+4. Drop a trace file where an existing stage's `id` is unchanged but its
+   `model`/`prompt_template`/`system_prompt`/`params` differ from what's
+   already stored → the drawer shows a red "Import failed" panel naming the
+   conflicting stage (422 from the API) — nothing is persisted; "Try a
+   different file" clears the error so you can pick another file without
+   closing and reopening the drawer.
+5. `GET /pipelines/{id}/runs` (curl or devtools network tab) returns one
+   entry per successful run, each `{id, name, created_at, trace_count}` —
+   not yet surfaced as its own list in the UI (only the "Import new run"
+   action itself is built this phase).
+
 ### 3.2 Rubric review (Rubrics tab, screen 4)
 
 1. Either seed rubrics for the imported pipeline via the dev-only script

@@ -3,10 +3,13 @@ import { useNavigate, useParams, useSearch } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   approveRubric,
+  importIntoExistingPipeline,
   listMigrations,
   listPipelines,
   listRubrics,
   updatePipeline,
+  ApiError,
+  type ImportResult,
   type MigrationOut,
   type PipelineSummary,
   type RubricOut,
@@ -18,6 +21,7 @@ import {
   type JudgeCriterionLike,
 } from "@/lib/rubric-format";
 import { AppShell } from "@/components/app-shell";
+import { Dropzone } from "@/components/dropzone";
 import { PipelineCanvas } from "@/components/pipeline-canvas";
 import { RubricReviewPanel } from "@/components/rubric-review-panel";
 import { NewMigrationWizard } from "@/components/new-migration-wizard";
@@ -65,6 +69,7 @@ export default function PipelineWorkspace() {
   const [selectedStageId, setSelectedStageId] = useState<number | null>(null);
   const [isEditingName, setIsEditingName] = useState(false);
   const [nameDraft, setNameDraft] = useState("");
+  const [isImportRunOpen, setIsImportRunOpen] = useState(false);
 
   // No single GET /pipelines/{id} endpoint exists (only the list and /dag) -
   // reuse the list the home screen already fetches rather than adding one.
@@ -103,6 +108,7 @@ export default function PipelineWorkspace() {
     <AppShell>
       <div className="flex h-full min-h-[calc(100vh-1px)] flex-col">
         <div className="border-b border-line px-8 py-4">
+          <div className="flex items-start justify-between gap-4">
           {isEditingName ? (
             <div className="flex items-center gap-2">
               <Input
@@ -133,6 +139,11 @@ export default function PipelineWorkspace() {
               {pipeline?.name ?? `Pipeline ${pipelineId}`}
             </button>
           )}
+
+          <Button variant="secondary" onClick={() => setIsImportRunOpen(true)}>
+            Import new run
+          </Button>
+          </div>
 
           <nav className="mt-4 flex gap-1" aria-label="Pipeline workspace tabs">
             {WORKSPACE_TABS.map((t) => (
@@ -193,7 +204,123 @@ export default function PipelineWorkspace() {
           goToTab("rubrics");
         }}
       />
+
+      <ImportRunDrawer
+        pipelineId={pid}
+        open={isImportRunOpen}
+        onClose={() => setIsImportRunOpen(false)}
+      />
     </AppShell>
+  );
+}
+
+/**
+ * "Import new run" — attaches a second (third, ...) benchmark run to this
+ * *existing* pipeline instead of creating a brand-new one, reusing the
+ * Pipelines-home import wizard's own Dropzone for the upload UI (see
+ * routes/pipelines-import.tsx) rather than rebuilding it. Server-side, a
+ * genuinely new stage in the file gets added, an identical stage gets
+ * reused, and a drifted stage (same source_id, different model/prompt/
+ * params) is rejected with 422 — see reprompt_api.ingest.persist_trace_file.
+ */
+function ImportRunDrawer({
+  pipelineId,
+  open,
+  onClose,
+}: {
+  pipelineId: number;
+  open: boolean;
+  onClose: () => void;
+}) {
+  const queryClient = useQueryClient();
+
+  const importRunMutation = useMutation({
+    mutationFn: (file: File) => importIntoExistingPipeline(pipelineId, file),
+    onSuccess: () => {
+      // Refetch the pipeline's data - stage/trace counts, the DAG (a new
+      // run can add stages), rubrics (new stages have none yet), and the
+      // runs list all may have changed.
+      queryClient.invalidateQueries({ queryKey: ["pipelines"] });
+      queryClient.invalidateQueries({ queryKey: ["pipeline-dag", pipelineId] });
+      queryClient.invalidateQueries({ queryKey: ["rubrics", pipelineId] });
+      queryClient.invalidateQueries({ queryKey: ["runs", pipelineId] });
+    },
+  });
+
+  function handleOpenChange(nextOpen: boolean) {
+    if (!nextOpen) {
+      importRunMutation.reset();
+      onClose();
+    }
+  }
+
+  return (
+    <DrawerRoot open={open} onOpenChange={handleOpenChange}>
+      <DrawerContent>
+        <DrawerHeader>
+          <DrawerTitle>Import new run</DrawerTitle>
+          <DrawerDescription>
+            Upload another trace file for this pipeline. Matching stages are reused; a
+            genuinely new stage is added; a stage whose model or prompt changed is rejected.
+          </DrawerDescription>
+        </DrawerHeader>
+        <DrawerBody>
+          {!importRunMutation.isSuccess && (
+            <Dropzone onFileSelected={(file) => importRunMutation.mutate(file)} />
+          )}
+
+          {importRunMutation.isPending && (
+            <p className="mt-4 text-13 text-ink-soft" role="status">
+              Importing…
+            </p>
+          )}
+
+          {importRunMutation.isError && (
+            <div className="mt-4">
+              <p className="mb-2 text-13 font-medium text-parity-fail" role="alert">
+                Import failed
+              </p>
+              <pre className="whitespace-pre-wrap rounded-control bg-beam-soft p-3 font-mono text-12 text-ink">
+                {importRunMutation.error instanceof ApiError
+                  ? importRunMutation.error.message
+                  : "Unknown error"}
+              </pre>
+              <Button
+                variant="secondary"
+                size="sm"
+                className="mt-3"
+                onClick={() => importRunMutation.reset()}
+              >
+                Try a different file
+              </Button>
+            </div>
+          )}
+
+          {importRunMutation.isSuccess && (
+            <ImportRunSuccess result={importRunMutation.data} onDone={onClose} />
+          )}
+        </DrawerBody>
+      </DrawerContent>
+    </DrawerRoot>
+  );
+}
+
+function ImportRunSuccess({
+  result,
+  onDone,
+}: {
+  result: ImportResult;
+  onDone: () => void;
+}) {
+  return (
+    <div>
+      <p className="mb-4 text-14 text-parity-pass">
+        Run imported — {result.stage_count} stages, {result.trace_count} traces.
+      </p>
+      <Button variant="primary" onClick={onDone}>
+        Done
+      </Button>
+    </div>
   );
 }
 

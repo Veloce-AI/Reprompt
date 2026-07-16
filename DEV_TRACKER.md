@@ -8,7 +8,7 @@ accurate so anyone (human or AI) can pick this up cold without
 re-deriving context. Read `START_HERE.md` first if you haven't — it
 points here plus the rest of the docs in reading order.
 
-Last updated: 2026-07-15.
+Last updated: 2026-07-16.
 
 ## Current state (one paragraph)
 
@@ -49,6 +49,13 @@ live DAG view (Phase 2) shows *which* internal phase a running stage is in
 **`target_model` tracking fix [DONE — 2026-07-15]**: `Candidate` rows now
 record which target model produced them (Alembic migration
 `8c4f6d1a3e9b`), closing the gap noted in "PR #3/#4 review notes" below.
+**Phase 2 — Project/multi-run ingestion [DONE — 2026-07-16]**: a second
+(third, ...) trace file can now be attached to an *existing* pipeline as a
+new run (`BenchmarkSet`) instead of always minting a brand-new pipeline —
+see the dated section below for the full design (stage reuse/grow/drift
+rule, new endpoints, "Import new run" drawer). `apps/api` 137 passed (131 +
+6 new), `apps/web` 86 passed (85 + 1 new) + clean typecheck,
+`packages/core` untouched.
 **Not started**: Phase 6 (final end-to-end manual verification).
 
 **Note for future sessions/developers**: each phase above updates
@@ -56,6 +63,118 @@ record which target model produced them (Alembic migration
 `docs/TESTING.md` for anything screen/behavior-facing. Don't create a
 separate status doc; just flag completion inline in whichever `.md` file
 the change actually touches.
+
+## Phase 2 — Project/multi-run ingestion [DONE — 2026-07-16]
+
+The gap: every trace upload previously created a brand-new `Pipeline` +
+brand-new `Stage` rows + one `BenchmarkSet`, unconditionally
+(`persist_trace_file`) — no way to attach a second run to an existing
+pipeline. `BenchmarkSet.pipeline_id` was already a plain FK (the schema
+already supported many `BenchmarkSet`s per `Pipeline`), just nothing used
+it. Built in a parallel worktree alongside unrelated Phase 3 work on
+`pipelines.py`/`pipeline-workspace.tsx` — kept changes additive/narrow in
+both shared files for an easier hand-merge (only added new endpoints/a new
+route param and a new header button + drawer; no existing function bodies
+restructured).
+
+**Backend**:
+- `apps/api/src/reprompt_api/ingest.py`: `persist_trace_file(db,
+  trace_file, *, pipeline: models.Pipeline | None = None) ->
+  models.Pipeline`. `pipeline=None` (default) behaves exactly as before.
+  When `pipeline` is given: no new `Pipeline`/`Stage` set is created by
+  default — for each stage in the incoming file, looked up by
+  `(pipeline_id, source_id)`: if an existing `Stage` row matches
+  (`model`/`prompt_template`/`system_prompt`/`params` all equal), it's
+  reused as-is; if not found, a new `Stage` row is created (a pipeline can
+  grow new stages across runs); if found but any of those four fields
+  differ, every such conflict is collected and raised as one new
+  `StageDriftError` (defined locally in `ingest.py`) naming every
+  conflicting stage — checked across *all* incoming stages before any
+  mutation happens, so a rejected import never leaves the session
+  half-modified (no partial `Stage`/`BenchmarkSet` rows to roll back).
+  Chose reject-with-422 over accept-and-flag or versioning per the task's
+  own settled decision: an in-place stage change would silently invalidate
+  an already-approved `Rubric` with no way to detect it, and `Rubric`/
+  `Candidate` both already assume a stable `stage_id` — keeping `Stage`
+  rows immutable once created is the smaller, more honest contract than
+  either alternative. A `BenchmarkSet` is always created for the run;
+  named `f"{pipeline_name} benchmark"` for the original import (unchanged)
+  or `f"Run {n}"` (n = existing `BenchmarkSet` count + 1) for an attached
+  run, so repeat runs don't all share one indistinguishable name.
+  Dependency-edge wiring guards against re-appending an edge a reused
+  `Stage` row already has (the `stage_dependencies` association table's
+  composite PK would otherwise raise on a duplicate insert).
+- `apps/api/src/reprompt_api/pipelines.py`: extracted
+  `_parse_upload_to_trace_file()` out of the existing `POST /import`
+  handler (validate-UTF8 → validate-JSON → `parse_trace_file`) so the new
+  endpoint below shares the exact same validation path rather than
+  duplicating it. New `POST /pipelines/{pipeline_id}/import` — 404s if the
+  pipeline doesn't exist, otherwise identical upload/validation flow,
+  passes the loaded `Pipeline` to `persist_trace_file`, and catches the new
+  `StageDriftError` → 422 (alongside the pre-existing `CycleError` → 422
+  pattern already used by `POST /import`). New `GET
+  /pipelines/{pipeline_id}/runs` → `RunOut[]` (`{id, name, created_at,
+  trace_count}`), one row per `BenchmarkSet` for that pipeline, oldest
+  first, `trace_count` via a `LEFT JOIN` + `COUNT`/`GROUP BY` on `Trace`
+  (not N+1 queries per `BenchmarkSet`); 404s the same way every other
+  `/{pipeline_id}/...` route here does for an unknown pipeline.
+- Tests: new `apps/api/tests/test_pipelines_runs.py` (6 new) — reusing a
+  matching stage set (`Stage` row count unchanged, exactly 2
+  `BenchmarkSet`s), a genuinely new stage added (5th `Stage` row, wired
+  to its `depends_on`), a drifted stage rejected with 422 naming it and
+  nothing persisted (`BenchmarkSet`/`Stage` counts unchanged, the
+  original `prompt_template` intact), 404 for an unknown pipeline on
+  import, `GET .../runs`'s exact shape/`trace_count` across two runs with
+  different trace counts, 404 for an unknown pipeline on `/runs`.
+  `apps/api`: **137 passed** (131 baseline + 6 new).
+
+**Frontend**:
+- `apps/web/src/lib/api.ts`: `RunOut` interface,
+  `importIntoExistingPipeline(pipelineId, file)` (same
+  `FormData`-with-one-file shape as the existing `importPipeline`, just
+  posted to `/pipelines/{id}/import`), `getRuns(pipelineId)`.
+- `apps/web/src/routes/pipeline-workspace.tsx`: new "Import new run"
+  button in the header, next to the pipeline name (not a separate route —
+  the task brief called for an action in the header area, and this
+  workspace is already the single unified screen per Phase 1's "Unified
+  pipeline workspace"). Opens an `ImportRunDrawer` built on the same
+  `DrawerRoot`/`DrawerContent` primitives the existing stage-rubric drawer
+  already uses, reusing `components/dropzone.tsx` wholesale for the actual
+  upload UI (the same component `routes/pipelines-import.tsx`'s wizard
+  uses) rather than rebuilding drag-and-drop. On a successful import,
+  invalidates the `["pipelines"]`, `["pipeline-dag", pipelineId]`,
+  `["rubrics", pipelineId]`, and `["runs", pipelineId]` query keys so the
+  Canvas/Rubrics tabs and stage/trace counts reflect the new run without a
+  manual refresh. A `StageDriftError`'s 422 detail (naming the conflicting
+  stage) surfaces verbatim in the drawer's error panel, with a "Try a
+  different file" button that resets the mutation without closing the
+  drawer.
+- Tests: `pipeline-workspace.test.tsx` gained 1 new test (`imports a new
+  run into the pipeline via the 'Import new run' action`) — clicks the
+  button, drives the drawer's file input directly (queried off
+  `document.body`, not the RTL render root, since the drawer portals
+  outside it — see the test's own comment), asserts
+  `importIntoExistingPipeline` was called with the right pipeline id/File
+  and the drawer shows the success message. `apps/web`: **86 passed** (85
+  baseline + 1 new), clean `tsc --noEmit`.
+
+**What a user actually sees**: on any pipeline's workspace, "Import new
+run" next to the pipeline name opens a drop-zone drawer; dropping a
+compatible trace file (same stage definitions, or new stages appended)
+succeeds silently into the pipeline's existing DAG — no duplicate pipeline
+appears in the Pipelines-home list. Dropping a file where an existing
+stage's model/prompt/params changed is rejected with a clear inline error
+naming the conflicting stage, instead of silently corrupting an
+already-reviewed rubric.
+
+**Explicitly out of scope, not built this phase**: no UI list of past runs
+(the `GET .../runs` endpoint exists and is tested, but nothing in the
+workspace renders it yet — `docs/TESTING.md`'s new §3.1c walkthrough
+verifies it via curl/devtools instead); "Pipeline"→"Project" stays a
+UI-label naming question for a future pass, not touched here per the
+task's own instruction to leave `pipeline_id`/route params/backend names
+alone. `packages/core` and the optimizer loop untouched (confirmed via
+`git status` before commit).
 
 ## Root-cause investigation — "the flow is broken, nothing is working" [FIXED — 2026-07-15]
 
@@ -596,6 +715,18 @@ worth knowing before touching `optimizer_runner.py`/`migrations.py` again:
 
 ## Working in parallel (more than one developer/AI at once)
 
+- **2026-07-16**: "Phase 2 — Project/multi-run ingestion" (this file's own
+  dated section above) was built in `.worktrees/phase2`
+  (`phase2-project-multirun` branch) while a second agent worked in
+  `.worktrees/phase3` on unrelated work also touching
+  `apps/api/src/reprompt_api/pipelines.py` and
+  `apps/web/src/routes/pipeline-workspace.tsx`. Phase 2's changes to both
+  files are additive only (new endpoints/route in `pipelines.py`; a new
+  header button + a new drawer component in `pipeline-workspace.tsx`, no
+  existing function bodies restructured) specifically to keep the eventual
+  hand-merge low-risk — check `git log`/the diff on both files at merge
+  time for what phase3 added before assuming a conflict is real vs. two
+  clean additive diffs that just happen to touch the same file.
 - **Check "Current state" above before claiming a phase.** It says what's
   actually done vs. not — if two people start Phase 4 without checking
   here first, that's wasted work for one of them. If you start a phase,

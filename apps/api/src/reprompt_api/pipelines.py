@@ -4,6 +4,7 @@ endpoints.
 
 from __future__ import annotations
 
+import datetime
 import json
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile
@@ -11,7 +12,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
-from reprompt_core import CycleError, TraceFileError, build_dag, parse_trace_file
+from reprompt_core import CycleError, TraceFile, TraceFileError, build_dag, parse_trace_file
 from reprompt_core.llm.client import PermanentLLMError, RepromptLLMError, TransientLLMError
 from reprompt_core.trace import TokenUsage
 
@@ -19,7 +20,7 @@ from reprompt_api import models
 from reprompt_api.auth import get_current_user
 from reprompt_api.crypto import EncryptionNotConfigured
 from reprompt_api.db import get_db
-from reprompt_api.ingest import persist_trace_file
+from reprompt_api.ingest import StageDriftError, persist_trace_file
 from reprompt_api.llm_context import ProviderKeyNotConfigured, complete_with_workspace_credentials
 
 router = APIRouter(prefix="/pipelines", tags=["pipelines"])
@@ -29,6 +30,13 @@ class ImportResult(BaseModel):
     pipeline_id: int
     name: str
     stage_count: int
+    trace_count: int
+
+
+class RunOut(BaseModel):
+    id: int
+    name: str
+    created_at: datetime.datetime
     trace_count: int
 
 
@@ -69,14 +77,10 @@ class DagResponse(BaseModel):
     edges: list[DagEdge]
 
 
-@router.post("/import", response_model=ImportResult, status_code=201)
-async def import_pipeline(
-    file: UploadFile, db: Session = Depends(get_db)
-) -> ImportResult:
-    """Upload a trace-format JSON file. Validates against the canonical
-    schema (packages/core) before persisting anything. On any validation
-    failure, returns 422 with a field-level error message — never a raw
-    stack trace or a generic 500.
+async def _parse_upload_to_trace_file(file: UploadFile) -> TraceFile:
+    """Shared UploadFile -> validated TraceFile path for both /import and
+    /{pipeline_id}/import. Raises HTTPException(422) on any validation
+    failure — never a raw stack trace or a generic 500.
     """
     raw_bytes = await file.read()
     try:
@@ -94,9 +98,21 @@ async def import_pipeline(
         ) from exc
 
     try:
-        trace_file = parse_trace_file(data)
+        return parse_trace_file(data)
     except TraceFileError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.post("/import", response_model=ImportResult, status_code=201)
+async def import_pipeline(
+    file: UploadFile, db: Session = Depends(get_db)
+) -> ImportResult:
+    """Upload a trace-format JSON file, creating a brand-new Pipeline.
+    Validates against the canonical schema (packages/core) before
+    persisting anything. On any validation failure, returns 422 with a
+    field-level error message — never a raw stack trace or a generic 500.
+    """
+    trace_file = await _parse_upload_to_trace_file(file)
 
     try:
         pipeline = persist_trace_file(db, trace_file)
@@ -109,6 +125,66 @@ async def import_pipeline(
         stage_count=len(trace_file.pipeline.stages),
         trace_count=len(trace_file.traces),
     )
+
+
+@router.post("/{pipeline_id}/import", response_model=ImportResult, status_code=201)
+async def import_run_into_pipeline(
+    pipeline_id: int, file: UploadFile, db: Session = Depends(get_db)
+) -> ImportResult:
+    """Attach a new run (a new BenchmarkSet) to an *existing* pipeline,
+    reusing/extending its Stage rows rather than creating a parallel
+    Pipeline — see reprompt_api.ingest.persist_trace_file's docstring for
+    the exact reuse/drift rule. Same validation path as POST /import.
+    """
+    pipeline = db.get(models.Pipeline, pipeline_id)
+    if pipeline is None:
+        raise HTTPException(status_code=404, detail=f"Pipeline {pipeline_id} not found")
+
+    trace_file = await _parse_upload_to_trace_file(file)
+
+    try:
+        pipeline = persist_trace_file(db, trace_file, pipeline=pipeline)
+    except CycleError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except StageDriftError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    return ImportResult(
+        pipeline_id=pipeline.id,
+        name=pipeline.name,
+        stage_count=len(trace_file.pipeline.stages),
+        trace_count=len(trace_file.traces),
+    )
+
+
+@router.get("/{pipeline_id}/runs", response_model=list[RunOut])
+def list_runs(pipeline_id: int, db: Session = Depends(get_db)) -> list[RunOut]:
+    """Every run (BenchmarkSet) imported against this pipeline, oldest
+    first — powers the "Import new run" flow's audit trail. 404s the same
+    way every other /{pipeline_id}/... route here does if the pipeline
+    itself doesn't exist, rather than silently returning an empty list.
+    """
+    pipeline = db.get(models.Pipeline, pipeline_id)
+    if pipeline is None:
+        raise HTTPException(status_code=404, detail=f"Pipeline {pipeline_id} not found")
+
+    rows = db.execute(
+        select(
+            models.BenchmarkSet.id,
+            models.BenchmarkSet.name,
+            models.BenchmarkSet.created_at,
+            func.count(models.Trace.id),
+        )
+        .outerjoin(models.Trace, models.Trace.benchmark_set_id == models.BenchmarkSet.id)
+        .where(models.BenchmarkSet.pipeline_id == pipeline_id)
+        .group_by(models.BenchmarkSet.id)
+        .order_by(models.BenchmarkSet.created_at)
+    ).all()
+
+    return [
+        RunOut(id=row[0], name=row[1], created_at=row[2], trace_count=row[3])
+        for row in rows
+    ]
 
 
 @router.get("", response_model=list[PipelineSummary])

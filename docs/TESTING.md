@@ -369,6 +369,17 @@ migrations/candidates), no soft-delete/undo.
    caveat that used to live here is stale and superseded by the live view
    below). Needs a real BYOK key configured — see `README.md`'s "Getting
    an AI model API key" section.
+5a. Once started, a subtitle line appears above the run bar: "Optimizing
+   with **Prism** — a self-evolving prompt optimizer", with a **"How Prism
+   works"** text link next to it. Click the link → a drawer opens (same
+   drawer primitive used elsewhere) titled "How Prism works" with two
+   short factual paragraphs on the actual loop (judge-aware critique, up
+   to 3 refine rounds, budget-bounded, per-stage) and one paragraph on
+   what it doesn't do — explicitly states Prism doesn't carry learnings
+   between separate migrations, each migration evolves its own prompt
+   from scratch. Press Escape or click the drawer's close (X) button to
+   dismiss it — see `apps/web/src/components/prism-explainer.tsx` and the
+   dated "Branding/copy pass" section in `DEV_TRACKER.md`.
 6. While it's running: the pipeline DAG canvas appears live, with the
    currently-optimizing stage's node pulsing indigo (Phase 2 — "Live
    DAG/run status view") and, directly under its name, a small sub-step

@@ -113,6 +113,15 @@ deeper than where the report said to look). `apps/web` 117 passed
 (unchanged - jsdom doesn't do real CSS layout, so this bug and its fix are
 both invisible to Vitest either way) + clean `tsc --noEmit`, `apps/api`
 165 passed (untouched), `packages/core` untouched.
+**Canvas tab live migration overlay [DONE — 2026-07-16]**: the main Canvas
+tab (`pipeline-workspace.tsx`, the default landing tab) now shows the same
+live per-stage coloring/pulsing/sub-step signal the Migrations tab's
+embedded canvas already had, whenever a migration is running in the
+background — previously it always rendered a static, uncolored DAG
+regardless — see the dated section below for the full design (a shared
+`useMigrationStatusPoll` hook, a lightweight conditional list-check, and a
+"Migration running" pill). `apps/web` 121 passed (117 + 4 new) + clean
+`tsc --noEmit`, `apps/api`/`packages/core` untouched.
 **Not started**: Phase 6 (final end-to-end manual verification).
 
 **Note for future sessions/developers**: each phase above updates
@@ -120,6 +129,102 @@ both invisible to Vitest either way) + clean `tsc --noEmit`, `apps/api`
 `docs/TESTING.md` for anything screen/behavior-facing. Don't create a
 separate status doc; just flag completion inline in whichever `.md` file
 the change actually touches.
+
+## Canvas tab live migration overlay [DONE — 2026-07-16]
+
+Product owner complaint: "the canvas is static, it should be dynamic like
+a graph that should also be able to reflect what is going on when the
+pipeline is running." Root cause: live migration status (per-stage
+running/done/failed coloring, pulsing nodes, sub-step labels) only ever
+rendered inside the Migrations tab's own embedded
+`<PipelineCanvas stageStates={...} runningSubstep={...} />` (in
+`migration-success-screen.tsx`). The main Canvas tab
+(`pipeline-workspace.tsx`, the default landing tab) always rendered a
+static, uncolored DAG regardless of whether a migration was actively
+running in the background — the two views of the exact same
+`<PipelineCanvas>` component just never shared a poll.
+
+**Shared hook, not duplicated polling logic**: extracted
+`apps/web/src/hooks/use-migration-status-poll.ts`'s
+`useMigrationStatusPoll(pipelineId, migrationId, options?)` out of
+`migration-success-screen.tsx`'s inline `statusQuery` `useQuery` block
+(same `["migration-status", pipelineId, migrationId]` queryKey,
+`getMigrationStatus` queryFn, and `refetchInterval` — 2000ms while
+`status === "running"`, `false` otherwise — byte-for-byte the same
+convention, just parameterized by `enabled`/`initialData` instead of
+hardcoded to `started`/`migration`). Low-risk extraction (a `useQuery` call
+wrapped 1:1, no behavior change) rather than the "risky refactor" the task
+brief flagged as an acceptable reason to duplicate instead — chose to
+extract. `migration-success-screen.tsx` now calls
+`useMigrationStatusPoll(pid, migration.id, { enabled: started, initialData:
+started ? migration : undefined })` in place of its old inline block;
+`getMigrationStatus` import removed from that file (no longer called
+directly there).
+
+**Canvas tab wiring** (`apps/web/src/routes/pipeline-workspace.tsx`, new
+`CanvasTabContent`, mounted only inside the existing
+`{tab === "canvas" && (...)}` conditional — so both polls below exist only
+while a user is actually on this tab, never in the background on another
+tab):
+- A lightweight `listMigrations(pipelineId)` check, `refetchInterval:
+  5000` (a deliberately lighter cadence than the live-status poll — this
+  one only exists to notice a migration starting/finishing while parked on
+  the Canvas tab). Reuses the exact same `["migrations", pipelineId]`
+  query key `MigrationsTab` (same file) already uses, so switching to/from
+  the Migrations tab is a cache hit, not a second fetch, in the common
+  case.
+- `.find((m) => m.status === "running")` → if found, hands its id to
+  `useMigrationStatusPoll` (the same shared hook above), which takes over
+  with the real 2s live-coloring poll — its `stage_states`/
+  `progress_substep` feed straight into the Canvas tab's existing
+  `<PipelineCanvas>` (same component, same optional props it already
+  accepted from the Migrations-tab usage — no prop-shape changes needed,
+  confirmed via `pipeline-canvas.tsx`'s `PipelineCanvasProps`).
+- If nothing is running: `useMigrationStatusPoll` is `enabled: false` (no
+  status poll at all), `<PipelineCanvas>` gets no `stageStates`/
+  `runningSubstep` props — pixel-identical to the pre-existing static
+  Canvas tab. Conditional, not always-on, per the task brief.
+- Small UI nicety (task brief's point 4): a pill — "Migration running —
+  view in Migrations →" with a pulsing dot (reusing the same
+  `animate-ping` dot pattern `stage-node.tsx`'s running-node pulse already
+  established) — renders above the canvas whenever `liveStatus?.status ===
+  "running"`, clicking it calls the same `goToTab("migrations")` the tab
+  bar itself uses. Rendered as a plain sibling of `<PipelineCanvas>` inside
+  a JSX fragment (not a new wrapping `<div>`) specifically to avoid
+  reintroducing the flex-height bug from the "Product owner report" section
+  below — the outer `flex flex-1 flex-col overflow-y-auto` wrapper and
+  `<PipelineCanvas>`'s own `h-full min-h-[480px] flex-1` sizing chain are
+  untouched; the pill just takes its natural content height as a
+  non-`flex-1` sibling above it.
+
+**Tests**: new `apps/web/src/routes/pipeline-workspace.canvas-live.test.tsx`
+(4 new) — its own `<PipelineCanvas>` mock echoes `stageStates`/
+`runningSubstep` back as text (unlike the main `pipeline-workspace.test.tsx`
+suite's bare-button stub, which only cares about tab/drawer wiring) so the
+live props are actually assertable: stays static with no `stageStates`/
+badge/`getMigrationStatus` call when no migration is running; colors the
+canvas and shows the badge when one is; never polls or renders the overlay
+at all while parked on a non-Canvas tab; clicking the badge navigates to
+the Migrations tab. Existing `pipeline-workspace.test.tsx` needed one fix,
+not a workaround: its shared `beforeEach` never gave `listMigrations` a
+default resolved value (only `MigrationsTab` called it before, and
+individual tests that cared already set their own), so once
+`CanvasTabContent` became a second caller, tests that start on the Canvas
+tab hit React Query's "query function returned undefined" console error via
+the bare `vi.fn()` mock — fixed by adding
+`vi.mocked(listMigrations).mockResolvedValue([])` to that file's
+`beforeEach` (tests needing a specific list still override it themselves,
+unchanged). `apps/web`: **121 passed** (117 baseline + 4 new), clean
+`tsc --noEmit`. `apps/api`/`packages/core` untouched (confirmed via `git
+status` — only files under `apps/web/src/` and this doc changed).
+
+**What a user actually sees**: start a migration from the Migrations tab,
+then switch to the Canvas tab while it's still running — the DAG there now
+pulses/colors live exactly like the Migrations tab's own view, with a
+small "Migration running" pill making it obvious why nodes are suddenly
+colored and offering a one-click way back to the full run screen. Open the
+Canvas tab with nothing running (or after a migration finishes) and it's
+exactly the static view it always was, with no background polling.
 
 ## Product owner report — "Canvas has nothing in it, Settings is empty, no rename" [FIXED — 2026-07-16]
 

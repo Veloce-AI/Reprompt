@@ -171,6 +171,12 @@ beforeEach(() => {
 
   vi.mocked(listPipelines).mockResolvedValue([basePipeline()]);
   vi.mocked(getPipelineDag).mockResolvedValue(baseDag());
+  // Default to "no migrations yet" - the Canvas tab's live-migration overlay
+  // (see pipeline-workspace.tsx's CanvasTabContent) now also calls
+  // listMigrations to check for a running one, same as MigrationsTab below
+  // already did. Tests that care about a specific migrations list still
+  // override this with their own mockResolvedValue.
+  vi.mocked(listMigrations).mockResolvedValue([]);
 });
 
 describe("PipelineWorkspace", () => {

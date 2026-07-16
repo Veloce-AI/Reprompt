@@ -14,6 +14,7 @@ import {
   type PipelineSummary,
   type RubricOut,
 } from "@/lib/api";
+import { useMigrationStatusPoll } from "@/hooks/use-migration-status-poll";
 import {
   describeDeterministicCheck,
   describeJudgeCriterion,
@@ -188,9 +189,10 @@ export default function PipelineWorkspace() {
             this doesn't change layout for Data/Rubrics/Migrations. */}
         <div className="flex flex-1 flex-col overflow-y-auto">
           {tab === "canvas" && (
-            <PipelineCanvas
+            <CanvasTabContent
               pipelineId={pid}
               onNodeClick={(stageId) => setSelectedStageId(stageId)}
+              onJumpToMigrations={() => goToTab("migrations")}
             />
           )}
           {tab === "data" && <DataTable pipelineId={pid} />}
@@ -224,6 +226,95 @@ export default function PipelineWorkspace() {
         onClose={() => setIsImportRunOpen(false)}
       />
     </AppShell>
+  );
+}
+
+// Lighter cadence than the 2s live-status poll below — this one only exists
+// to notice a migration starting/finishing while a user is parked on the
+// Canvas tab, not to drive per-stage coloring itself.
+const MIGRATION_LIST_POLL_INTERVAL_MS = 5000;
+
+/**
+ * Canvas tab's live-migration overlay. Product owner complaint this
+ * addresses: "the canvas is static, it should be dynamic ... reflect what
+ * is going on when the pipeline is running" — previously only the
+ * Migrations tab's own embedded `<PipelineCanvas>` (in
+ * `MigrationSuccessScreen`) ever received `stageStates`/`runningSubstep`;
+ * the Canvas tab always rendered the same static, uncolored DAG regardless
+ * of a migration running in the background. See DEV_TRACKER.md's "Canvas
+ * tab live migration overlay" for the full design.
+ *
+ * Mounted only while the Canvas tab itself is active — a direct consequence
+ * of the `{tab === "canvas" && (...)}` conditional in `PipelineWorkspace`
+ * above — so both polls below exist only for as long as a user is actually
+ * looking at this tab, never in the background on another tab. Two tiers,
+ * not one:
+ * - `listMigrations` at a lighter 5s cadence, just to notice a migration
+ *   starting/finishing while parked here. Reuses the exact same
+ *   `["migrations", pipelineId]` query key `MigrationsTab` below already
+ *   uses, so switching to/from the Migrations tab is a cache hit, not a
+ *   second fetch, in the common case.
+ * - Once a running migration is found, `useMigrationStatusPoll` (shared
+ *   with `MigrationSuccessScreen`'s own run view, see
+ *   `hooks/use-migration-status-poll.ts`) takes over with the real 2s
+ *   live-coloring poll — same queryKey/refetchInterval convention, so the
+ *   two "poll a migration's stage_states" call sites can't drift apart.
+ *
+ * When nothing is running, this renders exactly what the Canvas tab always
+ * rendered before this change — no `stageStates`/`runningSubstep` props, no
+ * badge, and (since `useMigrationStatusPoll` is disabled whenever
+ * `runningMigration` is `null`) no status poll at all. Static, no polling
+ * overhead beyond the lightweight 5s list check.
+ */
+function CanvasTabContent({
+  pipelineId,
+  onNodeClick,
+  onJumpToMigrations,
+}: {
+  pipelineId: number;
+  onNodeClick: (stageId: number) => void;
+  onJumpToMigrations: () => void;
+}) {
+  const migrationsQuery = useQuery({
+    queryKey: ["migrations", pipelineId],
+    queryFn: () => listMigrations(pipelineId),
+    refetchInterval: MIGRATION_LIST_POLL_INTERVAL_MS,
+  });
+
+  const runningMigration = migrationsQuery.data?.find((m) => m.status === "running") ?? null;
+
+  const statusQuery = useMigrationStatusPoll(pipelineId, runningMigration?.id ?? null, {
+    enabled: runningMigration !== null,
+    initialData: runningMigration ?? undefined,
+  });
+
+  // Guard against a stale poll result outliving its migration (e.g. the
+  // list's next 5s tick already dropped this id from "running") — only
+  // trust statusQuery.data while runningMigration still names it.
+  const liveStatus = runningMigration ? statusQuery.data : undefined;
+
+  return (
+    <>
+      {liveStatus?.status === "running" && (
+        <button
+          type="button"
+          onClick={onJumpToMigrations}
+          className="mx-4 mt-3 flex w-fit items-center gap-1.5 rounded-full border border-line bg-beam-soft/50 px-3 py-1 text-12 font-medium text-ink transition-colors duration-fast ease-out hover:bg-beam-soft"
+        >
+          <span className="relative flex h-2 w-2">
+            <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-beam opacity-75" />
+            <span className="relative inline-flex h-2 w-2 rounded-full bg-beam" />
+          </span>
+          Migration running — view in Migrations →
+        </button>
+      )}
+      <PipelineCanvas
+        pipelineId={pipelineId}
+        stageStates={liveStatus?.stage_states}
+        runningSubstep={liveStatus?.progress_substep}
+        onNodeClick={onNodeClick}
+      />
+    </>
   );
 }
 

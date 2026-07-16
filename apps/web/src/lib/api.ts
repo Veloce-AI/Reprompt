@@ -320,7 +320,6 @@ export function listStageRecords(
   return request<StageRecordsPage>(
     `/pipelines/${pipelineId}/stage-records${qs ? `?${qs}` : ""}`
   );
->>>>>>> phase3-data-tab
 }
 
 // ---------------------------------------------------------------------------

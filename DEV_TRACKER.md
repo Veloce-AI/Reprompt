@@ -1627,4 +1627,123 @@ Approve button, without leaving the canvas; "View full rubric →" jumps to
 the full editor on the Rubrics tab, scrolled to that exact stage. Any old
 `/rubrics` or `/migrations/new` link still works, landing on the right tab.
 The Data tab currently just says "Coming soon" (Phase 3, not part of this
-work).
+work — see "Phase 3 — Data dashboard tab" below for what replaced it).
+
+## Phase 3 — Data dashboard tab [DONE — 2026-07-16]
+
+Another separate frontend-shape track, independent of the optimizer phase
+numbering (same relationship as "Phase 1 — Unified pipeline workspace" and
+"Phase D(a)" above — parallel work, not a continuation of Phase 6). Replaces
+the Data tab's "Coming soon" placeholder from Phase 1 above with a real,
+read-only spreadsheet-style browser over every `StageRecord` (input,
+rendered prompt, output, tokens/cost/latency) for a pipeline. Built in a
+separate worktree (`phase3-data-tab`) in parallel with another agent's
+`phase2-*` work on multi-run support (`GET /pipelines/{id}/runs`) touching
+`pipelines.py`/`pipeline-workspace.tsx` at the same time — kept additive/
+narrow in both shared files (new router file instead of extending
+`pipelines.py`; only the Data-tab `{tab === "data" && ...}` block changed in
+`pipeline-workspace.tsx`) per that hand-merge constraint. No changes to
+`packages/core`, the optimizer loop, or anything under
+`packages/core/src/reprompt_core/optimizer/`.
+
+**Deliberate scope cut, not forgotten**: only a **Stage filter** is built
+here. A **Run filter/dropdown** is an explicit fast follow-on, blocked on
+the parallel `phase2` work's `GET /pipelines/{id}/runs` endpoint landing
+first (this phase was built without depending on that endpoint existing
+yet, per this phase's own brief) — pick it up once that merges, don't
+re-derive whether it's in scope. No text search box either (out of scope,
+would need real indexing, not part of this phase's brief).
+
+**Backend** — new `apps/api/src/reprompt_api/stage_records.py` (deliberately
+its own file, not folded into the already-large, actively-edited-in-parallel
+`pipelines.py`):
+- `GET /pipelines/{pipeline_id}/stage-records?stage_id=&trace_id=&cursor=&limit=`
+  → `{records: StageRecordOut[], next_cursor: int | None}`. Cursor
+  pagination is the simplest possible form — `StageRecord.id > cursor ORDER
+  BY id LIMIT limit` (+1 row fetched to know if a next page exists without
+  a second COUNT query) — `id` is an autoincrementing surrogate with no
+  updates/deletes on this table, so it's stable across pages. Always scoped
+  to `pipeline_id` via a `StageRecord → Stage`/`Trace → BenchmarkSet` join
+  (a `StageRecord` has no direct `pipeline_id` column); `stage_id`/
+  `trace_id` are additional optional equality filters applied in the same
+  query — all filtering is server-side SQL, never fetch-all-then-filter in
+  Python. An unknown `pipeline_id` returns an empty `records` list (200),
+  not a 404 — matches this router's read-only, listing-style contract
+  (same as `GET /pipelines` never erroring on an empty result).
+- `StageRecordOut`: `id, stage_id, stage_name, trace_id, input,
+  rendered_prompt, output, tokens_in, tokens_out, latency_ms, cost` — no
+  `tokens_thinking`/`documents`/`meta` (present on the `StageRecord` model
+  but not needed by this browser's columns or drawer).
+- Registered in `apps/api/src/reprompt_api/main.py` (one import + one
+  `app.include_router(...)` line, additive).
+- Tests: new `apps/api/tests/test_stage_records.py`, 6 cases — full-field
+  response shape, cursor pagination walks every page with no
+  overlap/gaps/duplicates across a 10-record set paginated 4-at-a-time,
+  `stage_id` filter (cross-checked against the DAG's stage ids), `trace_id`
+  filter, pipeline-scoping (no cross-pipeline leakage between two imported
+  pipelines), unknown pipeline → empty list not an error.
+
+**Frontend**:
+- Added `@tanstack/react-virtual` (`apps/web/package.json`) — row
+  virtualization for the record table, pairs with the already-used
+  `@tanstack/react-query`.
+- New `apps/web/src/components/data-table.tsx` (`DataTable`): toolbar with
+  a Stage `<Select>` ("All stages" default, options from `getPipelineDag`
+  under the same `["pipeline-dag", pipelineId]` query key the Canvas tab's
+  `PipelineCanvas` already uses, so switching Canvas ↔ Data tabs in one
+  session doesn't re-fetch the DAG) above a CSS-grid-based virtualized
+  table (`useVirtualizer` over a `useInfiniteQuery` against
+  `listStageRecords`, `getNextPageParam: (page) => page.next_cursor`, 50
+  records/page, auto-fetches the next page once the last rendered virtual
+  row nears the end of what's loaded). Columns: Trace (id) · Stage (badge)
+  · Input/Rendered Prompt/Output (all truncated ~80 chars) · Tok in · Tok
+  out · Cost · Latency. Whole row is a clickable `<button>` that opens a
+  drawer with the full untruncated input (pretty-printed JSON), rendered
+  prompt, output, and exact token/cost/latency figures — reuses the
+  existing `apps/web/src/components/ui/drawer.tsx` primitive (the same
+  vaul-based one Phase 1's stage-rubric drawer uses), not a second drawer
+  implementation.
+- `apps/web/src/lib/api.ts`: additive `StageRecordOut`/`StageRecordsPage`
+  types + `listStageRecords()`, right before the existing "Trace format
+  reference" section.
+- `apps/web/src/routes/pipeline-workspace.tsx`: only the
+  `{tab === "data" && ...}` block changed — now renders
+  `<DataTable pipelineId={pid} />` instead of the "Coming soon" `<div>`;
+  everything else in the file (header, tab bar, canvas/rubrics/migrations
+  tabs, the stage-rubric drawer) is untouched, per the hand-merge
+  constraint noted above.
+- Read-only throughout, by design — no edit/approve affordance anywhere in
+  this tab; that stays exclusive to the Rubrics tab.
+- Tests: new `apps/web/src/components/data-table.test.tsx`, 4 cases — stage
+  filter populated from the DAG fetch, empty state, row truncation +
+  drawer shows full untruncated content on click, changing the stage
+  filter re-fetches scoped to the selected `stage_id`. One jsdom-specific
+  setup note worth knowing if this file is touched again: `jsdom` gives
+  every element a `0` `offsetHeight`/`offsetWidth` by default (no real
+  layout engine), which makes `useVirtualizer` think the viewport is
+  zero-sized and render no rows at all — the test file stubs
+  `HTMLElement.prototype.offsetHeight`/`offsetWidth` and a no-op
+  `ResizeObserver` in a `beforeAll`, same spirit as
+  `pipeline-workspace.test.tsx`'s existing note on `@xyflow/react` needing
+  browser APIs jsdom doesn't provide.
+
+**Verified**: `cd apps/api && uv run pytest -q` → **137 passed** (131
+baseline + 6 new). `cd apps/web && pnpm exec tsc --noEmit` → clean.
+`cd apps/web && pnpm test` → **89 passed** (85 baseline + 4 new), 11 test
+files. `packages/core` untouched — confirmed via `git status` (only
+`apps/api`/`apps/web` files plus this doc and `docs/TESTING.md` appear in
+the diff).
+
+**What a user sees**: `/pipelines/$id?tab=data` now shows a real table —
+every benchmark trace's stage-by-stage input/prompt/output with token,
+cost, and latency figures, filterable by stage, scrolling to load more
+rows automatically, click any row for the full untruncated record in a
+side drawer. No Run filter yet (see the deliberate-scope-cut note above).
+
+**Where this leaves off**: the Run filter/dropdown is the next piece once
+`phase2`'s `GET /pipelines/{id}/runs` lands and is merged in — add a second
+`<Select>` next to the Stage one in `data-table.tsx`'s toolbar, threading a
+`runId`/similar param through `listStageRecords`/`stage_records.py` the
+same way `stage_id` is threaded today (the backend's cursor-pagination
+query already has the right shape to add one more optional equality
+filter). Nothing else about this phase is mid-flight.

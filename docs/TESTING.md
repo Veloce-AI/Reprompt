@@ -153,7 +153,7 @@ causes a later `alembic upgrade head` to fail).
 /                                      Pipelines home
 /pipelines/import                      Import wizard (3 steps)
 /pipelines/$pipelineId?tab=canvas      Pipeline workspace — Canvas tab (default, React Flow DAG)
-/pipelines/$pipelineId?tab=data        Pipeline workspace — Data tab ("Coming soon" placeholder, Phase 3)
+/pipelines/$pipelineId?tab=data        Pipeline workspace — Data tab (StageRecord browser, Phase 3)
 /pipelines/$pipelineId?tab=rubrics     Pipeline workspace — Rubrics tab (screen 4)
 /pipelines/$pipelineId?tab=migrations  Pipeline workspace — Migrations tab (screen 5)
 /login                                 Request a magic link
@@ -221,8 +221,9 @@ drawer.
 2. Click each of the four tab buttons (Canvas · Data · Rubrics ·
    Migrations) → confirm the URL's `?tab=` query param changes to match and
    the body below swaps — the header and tab bar itself never re-render/flash.
-3. The Data tab shows a plain "Coming soon" panel — that's expected, the
-   real dashboard is a separate later phase, not a bug.
+3. The Data tab now shows the real StageRecord browser — see §3.1c below
+   for its own walkthrough (built in Phase 3, 2026-07-16; it used to be a
+   plain "Coming soon" panel).
 4. On the Canvas tab, click any stage node → a drawer slides in from the
    right showing that stage's rubric (format checks + content criteria) and
    an "Approve" button. Approving from the drawer updates the badge in
@@ -263,6 +264,34 @@ brand-new pipeline.
    entry per successful run, each `{id, name, created_at, trace_count}` —
    not yet surfaced as its own list in the UI (only the "Import new run"
    action itself is built this phase).
+
+### 3.1d Data tab — StageRecord browser (Phase 3, 2026-07-16)
+
+A read-only, spreadsheet-style browser over every `StageRecord` (input,
+rendered prompt, output, tokens/cost/latency) captured for a pipeline's
+benchmark traces. No edit/approve affordances here by design — that stays
+exclusive to the Rubrics tab.
+
+1. On `/pipelines/$id?tab=data`, confirm a table renders with columns:
+   Trace · Stage · Input · Rendered Prompt · Output · Tok in · Tok out ·
+   Cost · Latency — the three text columns (Input/Rendered Prompt/Output)
+   show truncated (~80 char) previews, not the full text.
+2. Use the "Stage" dropdown above the table (default "All stages",
+   populated from the same DAG fetch the Canvas tab uses) to filter down to
+   one stage → confirm only that stage's rows remain and the row count
+   drops accordingly.
+3. Click any row → a drawer slides in from the right (same drawer
+   component the Canvas tab's rubric drawer uses) showing that record's
+   full, untruncated input (pretty-printed JSON), rendered prompt, and
+   output, plus its exact token/cost/latency figures.
+4. Scroll a pipeline with many benchmark traces → confirm more rows load
+   in automatically as you approach the bottom (cursor pagination against
+   `GET /pipelines/{id}/stage-records`, ~50 records per page) without a
+   visible "load more" click or a full page re-fetch.
+5. **Deliberately not built yet, not a bug**: no Run filter/dropdown (a
+   fast follow-on once Phase 2's `GET /pipelines/{id}/runs` multi-run
+   endpoint lands — see `DEV_TRACKER.md`'s Phase 3 entry) and no text
+   search box (out of scope, would need real indexing).
 
 ### 3.2 Rubric review (Rubrics tab, screen 4)
 
@@ -371,7 +400,7 @@ Quick reference:
 
 ```bash
 cd packages/core && uv run pytest -v   # trace/DAG/evaluators/judge/scoring/sweep/budget/model-card
-cd apps/api && uv run pytest -v        # models/ingest/pipelines/rubrics/migrations/auth/settings
+cd apps/api && uv run pytest -v        # models/ingest/pipelines/stage_records/rubrics/migrations/auth/settings
 cd apps/web && npx tsc --noEmit && pnpm test   # typecheck + Vitest
 cd apps/web && npx playwright test     # needs the API running separately first, see DEVELOPMENT.md
 ```

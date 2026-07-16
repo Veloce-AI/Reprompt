@@ -80,11 +80,10 @@ export function RubricReviewPanel({ pipelineId }: { pipelineId: number }) {
   }, [rubrics]);
 
   async function handleGenerateAll() {
-    const trimmedModel = model.trim();
-    if (!trimmedModel) {
-      setGenerateError("Enter a model name first (e.g. openai/gpt-4o).");
-      return;
-    }
+    // Model is optional - leave it blank and the server auto-selects one
+    // per stage (reprompt_core.llm.model_select.select_model). An explicit
+    // value here is used as-is for every stage, same as before.
+    const trimmedModel = model.trim() || undefined;
     setGenerateError(null);
     setGeneratingAll(true);
     setGeneratingTotal(allStages.length);
@@ -125,14 +124,14 @@ export function RubricReviewPanel({ pipelineId }: { pipelineId: number }) {
 
         <div className="flex items-center gap-3">
           <Input
-            placeholder="Model (e.g. openai/gpt-4o)"
+            placeholder="Model (optional — auto-selected if left blank)"
             value={model}
             onChange={(e) => {
               setModel(e.target.value);
               localStorage.setItem("reprompt_rubric_model", e.target.value);
             }}
-            className="w-56"
-            aria-label="Model for rubric generation"
+            className="w-64"
+            aria-label="Model for rubric generation (optional — auto-selected if left blank)"
           />
           <Button
             variant="secondary"
@@ -209,8 +208,8 @@ export function RubricReviewPanel({ pipelineId }: { pipelineId: number }) {
           <CardContent className="p-8 text-center">
             <p className="font-display text-20 font-semibold text-ink">No rubrics yet</p>
             <p className="mt-2 text-14 text-ink-soft">
-              Enter a model name above and click &ldquo;Generate all rubrics&rdquo; to generate rubrics for
-              every stage automatically.
+              Click &ldquo;Generate all rubrics&rdquo; to generate rubrics for every stage automatically — a
+              model is picked for you, or enter one above to choose yourself.
             </p>
           </CardContent>
         </Card>
@@ -261,7 +260,7 @@ function StageRubricCard({
   });
 
   const regenerateMutation = useMutation({
-    mutationFn: () => generateRubric(pipelineId, rubric.stage_id, model.trim()),
+    mutationFn: () => generateRubric(pipelineId, rubric.stage_id, model.trim() || undefined),
     onSuccess: replaceInCache,
   });
 
@@ -275,7 +274,12 @@ function StageRubricCard({
           {isActive && <span className="h-2 w-2 animate-pulse rounded-full bg-beam" />}
           <div>
             <CardTitle>{rubric.stage_name}</CardTitle>
-            <CardDescription>Stage id {rubric.stage_id}</CardDescription>
+            <CardDescription>
+              Stage id {rubric.stage_id}
+              {rubric.generated_with_model && (
+                <span className="ml-2 text-ink-soft">— generated using {rubric.generated_with_model}</span>
+              )}
+            </CardDescription>
           </div>
         </div>
         <div className="flex items-center gap-3">
@@ -290,8 +294,8 @@ function StageRubricCard({
             variant="ghost"
             size="sm"
             onClick={() => regenerateMutation.mutate()}
-            disabled={regenerateMutation.isPending || !model.trim()}
-            title={!model.trim() ? "Enter a model name at the top of the page first" : undefined}
+            disabled={regenerateMutation.isPending}
+            title={!model.trim() ? "No model entered — one will be auto-selected" : undefined}
           >
             {regenerateMutation.isPending ? "Generating…" : "Regenerate"}
           </Button>

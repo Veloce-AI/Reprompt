@@ -73,6 +73,11 @@ export interface RubricOut {
   judge_criteria: Record<string, unknown>[];
   downstream_contract: string[];
   approved: boolean;
+  /** Which model produced this rubric's content — only populated on the
+   * response to a generate/regenerate call, null otherwise (this isn't
+   * persisted on the rubric, see apps/api's RubricOut docstring). Set
+   * whether the model was auto-selected or explicitly chosen. */
+  generated_with_model?: string | null;
 }
 
 export interface RubricUpdate {
@@ -122,11 +127,14 @@ export function approveAllRubrics(pipelineId: number): Promise<RubricOut[]> {
   });
 }
 
-export function generateRubric(pipelineId: number, stageId: number, model: string): Promise<RubricOut> {
+export function generateRubric(pipelineId: number, stageId: number, model?: string): Promise<RubricOut> {
+  // `model` is optional - omit it (rather than sending an empty string) so
+  // the server auto-selects one (reprompt_core.llm.model_select.select_model)
+  // when the caller hasn't picked one explicitly.
   return request<RubricOut>(`/pipelines/${pipelineId}/stages/${stageId}/generate-rubric`, {
     method: "POST",
     headers: { "Content-Type": "application/json", ...authHeaders() },
-    body: JSON.stringify({ model }),
+    body: JSON.stringify(model ? { model } : {}),
   });
 }
 

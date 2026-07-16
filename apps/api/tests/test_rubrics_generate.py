@@ -256,6 +256,7 @@ def test_success_path_generates_and_persists_a_real_rubric_row(
         {"name": "Correct currency", "weight": 1.0, "description": "Matches the input currency."}
     ]
     assert body["downstream_contract"] == ["currency", "revenue"]
+    assert body["generated_with_model"] == "claude-sonnet-4-5"
 
     # Both traces' outputs reached the prompt — "analyzing that stage's
     # outputs across all traces", not just the first one.
@@ -268,6 +269,9 @@ def test_success_path_generates_and_persists_a_real_rubric_row(
     listing = client.get(f"/pipelines/{pipeline_id}/rubrics").json()
     assert len(listing) == 1
     assert listing[0]["id"] == body["id"]
+    # generated_with_model is a transient generate-call detail, not stored
+    # on the Rubric row - a plain list fetch never carries it.
+    assert listing[0]["generated_with_model"] is None
 
 
 def test_no_trace_records_for_stage_returns_422(client: TestClient) -> None:
@@ -323,6 +327,145 @@ def test_no_trace_records_for_stage_returns_422(client: TestClient) -> None:
     )
     assert gen_response.status_code == 422
     assert "no benchmark trace records" in gen_response.json()["detail"]
+
+
+# ---------------------------------------------------------------------------
+# Auto-select when no model is given (model_select.select_model)
+# ---------------------------------------------------------------------------
+
+
+def test_omitting_model_auto_selects_from_configured_models(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No `model` in the request body at all - the endpoint must pick one
+    itself via reprompt_core.llm.model_select.select_model rather than
+    rejecting the request. With only an anthropic key configured, the only
+    tier-1 candidate available is claude-sonnet-4-5 (gpt-4o/gemini are
+    filtered out - their providers have no configured key), so that's what
+    should be called and reported back."""
+    token, _ = _sign_in(client, "autoselect@example.com")
+    client.post(
+        "/settings/api-keys",
+        json={"provider": "anthropic", "api_key": "sk-workspacekey12345"},
+        headers=_auth_headers(token),
+    )
+    pipeline_id, stage_id = _import_pipeline_with_traces(client, outputs=["out1"])
+
+    captured: dict = {}
+
+    def fake_complete_with_workspace_credentials(db, workspace, model, messages, **kwargs):
+        captured["model"] = model
+        return _fake_llm_response(VALID_RUBRIC_CONTENT, model=model)
+
+    monkeypatch.setattr(
+        "reprompt_api.rubrics.complete_with_workspace_credentials", fake_complete_with_workspace_credentials
+    )
+
+    response = client.post(
+        f"/pipelines/{pipeline_id}/stages/{stage_id}/generate-rubric",
+        json={},
+        headers=_auth_headers(token),
+    )
+
+    assert response.status_code == 200, response.text
+    assert captured["model"] == "claude-sonnet-4-5"
+    assert response.json()["generated_with_model"] == "claude-sonnet-4-5"
+
+
+def test_null_model_also_auto_selects(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Same as omitting the key entirely - an explicit JSON null must be
+    treated the same as "not provided", not as a validation error."""
+    token, _ = _sign_in(client, "nullmodel@example.com")
+    client.post(
+        "/settings/api-keys",
+        json={"provider": "openai", "api_key": "sk-workspacekey12345"},
+        headers=_auth_headers(token),
+    )
+    pipeline_id, stage_id = _import_pipeline_with_traces(client, outputs=["out1"])
+
+    captured: dict = {}
+
+    def fake_complete_with_workspace_credentials(db, workspace, model, messages, **kwargs):
+        captured["model"] = model
+        return _fake_llm_response(VALID_RUBRIC_CONTENT, model=model)
+
+    monkeypatch.setattr(
+        "reprompt_api.rubrics.complete_with_workspace_credentials", fake_complete_with_workspace_credentials
+    )
+
+    response = client.post(
+        f"/pipelines/{pipeline_id}/stages/{stage_id}/generate-rubric",
+        json={"model": None},
+        headers=_auth_headers(token),
+    )
+
+    assert response.status_code == 200, response.text
+    assert captured["model"] == "gpt-4o"
+
+
+def test_explicit_model_is_never_second_guessed_by_auto_select(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An explicitly-given model is used exactly as given, even though it
+    is NOT the workspace's configured provider's tier-1 pick (openai key
+    configured, but the caller explicitly asked for gpt-4o-mini, a tier-2
+    model) - the explicit choice must never be overridden."""
+    token, _ = _sign_in(client, "explicitwins@example.com")
+    client.post(
+        "/settings/api-keys",
+        json={"provider": "openai", "api_key": "sk-workspacekey12345"},
+        headers=_auth_headers(token),
+    )
+    pipeline_id, stage_id = _import_pipeline_with_traces(client, outputs=["out1"])
+
+    captured: dict = {}
+
+    def fake_complete_with_workspace_credentials(db, workspace, model, messages, **kwargs):
+        captured["model"] = model
+        return _fake_llm_response(VALID_RUBRIC_CONTENT, model=model)
+
+    monkeypatch.setattr(
+        "reprompt_api.rubrics.complete_with_workspace_credentials", fake_complete_with_workspace_credentials
+    )
+
+    response = client.post(
+        f"/pipelines/{pipeline_id}/stages/{stage_id}/generate-rubric",
+        json={"model": "gpt-4o-mini"},
+        headers=_auth_headers(token),
+    )
+
+    assert response.status_code == 200, response.text
+    assert captured["model"] == "gpt-4o-mini"
+
+
+def test_auto_select_falls_back_to_no_key_models_before_any_byok_key(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No BYOK key configured at all - the workspace still has the no-key
+    local models available (per get_available_models/GET /settings/models
+    behavior), so auto-select must succeed rather than 422ing, picking one
+    of those."""
+    token, _ = _sign_in(client, "nokeyautoselect@example.com")
+    pipeline_id, stage_id = _import_pipeline_with_traces(client, outputs=["out1"])
+
+    captured: dict = {}
+
+    def fake_complete_with_workspace_credentials(db, workspace, model, messages, **kwargs):
+        captured["model"] = model
+        return _fake_llm_response(VALID_RUBRIC_CONTENT, model=model)
+
+    monkeypatch.setattr(
+        "reprompt_api.rubrics.complete_with_workspace_credentials", fake_complete_with_workspace_credentials
+    )
+
+    response = client.post(
+        f"/pipelines/{pipeline_id}/stages/{stage_id}/generate-rubric",
+        json={},
+        headers=_auth_headers(token),
+    )
+
+    assert response.status_code == 200, response.text
+    assert captured["model"] in {"ollama/llama3.1", "ollama/qwen2.5:14b"}
 
 
 # ---------------------------------------------------------------------------

@@ -63,6 +63,21 @@ being generated then discarded — see the dated section below for the full
 design. `packages/core` 290 passed, 2 skipped (286 + 4 new, additive only),
 `apps/api` 147 passed (143 + 4 new), `apps/web` 93 passed (90 + 3 new) +
 clean typecheck.
+**Model auto-selection for rubric generation [DONE — 2026-07-16]**: rubric
+generation no longer requires a caller-supplied model up front — see the
+dated section below for the full design (new `llm/model_select.py`, wired
+into `apps/api/src/reprompt_api/rubrics.py`, optional model field in the
+Rubrics tab). This is rubric-generation-only, not the optimizer's own
+judge-model selection (out of scope, untouched). Built in this worktree
+against a local baseline of `packages/core` 271 passed/21 skipped,
+`apps/api` 147 passed, `apps/web` 93 passed (this worktree's checkout
+predates Phase B/Project-ingestion's code landing here, even though their
+DEV_TRACKER entries above are already present from the shared doc — those
+two phases' actual code is only in their own worktrees pending hand-merge,
+not evaluated by this session). After this phase: `packages/core` 286
+passed/21 skipped (271 + 15 new), `apps/api` 151 passed (147 + 4 new, one
+existing test extended with two new assertions), `apps/web` 97 passed (93
++ 4 new) + clean typecheck.
 **Not started**: Phase 6 (final end-to-end manual verification).
 
 **Note for future sessions/developers**: each phase above updates
@@ -70,6 +85,129 @@ clean typecheck.
 `docs/TESTING.md` for anything screen/behavior-facing. Don't create a
 separate status doc; just flag completion inline in whichever `.md` file
 the change actually touches.
+
+## Model auto-selection for rubric generation [DONE — 2026-07-16]
+
+The gap: `packages/core/src/reprompt_core/rubric_generator.py`'s
+`generate_rubric` takes a required `generator_model` with no default (by
+design — same reasoning as `judge.judge_pairwise`'s `model` param), which
+meant `apps/api`'s rubric-generation endpoint and the Rubrics tab's
+"Generate all rubrics" button both required a human to type a model name
+before generating anything, every time, with no suggested default. Scope:
+rubric generation only — the optimizer loop
+(`packages/core/src/reprompt_core/optimizer/`) and its own judge-model
+selection are untouched, per the task brief.
+
+**`packages/core`**:
+- New `packages/core/src/reprompt_core/llm/model_select.py`:
+  `select_model(purpose: Literal["rubric_generation", "judge", "mutator"],
+  available_models: list[str], *, explicit: str | None = None) -> str`.
+  Deliberately simple, per the task's own "not a complex heuristic"
+  instruction: a hand-curated capability-tier table
+  (`_CAPABILITY_TIERS`/`_GENERAL_ANALYSIS_TIERS`, best tier first) ∩
+  `available_models`, cost as the tiebreak *within* a tier (ascending,
+  via `reprompt_core.llm.registry.get_model_capabilities` — never a second
+  hand-curated cost table), falling back to the cheapest available model
+  if nothing curated matches at all. `explicit` (when given) wins
+  immediately, before any of that runs, and is never checked against
+  `available_models` — "if the caller already chose a model, don't
+  second-guess it." Raises `NoAvailableModelError` (a `ValueError`
+  subclass) only when `explicit` is absent *and* `available_models` is
+  empty. Checked `llm/registry.py` first for existing capability-tier
+  metadata to build on (per the task brief) — it deliberately only exposes
+  cost/context-window/JSON-mode/tool-use facts pulled from LiteLLM (see its
+  own docstring), nothing resembling "how good is this model at analysis,"
+  so the tier table here is new, hand-curated data, not derived from
+  anything already in the registry.
+  All three declared purposes (`rubric_generation`/`judge`/`mutator`) share
+  one tier table today — same underlying question (strong reasoning +
+  strict instruction-following) — but the lookup is per-purpose so a future
+  split is a one-line addition, not a signature change. Only
+  `rubric_generation` is actually wired into a caller in this phase; the
+  other two purposes exist in the type/table but nothing calls
+  `select_model("judge"/"mutator", ...)` yet (that's the optimizer's own,
+  explicitly out-of-scope, existing model-selection path).
+- New `packages/core/tests/test_model_select.py` (15 new): explicit
+  override wins even against an empty/mismatched `available_models`,
+  best-available-tier selection, falling through to a lower tier when the
+  top tier isn't available, cost tiebreak within a tier (against real
+  registry pricing data, same convention as `test_llm_registry.py` — no
+  mocking), unknown-price-treated-as-free, no-tier-match cheapest-available
+  fallback, empty-available-and-no-explicit raises `NoAvailableModelError`,
+  and all three purposes select successfully end-to-end.
+  `packages/core`: **286 passed, 21 skipped** (271 + 15 new).
+
+**`apps/api`**:
+- `apps/api/src/reprompt_api/migrations.py`: extracted
+  `get_available_models(db, workspace) -> list[ModelOption]` out of
+  `reprompt_api.settings.list_configured_models` (the exact "curated
+  models ∩ this workspace's BYOK providers, plus every no-key-required
+  model unconditionally" logic already built for Settings' "Configured
+  models" section, per the task brief — reused, not duplicated).
+  `settings.py`'s `list_configured_models` now just calls this and no
+  longer computes the intersection inline; behavior is byte-for-byte
+  identical (same existing `test_settings.py` tests pass unchanged).
+- `apps/api/src/reprompt_api/rubrics.py`: `GenerateRubricIn.model` is now
+  `str | None = None` (was a required field). In
+  `generate_rubric_for_stage`, when `body.model` is falsy, the endpoint
+  calls `get_available_models(db, workspace)` (the workspace's real,
+  BYOK-filtered model list — never empty even with zero keys configured,
+  since local `ollama/...` models need none) then
+  `select_model("rubric_generation", available)`; `NoAvailableModelError`
+  maps to the same 422-pointing-at-`/settings` shape the missing-key path
+  already used, for the (currently unreachable given today's always-has-
+  local-models `CURATED_MODELS`, but still handled) case of a truly empty
+  list. An explicit `body.model` bypasses all of this exactly as before —
+  no behavior change for existing callers that already pass a model.
+  `RubricOut` gained `generated_with_model: str | None = None` — populated
+  only on the generate/regenerate endpoint's response (from
+  `RubricGenerationResult.model`, the model that actually produced the
+  accepted content), left `None` on every other response (list/patch/
+  approve) since it isn't persisted on the `Rubric` row — this is
+  deliberately a transient "what just happened" detail for the UI caption,
+  not new schema/migration surface, keeping the change additive-only.
+- `apps/api/tests/test_rubrics_generate.py` (4 new + 2 new assertions on
+  the existing success-path test): omitting `model` entirely auto-selects
+  and reports it back in `generated_with_model`; an explicit JSON `null`
+  behaves the same as omitting the key; an explicit model is never
+  second-guessed even when a cheaper/higher-tier option is configured;
+  auto-select still succeeds (falls back to a no-key local model) with
+  zero BYOK keys configured at all, rather than 422ing.
+  `apps/api`: **151 passed** (147 + 4 new).
+
+**Frontend**:
+- `apps/web/src/lib/api.ts`: `generateRubric(pipelineId, stageId, model?:
+  string)` — `model` is now optional; omits the `model` key from the
+  request body entirely (rather than sending `""`) so the server's
+  auto-select path fires. `RubricOut.generated_with_model?: string | null`
+  added, mirroring the backend field.
+- `apps/web/src/components/rubric-review-panel.tsx`: the model `Input` at
+  the top of the Rubrics tab is now genuinely optional — "Generate all
+  rubrics" no longer blocks with an error when it's blank (removed the
+  `"Enter a model name first..."` validation), and per-stage "Regenerate"
+  is no longer `disabled` on an empty field either (its tooltip now reads
+  "No model entered — one will be auto-selected" instead of demanding
+  input first). Each stage card's header now shows a small "— generated
+  using `<model>`" caption next to the stage id whenever
+  `rubric.generated_with_model` is set (i.e. right after that stage was
+  generated/regenerated in the current session) — exactly the "shown after
+  the fact, not required upfront" shape the task asked for. Empty-state
+  copy updated to describe auto-selection as the default path.
+- `apps/web/src/components/rubric-review-panel.test.tsx` (4 new): generates
+  successfully with a blank model field, asserting `generateRubric` is
+  called with `undefined` (not `""`) for the model; the "generated using
+  ..." caption renders when `generated_with_model` is set and is absent
+  when it isn't; the Regenerate button is enabled with a blank model field.
+  `apps/web`: **97 passed** (93 + 4 new) + clean `tsc --noEmit`.
+
+**Where this leaves things**: rubric generation now has a sensible default
+model choice end-to-end (core → API → UI), matching the pattern the task
+asked for without touching the optimizer's separate judge/mutator model
+selection. If a future phase wants `select_model("judge", ...)` or
+`select_model("mutator", ...)` actually wired into the optimizer, the
+function is already purpose-parameterized for that — no `model_select.py`
+changes needed, just a new call site (deliberately not built here, out of
+scope per the task brief).
 
 ## Phase 2 — Project/multi-run ingestion [DONE — 2026-07-16]
 

@@ -17,6 +17,7 @@ vi.mock("@/lib/api", () => ({
 import {
   approveAllRubrics,
   approveRubric,
+  generateRubric,
   getPipelineDag,
   listRubrics,
   updateRubric,
@@ -56,10 +57,12 @@ function renderPanel(pipelineId = 1) {
 }
 
 beforeEach(() => {
+  localStorage.clear();
   vi.mocked(listRubrics).mockReset();
   vi.mocked(updateRubric).mockReset();
   vi.mocked(approveRubric).mockReset();
   vi.mocked(approveAllRubrics).mockReset();
+  vi.mocked(generateRubric).mockReset();
   vi.mocked(getPipelineDag).mockReset();
   vi.mocked(getPipelineDag).mockResolvedValue({
     pipeline_id: 1,
@@ -176,5 +179,62 @@ describe("RubricReviewPanel", () => {
 
     expect(await screen.findByText("No rubrics yet")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Approve all" })).not.toBeInTheDocument();
+  });
+
+  it("generates rubrics with a blank model field — auto-selection is the default, not a blocker", async () => {
+    vi.mocked(listRubrics).mockResolvedValue([]);
+    vi.mocked(getPipelineDag).mockResolvedValue({
+      pipeline_id: 1,
+      layers: [],
+      stages: {
+        "10": {
+          id: 10,
+          name: "Extract",
+          model: "gpt-4o",
+          avg_tokens_in: null,
+          avg_tokens_out: null,
+          avg_latency_ms: null,
+        },
+      },
+      edges: [],
+    });
+    vi.mocked(generateRubric).mockResolvedValue(baseRubric({ generated_with_model: "claude-sonnet-4-5" }));
+
+    renderPanel();
+    await screen.findByText("No rubrics yet");
+
+    // No text typed into the model field at all.
+    fireEvent.click(screen.getByRole("button", { name: "Generate all rubrics" }));
+
+    await waitFor(() => {
+      expect(generateRubric).toHaveBeenCalledWith(1, 10, undefined);
+    });
+  });
+
+  it("shows a 'generated using <model>' caption after a rubric is generated", async () => {
+    const rubric = baseRubric({ generated_with_model: "claude-sonnet-4-5" });
+    vi.mocked(listRubrics).mockResolvedValue([rubric]);
+
+    renderPanel();
+
+    expect(await screen.findByText(/generated using claude-sonnet-4-5/i)).toBeInTheDocument();
+  });
+
+  it("does not show a 'generated using' caption when the rubric wasn't just generated", async () => {
+    vi.mocked(listRubrics).mockResolvedValue([baseRubric()]);
+
+    renderPanel();
+    await screen.findByText("Extract financials");
+
+    expect(screen.queryByText(/generated using/i)).not.toBeInTheDocument();
+  });
+
+  it("the Regenerate button is enabled even with a blank model field", async () => {
+    vi.mocked(listRubrics).mockResolvedValue([baseRubric()]);
+
+    renderPanel();
+    await screen.findByText("Extract financials");
+
+    expect(screen.getByRole("button", { name: "Regenerate" })).not.toBeDisabled();
   });
 });

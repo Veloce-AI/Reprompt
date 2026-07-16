@@ -161,6 +161,31 @@ def _to_option(model: str) -> ModelOption:
     )
 
 
+def get_available_models(db: Session, workspace: models.Workspace) -> list[ModelOption]:
+    """Every curated model ``workspace`` can actually target right now:
+    every model that needs no API key (local/self-hosted, e.g. Ollama) plus
+    every model whose provider has a BYOK key configured for this workspace.
+
+    Extracted out of ``reprompt_api.settings.list_configured_models`` (which
+    now calls this) so a second caller — ``reprompt_api.rubrics``'s
+    auto-select-a-model-when-none-given path — can compute the same
+    "what can this workspace actually use" set without duplicating the
+    BYOK-provider-intersection logic or importing a route handler.
+    """
+    configured_providers = {
+        row.provider
+        for row in db.scalars(
+            select(models.WorkspaceApiKey).where(models.WorkspaceApiKey.workspace_id == workspace.id)
+        ).all()
+    }
+    options = [_to_option(model) for model in CURATED_MODELS]
+    return [
+        option
+        for option in options
+        if not option.requires_api_key or option.provider in configured_providers
+    ]
+
+
 def _compute_stage_states(
     db_stages: list[models.Stage], migration: models.Migration
 ) -> dict[str, str]:

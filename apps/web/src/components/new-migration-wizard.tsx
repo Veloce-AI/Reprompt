@@ -77,6 +77,13 @@ export function NewMigrationWizard({
   const [budget, setBudget] = useState("");
   const [parityThresholdPercent, setParityThresholdPercent] = useState("95");
   const [modelCards, setModelCards] = useState<Record<string, ModelCardInfo | null>>({});
+  // Advanced, optional per-stage override - collapsed by default, most
+  // migrations never need it (see DEV_TRACKER.md's "Per-stage target model
+  // override" note). Keyed by stage db id (string, matching the DAG's own
+  // node ids); a stage with no entry here just uses `selectedModels` like
+  // every stage did before this section existed.
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [stageOverrides, setStageOverrides] = useState<Record<string, Set<string>>>({});
 
   const dagQuery = useQuery({
     queryKey: ["pipeline-dag", pipelineId],
@@ -113,10 +120,55 @@ export function NewMigrationWizard({
     });
   }
 
+  // A stage with no entry in `stageOverrides` yet reads as "= the global
+  // selection" - only becomes a real per-stage override once the user
+  // actually touches its checkboxes (seeded from the global selection at
+  // that moment, then diverges independently).
+  function toggleStageOverrideModel(stageId: string, model: string) {
+    setStageOverrides((prev) => {
+      const current = prev[stageId] ?? new Set(selectedModels);
+      const next = new Set(current);
+      if (next.has(model)) next.delete(model);
+      else next.add(model);
+      return { ...prev, [stageId]: next };
+    });
+  }
+
+  function stageModelsFor(stageId: string): Set<string> {
+    return stageOverrides[stageId] ?? selectedModels;
+  }
+
+  function setsEqual(a: Set<string>, b: Set<string>): boolean {
+    return a.size === b.size && [...a].every((v) => b.has(v));
+  }
+
+  // Only a stage whose selection actually diverges from the global default
+  // is worth sending - keeps "no customization" the common, clean payload
+  // (an untouched or reverted-back-to-default stage sends nothing), per
+  // the additive stage_overrides schema's own design.
+  const stageOverridesPayload: Record<string, string[]> = {};
+  for (const [stageId, models] of Object.entries(stageOverrides)) {
+    if (!setsEqual(models, selectedModels)) {
+      stageOverridesPayload[stageId] = [...models];
+    }
+  }
+  const hasEmptyStageOverride = Object.values(stageOverridesPayload).some(
+    (models) => models.length === 0
+  );
+  const stages = Object.values(dagQuery.data?.stages ?? {}).sort((a, b) => a.id - b.id);
+
   const migrationMutation = useMutation({
     mutationFn: () =>
       createMigration(pipelineId, {
-        target_model_config: { models: [...selectedModels] },
+        target_model_config: {
+          models: [...selectedModels],
+          // Omit the key entirely (not `{}`) when nothing was customized -
+          // keeps the common-case payload/stored shape identical to before
+          // this section existed.
+          ...(Object.keys(stageOverridesPayload).length > 0
+            ? { stage_overrides: stageOverridesPayload }
+            : {}),
+        },
         budget: Number(budget),
         parity_threshold: Number(parityThresholdPercent) / 100,
       }),
@@ -134,7 +186,7 @@ export function NewMigrationWizard({
 
   const budgetNumber = Number(budget);
   const parityNumber = Number(parityThresholdPercent);
-  const canContinueFromTargetModel = selectedModels.size > 0;
+  const canContinueFromTargetModel = selectedModels.size > 0 && !hasEmptyStageOverride;
   const canContinueFromBudget =
     budget.trim() !== "" &&
     Number.isFinite(budgetNumber) &&
@@ -293,6 +345,74 @@ export function NewMigrationWizard({
               )}
             </div>
 
+            {selectedModels.size > 0 && (
+              <div>
+                <button
+                  type="button"
+                  onClick={() => setShowAdvanced((v) => !v)}
+                  aria-expanded={showAdvanced}
+                  className="text-13 font-medium text-beam hover:underline"
+                >
+                  {showAdvanced ? "Hide advanced: customize per stage" : "Advanced: customize per stage"}
+                </button>
+                {showAdvanced && (
+                  <div className="mt-3 space-y-4 rounded-control border border-line p-4">
+                    <p className="text-12 text-ink-soft">
+                      Optional — override the target model(s) for individual stages. Every stage
+                      starts pre-selected with the models chosen above; a stage's selection is
+                      only sent as an override once it actually differs from that default.
+                    </p>
+                    {dagQuery.isLoading ? (
+                      <p className="text-13 text-ink-soft">Loading stages…</p>
+                    ) : (
+                      stages.map((stage) => {
+                        const stageId = String(stage.id);
+                        const stageModels = stageModelsFor(stageId);
+                        const isOverridden = stageId in stageOverridesPayload;
+                        return (
+                          <div
+                            key={stage.id}
+                            className="border-t border-line pt-3 first:border-t-0 first:pt-0"
+                          >
+                            <div className="mb-2 flex items-center gap-2 text-13 font-medium text-ink">
+                              <span>{stage.name}</span>
+                              {isOverridden && <Badge variant="pass">Customized</Badge>}
+                            </div>
+                            <div className="flex flex-wrap gap-3">
+                              {(modelsQuery.data ?? []).map((option) => {
+                                const checked = stageModels.has(option.model);
+                                return (
+                                  <label
+                                    key={option.model}
+                                    className="flex cursor-pointer items-center gap-1.5 text-12 text-ink"
+                                  >
+                                    <input
+                                      type="checkbox"
+                                      aria-label={`${option.model} for ${stage.name}`}
+                                      className="accent-beam"
+                                      checked={checked}
+                                      onChange={() => toggleStageOverrideModel(stageId, option.model)}
+                                    />
+                                    <span className="font-mono">{option.model}</span>
+                                  </label>
+                                );
+                              })}
+                            </div>
+                            {stageModels.size === 0 && (
+                              <p className="mt-1 text-12 text-parity-fail">
+                                Select at least one model for {stage.name}, or match it back to
+                                the default selection above to remove the override.
+                              </p>
+                            )}
+                          </div>
+                        );
+                      })
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+
             <div className="flex justify-end">
               <Button
                 variant="primary"
@@ -389,6 +509,26 @@ export function NewMigrationWizard({
                 The optimizer will try each model per stage and keep the best-scoring result.
               </p>
             </div>
+
+            {Object.keys(stageOverridesPayload).length > 0 && (
+              <div>
+                <h2 className="mb-2 text-13 font-medium text-ink">Per-stage overrides</h2>
+                <ul className="space-y-1">
+                  {Object.entries(stageOverridesPayload).map(([stageId, models]) => {
+                    const stageName =
+                      stages.find((s) => String(s.id) === stageId)?.name ?? `Stage ${stageId}`;
+                    return (
+                      <li key={stageId} className="text-13 text-ink">
+                        {stageName}: <span className="font-mono">{models.join(", ")}</span>
+                      </li>
+                    );
+                  })}
+                </ul>
+                <p className="mt-2 text-12 text-ink-soft">
+                  These stages use their own model list instead of the target models above.
+                </p>
+              </div>
+            )}
 
             <div>
               <h2 className="mb-2 text-13 font-medium text-ink">Budget & parity threshold</h2>

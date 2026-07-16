@@ -202,6 +202,155 @@ describe("NewMigrationWizard", () => {
     expect(screen.getByRole("button", { name: "Continue to review" })).toBeDisabled();
   });
 
+  it("sends a stage_overrides entry only for a stage whose per-stage selection was actually customized", async () => {
+    vi.mocked(getPipelineDag).mockResolvedValue(baseDag());
+    vi.mocked(listModelOptions).mockResolvedValue(baseModels());
+    vi.mocked(createMigration).mockResolvedValue({
+      id: 43,
+      pipeline_id: 1,
+      target_model_config: {
+        models: ["gpt-4o-mini"],
+        stage_overrides: { "11": ["claude-haiku-4-5"] },
+      },
+      budget: 25,
+      parity_threshold: 0.9,
+      status: "pending",
+      total_cost_usd: null,
+      stopped_early: false,
+      stop_reason: null,
+      progress_stage_name: null,
+      progress_current: null,
+      progress_total: null,
+      progress_substep: null,
+      activity_log: null,
+      completed_at: null,
+      stage_states: {},
+    });
+
+    const onCreated = vi.fn();
+    renderWizard(onCreated);
+
+    // Global selection: gpt-4o-mini only.
+    await screen.findByLabelText("gpt-4o-mini");
+    fireEvent.click(screen.getByLabelText("gpt-4o-mini"));
+
+    // Open the advanced section and customize only the "Summarize" stage
+    // (stage id 11) to use claude-haiku-4-5 instead of the global default.
+    fireEvent.click(screen.getByRole("button", { name: "Advanced: customize per stage" }));
+    await screen.findByLabelText("gpt-4o-mini for Summarize");
+
+    // Before any customization, every stage's boxes mirror the global pick.
+    expect(screen.getByLabelText("gpt-4o-mini for Extract")).toBeChecked();
+    expect(screen.getByLabelText("gpt-4o-mini for Summarize")).toBeChecked();
+
+    fireEvent.click(screen.getByLabelText("gpt-4o-mini for Summarize"));
+    fireEvent.click(screen.getByLabelText("claude-haiku-4-5 for Summarize"));
+
+    // "Extract" was never touched - still just mirrors the global default,
+    // and only "Summarize" (the stage actually customized) is flagged.
+    expect(screen.getByLabelText("gpt-4o-mini for Extract")).toBeChecked();
+    expect(screen.getAllByText("Customized")).toHaveLength(1);
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Continue to budget & parity threshold" })
+    );
+
+    await screen.findByLabelText("Budget");
+    fireEvent.change(screen.getByLabelText("Budget"), { target: { value: "25" } });
+    fireEvent.change(screen.getByLabelText("Parity threshold"), { target: { value: "90" } });
+    fireEvent.click(screen.getByRole("button", { name: "Continue to review" }));
+
+    await screen.findByRole("button", { name: "Run migration" });
+    expect(screen.getByText(/claude-haiku-4-5/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Run migration" }));
+
+    await waitFor(() => {
+      expect(createMigration).toHaveBeenCalledWith(1, {
+        target_model_config: {
+          models: ["gpt-4o-mini"],
+          stage_overrides: { "11": ["claude-haiku-4-5"] },
+        },
+        budget: 25,
+        parity_threshold: 0.9,
+      });
+    });
+  });
+
+  it("drops a stage's override once its selection is changed back to match the global default", async () => {
+    vi.mocked(getPipelineDag).mockResolvedValue(baseDag());
+    vi.mocked(listModelOptions).mockResolvedValue(baseModels());
+    vi.mocked(createMigration).mockResolvedValue({
+      id: 44,
+      pipeline_id: 1,
+      target_model_config: { models: ["gpt-4o-mini"] },
+      budget: 10,
+      parity_threshold: 0.95,
+      status: "pending",
+      total_cost_usd: null,
+      stopped_early: false,
+      stop_reason: null,
+      progress_stage_name: null,
+      progress_current: null,
+      progress_total: null,
+      progress_substep: null,
+      activity_log: null,
+      completed_at: null,
+      stage_states: {},
+    });
+
+    const onCreated = vi.fn();
+    renderWizard(onCreated);
+
+    await screen.findByLabelText("gpt-4o-mini");
+    fireEvent.click(screen.getByLabelText("gpt-4o-mini"));
+    fireEvent.click(screen.getByRole("button", { name: "Advanced: customize per stage" }));
+    await screen.findByLabelText("claude-haiku-4-5 for Extract");
+
+    // Customize, then revert back to exactly the global default.
+    fireEvent.click(screen.getByLabelText("claude-haiku-4-5 for Extract"));
+    expect(screen.getByText("Customized")).toBeInTheDocument();
+    fireEvent.click(screen.getByLabelText("claude-haiku-4-5 for Extract"));
+    expect(screen.queryByText("Customized")).not.toBeInTheDocument();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Continue to budget & parity threshold" })
+    );
+    await screen.findByLabelText("Budget");
+    fireEvent.change(screen.getByLabelText("Budget"), { target: { value: "10" } });
+    fireEvent.click(screen.getByRole("button", { name: "Continue to review" }));
+    await screen.findByRole("button", { name: "Run migration" });
+    fireEvent.click(screen.getByRole("button", { name: "Run migration" }));
+
+    await waitFor(() => {
+      // Reverted back to the default - no stage_overrides key sent at all,
+      // same bare shape as if Advanced had never been opened.
+      expect(createMigration).toHaveBeenCalledWith(1, {
+        target_model_config: { models: ["gpt-4o-mini"] },
+        budget: 10,
+        parity_threshold: 0.95,
+      });
+    });
+  });
+
+  it("blocks continuing when a customized stage is left with zero models selected", async () => {
+    vi.mocked(getPipelineDag).mockResolvedValue(baseDag());
+    vi.mocked(listModelOptions).mockResolvedValue(baseModels());
+
+    renderWizard(vi.fn());
+    await screen.findByLabelText("gpt-4o-mini");
+    fireEvent.click(screen.getByLabelText("gpt-4o-mini"));
+    fireEvent.click(screen.getByRole("button", { name: "Advanced: customize per stage" }));
+    await screen.findByLabelText("gpt-4o-mini for Extract");
+
+    // Uncheck the only model this stage had, leaving it empty.
+    fireEvent.click(screen.getByLabelText("gpt-4o-mini for Extract"));
+
+    expect(
+      screen.getByRole("button", { name: "Continue to budget & parity threshold" })
+    ).toBeDisabled();
+    expect(screen.getByText(/Select at least one model for Extract/)).toBeInTheDocument();
+  });
+
   it("displays model card transform rules when available", async () => {
     vi.mocked(getPipelineDag).mockResolvedValue(baseDag());
     vi.mocked(listModelOptions).mockResolvedValue(baseModels());

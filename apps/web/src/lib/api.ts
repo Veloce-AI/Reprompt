@@ -172,6 +172,15 @@ export interface ModelOption {
 
 export interface TargetModelConfig {
   models: string[];
+  judge_model?: string | null;
+  mutator_model?: string | null;
+  // Optional advanced per-stage override: stage db id (as a string) -> its
+  // own candidate model list, replacing `models` for that stage only.
+  // Stages not present here still use `models`. Omit entirely (don't send
+  // `{}`) when the user hasn't customized any stage - see
+  // new-migration-wizard.tsx's "Advanced: customize per stage" section and
+  // DEV_TRACKER.md's "Per-stage target model override" note.
+  stage_overrides?: Record<string, string[]>;
 }
 
 export interface MigrationCreate {

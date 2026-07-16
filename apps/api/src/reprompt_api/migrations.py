@@ -9,21 +9,29 @@ job; ``Migration.status`` is created as ``"pending"`` and stays there.
 
 ``target_model_config`` JSON shape
 -----------------------------------
-Matches the shape already documented as an example in ``models.py``::
+Current shape (see ``TargetModelConfig`` below for the full field list,
+including ``judge_model``/``mutator_model``)::
 
     {
-        "default": "gpt-4o-mini",
-        "stages": {"3": "gemini/gemini-2.0-flash"}
+        "models": ["gpt-4o-mini", "claude-haiku-4-5"],
+        "stage_overrides": {"3": ["gemini/gemini-2.0-flash"]}
     }
 
-* ``default`` — the bulk-set model string (a LiteLLM model id), applied to
-  every stage that has no override.
-* ``stages`` — optional per-stage overrides, keyed by the stage's **database
-  id** (as a string, since JSON object keys are always strings) mapping to a
-  LiteLLM model string. Every key must reference a stage that belongs to
-  this pipeline — a stage id from a different pipeline (or one that doesn't
-  exist at all) is rejected with a 422 that names the offending id(s), not
-  silently accepted or 500'd.
+* ``models`` — the bulk/default candidate model list: the optimizer tries
+  every model here against every stage that has no override, keeping the
+  best-scoring result per stage. This is the simple path most migrations
+  use as-is.
+* ``stage_overrides`` — optional, additive per-stage advanced override,
+  keyed by the stage's **database id** (as a string, since JSON object keys
+  are always strings) mapping to that stage's own candidate model list,
+  which *replaces* ``models`` for that stage only — stages not present here
+  keep using ``models`` unchanged. Every key must reference a stage that
+  belongs to this pipeline — a stage id from a different pipeline (or one
+  that doesn't exist at all) is rejected with a 422 that names the
+  offending id(s), not silently accepted or 500'd. See DEV_TRACKER.md's
+  "Per-stage target model override" note for why this was re-added on top
+  of the flat ``models`` shape rather than reverting to the older
+  ``{"default", "stages"}`` shape it replaced.
 
 Model picker data source
 -------------------------
@@ -45,7 +53,7 @@ from __future__ import annotations
 import datetime
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -99,7 +107,16 @@ class TargetModelConfig(BaseModel):
     silently grades or refines its own output. When omitted, both are
     auto-selected independently from the workspace's available models — see
     ``optimizer_runner.py`` and DEV_TRACKER.md's "Fix judge/mutator
-    self-grading bias" section."""
+    self-grading bias" section.
+
+    ``stage_overrides`` is an optional, additive advanced knob re-added on
+    top of the flat ``models`` shape (see DEV_TRACKER.md's "Per-stage target
+    model override" note): a stage present here tries only its own model
+    list instead of ``models``; a stage absent here is unaffected. Existing
+    migrations created before this field existed keep round-tripping the
+    same bare ``{"models": [...]}`` shape (``exclude_none``/omitted-key
+    handling at the create endpoint, same convention as
+    ``judge_model``/``mutator_model``)."""
 
     models: list[str] = Field(min_length=1)
     judge_model: str | None = Field(
@@ -118,6 +135,30 @@ class TargetModelConfig(BaseModel):
             "models, independent of `models` above."
         ),
     )
+    stage_overrides: dict[str, list[str]] | None = Field(
+        default=None,
+        description=(
+            "Optional per-stage override: maps a stage's database id (as a string) "
+            "to its own candidate model list, replacing `models` for that stage "
+            "only. Stages not present here still use `models`. Keys must reference "
+            "a real stage belonging to this pipeline (validated at creation time)."
+        ),
+    )
+
+    @field_validator("stage_overrides")
+    @classmethod
+    def _stage_overrides_lists_nonempty(
+        cls, value: dict[str, list[str]] | None
+    ) -> dict[str, list[str]] | None:
+        if value is None:
+            return value
+        empty = [stage_id for stage_id, models_ in value.items() if not models_]
+        if empty:
+            raise ValueError(
+                f"stage_overrides entries must list at least one model — empty for "
+                f"stage id(s): {', '.join(sorted(empty))}"
+            )
+        return value
 
 
 class MigrationCreate(BaseModel):
@@ -342,6 +383,24 @@ def create_migration(
     start anything — see module docstring. Status is always "pending".
     """
     _get_pipeline_or_404(db, pipeline_id)
+
+    stage_overrides = migration_in.target_model_config.stage_overrides
+    if stage_overrides:
+        valid_stage_ids = {
+            str(stage_id)
+            for stage_id in db.scalars(
+                select(models.Stage.id).where(models.Stage.pipeline_id == pipeline_id)
+            ).all()
+        }
+        unknown = sorted(set(stage_overrides) - valid_stage_ids)
+        if unknown:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"target_model_config.stage_overrides references stage id(s) not "
+                    f"in pipeline {pipeline_id}: {', '.join(unknown)}"
+                ),
+            )
 
     migration = models.Migration(
         pipeline_id=pipeline_id,

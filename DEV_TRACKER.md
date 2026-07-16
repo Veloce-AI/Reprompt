@@ -175,6 +175,19 @@ docs/committing — code was verified green and committed by the main
 session; `docs/TESTING.md` click-path for the per-stage section is still
 owed (next session: add it, the feature itself is fully tested — apps/api
 177 passed incl. 9 new, apps/web 130 passed incl. 8 new on merged master).
+**"Settings STILL empty" — definitive root cause: ghost dev server serving
+pre-fix code [SOLVED — 2026-07-16]**: the owner's report after the fixes
+merged was real but was never a code bug — the browser was talking to an
+orphaned uvicorn worker (spawned 12:41, before the merge) that survived its
+parent's death and kept serving the pre-fix backend; netstat blamed the
+dead parent's PID (unkillable "ghost"), but the orphan itself was findable
+and killable via WMI command-line match. Proven by the stale process's own
+`/openapi.json`: 27 paths, **no `/settings/system-models`** — vs 29 paths
+including it after a real restart. Port 8000 was recovered (no port change
+needed). New `scripts/dev-restart.ps1` does the reliable
+kill-by-commandline → verify-ports-free → fresh-start → serving-current-code
+health check in one command; `docs/TESTING.md` §2 now leads with it. See
+the dated section below.
 **Not started**: Phase 6 (final end-to-end manual verification).
 
 **Note for future sessions/developers**: each phase above updates
@@ -182,6 +195,61 @@ owed (next session: add it, the feature itself is fully tested — apps/api
 `docs/TESTING.md` for anything screen/behavior-facing. Don't create a
 separate status doc; just flag completion inline in whichever `.md` file
 the change actually touches.
+
+## Ghost dev-server root cause — "Settings STILL empty" [SOLVED — 2026-07-16]
+
+The product owner reported Settings still empty *after* the fixes
+(root error boundary, System models card, `GET /settings/system-models`)
+were verifiably merged to master. Root cause found and proven — not a code
+bug, and not "works for me":
+
+**Evidence trail (all commands run 2026-07-16 ~22:30):**
+1. `netstat -ano` showed port 8000 LISTENING, owned by PID **32756** — but
+   `Get-Process -Id 32756` says that PID **does not exist**. The classic
+   ghost socket this repo's `stop.sh` header already documents.
+2. The ghost still served requests: `GET http://localhost:8000/openapi.json`
+   returned **27 paths with no `/settings/system-models`** — i.e. the
+   owner's browser was hitting a **pre-fix backend**. That's the smoking
+   gun: the frontend (Vite, live process, serves current disk files) called
+   the new endpoint, got 404s/stale shapes, and Settings looked broken
+   regardless of what was merged.
+3. WMI (`Get-CimInstance Win32_Process`) found the ghost's real body: PID
+   25076, `python.exe -c "from multiprocessing.spawn import spawn_main;
+   spawn_main(parent_pid=32756, ...)"`, created **12:41** — spawned by a
+   long-dead uvicorn reloader parent (32756, the PID netstat still blamed)
+   *before* the fixes landed. A second orphan (PID 12664, parent 34948) and
+   a leftover worktree vite were also found and killed.
+4. `Stop-Process` on the orphan (by its real PID, found via command line —
+   never via netstat's PID column) freed port 8000 immediately. **No port
+   change was needed** — 8000/5173 stay the dev ports.
+5. Fresh servers: `/openapi.json` now returns **29 paths including
+   `/settings/system-models`**, and an authenticated request (dev
+   magic-link flow → `Authorization: Bearer <session_token>`) to
+   `GET /settings/system-models` returns real data — all three purposes
+   (`rubric_generation`/`judge`/`mutator`) with a selected model.
+
+**Mechanism (why this keeps happening):** uvicorn `--reload` on Windows
+spawns its worker via `multiprocessing`. Killing/closing the parent does
+not cascade to the child; the orphan keeps the port and the *old code*
+loaded in memory. Later "restarts" fail to bind (or die silently), and the
+browser keeps talking to the orphan — so every fix ever merged looks like
+it didn't ship. netstat reporting the dead parent's PID makes the orphan
+look unkillable, which is why previous sessions concluded "ghost socket,
+gave up" (see the "Product owner report" section below).
+
+**Permanent fix:** new `scripts/dev-restart.ps1` — kills all dev-server
+processes by WMI command-line match (uvicorn reloader, its
+`multiprocessing.spawn` orphans, this repo's vite; deliberately never
+matches vitest or pytest), verifies both ports are genuinely free (with an
+explicit orphan hunt if a ghost listener remains), starts fresh servers via
+the same terminal-window pattern as `start.sh`, then polls until the API
+provably serves a **current-code** route (`/settings/system-models` in the
+openapi spec) — so "restarted but still stale" can never silently pass
+again. Script was tested end-to-end twice this session (first run caught
+two script bugs: its vite pattern also matched a running vitest process,
+and a 30s health timeout was too tight when another `uv` process holds the
+venv lock — both fixed). `docs/TESTING.md` §2 now tells the owner to always
+restart via this script and hard-refresh after.
 
 ## Canvas tab live migration overlay [DONE — 2026-07-16]
 

@@ -147,6 +147,29 @@ upgrade head` again (not just `rm` + start the API — see the "Database"
 step in §1.3 for why letting the API's own auto-create rebuild it instead
 causes a later `alembic upgrade head` to fail).
 
+### Restarting — ALWAYS use the restart script on Windows
+
+```powershell
+# From repo root — kills every old dev-server process (including ghosts),
+# starts fresh ones, and health-checks that the API is serving CURRENT code:
+powershell -ExecutionPolicy Bypass -File scripts\dev-restart.ps1
+```
+
+**Why this matters (confirmed 2026-07-16, root of the "Settings is still
+empty" report)**: on Windows, uvicorn `--reload`'s real worker is a child
+python process. If the parent terminal dies without a clean stop, that
+worker survives as an orphan that keeps port 8000 and keeps serving
+**whatever code existed when it started** — for hours or days. You then
+"restart the server", the new uvicorn fails to bind (port busy) or you
+never notice it didn't, and your browser keeps talking to the stale
+orphan: new features look missing, fixed bugs look unfixed. `netstat`
+makes it worse by blaming the *dead parent's* PID, so
+`Stop-Process -Id <that pid>` says "Cannot find a process" while the port
+stays held (the "ghost socket"). `scripts/dev-restart.ps1` kills the
+orphan by matching its command line via WMI instead, and refuses to
+declare success until the fresh API provably serves a current-code route.
+After any restart, hard-refresh the browser (`Ctrl+Shift+R`).
+
 ## 3. How to navigate — the full screen map
 
 ```

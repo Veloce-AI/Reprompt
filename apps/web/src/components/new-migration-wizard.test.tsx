@@ -13,10 +13,24 @@ vi.mock("@/lib/api", async () => {
     listModelOptions: vi.fn(),
     createMigration: vi.fn(),
     getModelCard: vi.fn(),
+    listApiKeys: vi.fn(),
+    addApiKey: vi.fn(),
   };
 });
 
-import { createMigration, getPipelineDag, listModelOptions, getModelCard } from "@/lib/api";
+import {
+  addApiKey,
+  createMigration,
+  getPipelineDag,
+  listApiKeys,
+  listModelOptions,
+  getModelCard,
+} from "@/lib/api";
+import type { ApiKeyOut } from "@/lib/api";
+
+function keyFor(provider: string, id = 1): ApiKeyOut {
+  return { id, provider, last_four: "abcd", created_at: "2026-01-15T12:00:00Z" };
+}
 
 function baseDag(): DagResponse {
   return {
@@ -108,6 +122,12 @@ beforeEach(() => {
   vi.mocked(listModelOptions).mockReset();
   vi.mocked(createMigration).mockReset();
   vi.mocked(getModelCard).mockReset();
+  vi.mocked(listApiKeys).mockReset();
+  vi.mocked(addApiKey).mockReset();
+  // Default: keys exist for both providers baseModels() uses, so every
+  // pre-existing test sees the wizard exactly as it behaved before the
+  // locked-model states existed. Lock-specific tests override this.
+  vi.mocked(listApiKeys).mockResolvedValue([keyFor("openai", 1), keyFor("anthropic", 2)]);
 });
 
 describe("NewMigrationWizard", () => {
@@ -206,6 +226,155 @@ describe("NewMigrationWizard", () => {
     expect(screen.getByRole("button", { name: "Continue to review" })).toBeDisabled();
   });
 
+  it("sends a stage_overrides entry only for a stage whose per-stage selection was actually customized", async () => {
+    vi.mocked(getPipelineDag).mockResolvedValue(baseDag());
+    vi.mocked(listModelOptions).mockResolvedValue(baseModels());
+    vi.mocked(createMigration).mockResolvedValue({
+      id: 43,
+      pipeline_id: 1,
+      target_model_config: {
+        models: ["gpt-4o-mini"],
+        stage_overrides: { "11": ["claude-haiku-4-5"] },
+      },
+      budget: 25,
+      parity_threshold: 0.9,
+      status: "pending",
+      total_cost_usd: null,
+      stopped_early: false,
+      stop_reason: null,
+      progress_stage_name: null,
+      progress_current: null,
+      progress_total: null,
+      progress_substep: null,
+      activity_log: null,
+      completed_at: null,
+      stage_states: {},
+    });
+
+    const onCreated = vi.fn();
+    renderWizard(onCreated);
+
+    // Global selection: gpt-4o-mini only.
+    await screen.findByLabelText("gpt-4o-mini");
+    fireEvent.click(screen.getByLabelText("gpt-4o-mini"));
+
+    // Open the advanced section and customize only the "Summarize" stage
+    // (stage id 11) to use claude-haiku-4-5 instead of the global default.
+    fireEvent.click(screen.getByRole("button", { name: "Advanced: customize per stage" }));
+    await screen.findByLabelText("gpt-4o-mini for Summarize");
+
+    // Before any customization, every stage's boxes mirror the global pick.
+    expect(screen.getByLabelText("gpt-4o-mini for Extract")).toBeChecked();
+    expect(screen.getByLabelText("gpt-4o-mini for Summarize")).toBeChecked();
+
+    fireEvent.click(screen.getByLabelText("gpt-4o-mini for Summarize"));
+    fireEvent.click(screen.getByLabelText("claude-haiku-4-5 for Summarize"));
+
+    // "Extract" was never touched - still just mirrors the global default,
+    // and only "Summarize" (the stage actually customized) is flagged.
+    expect(screen.getByLabelText("gpt-4o-mini for Extract")).toBeChecked();
+    expect(screen.getAllByText("Customized")).toHaveLength(1);
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Continue to budget & parity threshold" })
+    );
+
+    await screen.findByLabelText("Budget");
+    fireEvent.change(screen.getByLabelText("Budget"), { target: { value: "25" } });
+    fireEvent.change(screen.getByLabelText("Parity threshold"), { target: { value: "90" } });
+    fireEvent.click(screen.getByRole("button", { name: "Continue to review" }));
+
+    await screen.findByRole("button", { name: "Run migration" });
+    expect(screen.getByText(/claude-haiku-4-5/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Run migration" }));
+
+    await waitFor(() => {
+      expect(createMigration).toHaveBeenCalledWith(1, {
+        target_model_config: {
+          models: ["gpt-4o-mini"],
+          stage_overrides: { "11": ["claude-haiku-4-5"] },
+        },
+        budget: 25,
+        parity_threshold: 0.9,
+      });
+    });
+  });
+
+  it("drops a stage's override once its selection is changed back to match the global default", async () => {
+    vi.mocked(getPipelineDag).mockResolvedValue(baseDag());
+    vi.mocked(listModelOptions).mockResolvedValue(baseModels());
+    vi.mocked(createMigration).mockResolvedValue({
+      id: 44,
+      pipeline_id: 1,
+      target_model_config: { models: ["gpt-4o-mini"] },
+      budget: 10,
+      parity_threshold: 0.95,
+      status: "pending",
+      total_cost_usd: null,
+      stopped_early: false,
+      stop_reason: null,
+      progress_stage_name: null,
+      progress_current: null,
+      progress_total: null,
+      progress_substep: null,
+      activity_log: null,
+      completed_at: null,
+      stage_states: {},
+    });
+
+    const onCreated = vi.fn();
+    renderWizard(onCreated);
+
+    await screen.findByLabelText("gpt-4o-mini");
+    fireEvent.click(screen.getByLabelText("gpt-4o-mini"));
+    fireEvent.click(screen.getByRole("button", { name: "Advanced: customize per stage" }));
+    await screen.findByLabelText("claude-haiku-4-5 for Extract");
+
+    // Customize, then revert back to exactly the global default.
+    fireEvent.click(screen.getByLabelText("claude-haiku-4-5 for Extract"));
+    expect(screen.getByText("Customized")).toBeInTheDocument();
+    fireEvent.click(screen.getByLabelText("claude-haiku-4-5 for Extract"));
+    expect(screen.queryByText("Customized")).not.toBeInTheDocument();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Continue to budget & parity threshold" })
+    );
+    await screen.findByLabelText("Budget");
+    fireEvent.change(screen.getByLabelText("Budget"), { target: { value: "10" } });
+    fireEvent.click(screen.getByRole("button", { name: "Continue to review" }));
+    await screen.findByRole("button", { name: "Run migration" });
+    fireEvent.click(screen.getByRole("button", { name: "Run migration" }));
+
+    await waitFor(() => {
+      // Reverted back to the default - no stage_overrides key sent at all,
+      // same bare shape as if Advanced had never been opened.
+      expect(createMigration).toHaveBeenCalledWith(1, {
+        target_model_config: { models: ["gpt-4o-mini"] },
+        budget: 10,
+        parity_threshold: 0.95,
+      });
+    });
+  });
+
+  it("blocks continuing when a customized stage is left with zero models selected", async () => {
+    vi.mocked(getPipelineDag).mockResolvedValue(baseDag());
+    vi.mocked(listModelOptions).mockResolvedValue(baseModels());
+
+    renderWizard(vi.fn());
+    await screen.findByLabelText("gpt-4o-mini");
+    fireEvent.click(screen.getByLabelText("gpt-4o-mini"));
+    fireEvent.click(screen.getByRole("button", { name: "Advanced: customize per stage" }));
+    await screen.findByLabelText("gpt-4o-mini for Extract");
+
+    // Uncheck the only model this stage had, leaving it empty.
+    fireEvent.click(screen.getByLabelText("gpt-4o-mini for Extract"));
+
+    expect(
+      screen.getByRole("button", { name: "Continue to budget & parity threshold" })
+    ).toBeDisabled();
+    expect(screen.getByText(/Select at least one model for Extract/)).toBeInTheDocument();
+  });
+
   it("displays model card transform rules when available", async () => {
     vi.mocked(getPipelineDag).mockResolvedValue(baseDag());
     vi.mocked(listModelOptions).mockResolvedValue(baseModels());
@@ -231,5 +400,72 @@ describe("NewMigrationWizard", () => {
     expect(rules.length).toBeGreaterThanOrEqual(1);
     const descriptions = screen.getAllByText(/A test rule/);
     expect(descriptions.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("shows key-requiring models locked (visible but disabled) when their provider has no key", async () => {
+    vi.mocked(getPipelineDag).mockResolvedValue(baseDag());
+    vi.mocked(listModelOptions).mockResolvedValue(baseModels());
+    vi.mocked(getModelCard).mockRejectedValue(new Error("skip"));
+    // Only openai has a key - the anthropic model should be locked.
+    vi.mocked(listApiKeys).mockResolvedValue([keyFor("openai")]);
+
+    renderWizard(vi.fn());
+
+    const anthropicCheckbox = await screen.findByLabelText("claude-haiku-4-5");
+    await waitFor(() => expect(anthropicCheckbox).toBeDisabled());
+    expect(screen.getByLabelText("gpt-4o-mini")).toBeEnabled();
+    // Locked models stay discoverable, with an inline unlock affordance.
+    expect(screen.getByText("API key required")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Add API key" })).toBeInTheDocument();
+  });
+
+  it("never locks models that require no API key, even with zero keys configured", async () => {
+    vi.mocked(getPipelineDag).mockResolvedValue(baseDag());
+    vi.mocked(listModelOptions).mockResolvedValue([
+      {
+        ...baseModels()[0],
+        model: "ollama/llama3.1",
+        provider: "ollama",
+        requires_api_key: false,
+      },
+    ]);
+    vi.mocked(getModelCard).mockRejectedValue(new Error("skip"));
+    vi.mocked(listApiKeys).mockResolvedValue([]);
+
+    renderWizard(vi.fn());
+
+    expect(await screen.findByLabelText("ollama/llama3.1")).toBeEnabled();
+    expect(screen.queryByText("API key required")).not.toBeInTheDocument();
+  });
+
+  it("adds a key inline and unlocks the model without leaving the wizard", async () => {
+    vi.mocked(getPipelineDag).mockResolvedValue(baseDag());
+    vi.mocked(listModelOptions).mockResolvedValue(baseModels());
+    vi.mocked(getModelCard).mockRejectedValue(new Error("skip"));
+    // First fetch: no anthropic key. After the add succeeds and the query is
+    // invalidated, the refetch returns the new key - unlocking the model.
+    vi.mocked(listApiKeys)
+      .mockResolvedValueOnce([keyFor("openai")])
+      .mockResolvedValue([keyFor("openai", 1), keyFor("anthropic", 2)]);
+    vi.mocked(addApiKey).mockResolvedValue(keyFor("anthropic", 2));
+
+    renderWizard(vi.fn());
+
+    const anthropicCheckbox = await screen.findByLabelText("claude-haiku-4-5");
+    await waitFor(() => expect(anthropicCheckbox).toBeDisabled());
+
+    fireEvent.click(screen.getByRole("button", { name: "Add API key" }));
+    // The drawer portals outside the render root - query via document.
+    const keyInput = await screen.findByLabelText("API key");
+    fireEvent.change(keyInput, { target: { value: "sk-ant-test-key-000000000000" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save key & unlock models" }));
+
+    await waitFor(() => {
+      expect(addApiKey).toHaveBeenCalledWith("anthropic", "sk-ant-test-key-000000000000");
+    });
+    // Invalidation refetches the keys and the model unlocks in place.
+    await waitFor(() => expect(screen.getByLabelText("claude-haiku-4-5")).toBeEnabled());
+    fireEvent.click(screen.getByLabelText("claude-haiku-4-5"));
+    expect(screen.getByLabelText("claude-haiku-4-5")).toBeChecked();
   });
 });

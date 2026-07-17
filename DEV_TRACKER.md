@@ -8,7 +8,16 @@ accurate so anyone (human or AI) can pick this up cold without
 re-deriving context. Read `START_HERE.md` first if you haven't — it
 points here plus the rest of the docs in reading order.
 
-Last updated: 2026-07-16.
+Last updated: 2026-07-17.
+
+**Edit button for inline pipeline rename [DONE — 2026-07-16]**: Added an
+explicit pencil/edit icon button next to the delete icon in the Pipelines
+home list's action-icon area, triggering the same inline-rename behavior
+that already existed via click-on-name. No new rename logic — reuses existing
+`startEditingName` callback and state management. `apps/web` test suite:
+2 new tests (edit button renders per pipeline row, clicking it triggers the
+rename input with correct initial value), final: **99 passed** + clean
+`tsc --noEmit`.
 
 ## Current state (one paragraph)
 
@@ -100,6 +109,105 @@ the full design, plus a real schema gap (`judge_model` wasn't actually an
 accepted field on `TargetModelConfig`, so the override was dead code) and a
 circular-import fix found along the way. `apps/api` 165 passed (160 + 5
 new), `packages/core` untouched (305 passed, 2 skipped).
+**Product owner report investigated — "Canvas has nothing in it, Settings
+is empty, no rename" [FIXED — 2026-07-16]**: two of the three complaints
+didn't reproduce against current code (Settings' "Configured models" card
+and the pipeline-workspace Canvas route both work when actually driven in
+a browser); the third was a real CSS layout bug that made the Canvas
+tab's DAG genuinely invisible (correct data, zero-height viewport) despite
+looking fine in unit tests — see the dated section below for the full
+root-cause trace and fix. Inline rename was also added to the Pipelines
+home list itself (previously only in the workspace header, one click
+deeper than where the report said to look). `apps/web` 117 passed
+(unchanged - jsdom doesn't do real CSS layout, so this bug and its fix are
+both invisible to Vitest either way) + clean `tsc --noEmit`, `apps/api`
+165 passed (untouched), `packages/core` untouched.
+**Canvas tab live migration overlay [DONE — 2026-07-16]**: the main Canvas
+tab (`pipeline-workspace.tsx`, the default landing tab) now shows the same
+live per-stage coloring/pulsing/sub-step signal the Migrations tab's
+embedded canvas already had, whenever a migration is running in the
+background — previously it always rendered a static, uncolored DAG
+regardless — see the dated section below for the full design (a shared
+`useMigrationStatusPoll` hook, a lightweight conditional list-check, and a
+"Migration running" pill). `apps/web` 121 passed (117 + 4 new) + clean
+`tsc --noEmit`, `apps/api`/`packages/core` untouched.
+**Settings empty-page perception fix + System models visibility [DONE —
+2026-07-16]**: re-investigated the product owner's "Settings is empty"
+report (a follow-up task, separate from the "Canvas has nothing in it"
+investigation directly above, which had already concluded "Configured
+models" renders fine on the happy path but hadn't tested unauthenticated/
+zero-key states or crash resilience) — none of the three real states
+(unauthenticated, signed-in with zero BYOK keys, signed-in with a key)
+actually render blank when driven live via Playwright against real dev
+servers, but the app had **zero React error boundaries anywhere**, so any
+uncaught render exception on any route (e.g. a hand-merge introducing a
+frontend/backend shape mismatch — a real, live risk given this project's
+several-worktrees-then-hand-merge workflow) fell through to the router's
+bare, unstyled default error text with no nav or branding, which is
+visually indistinguishable from a blank page in a quick screenshot. Fixed
+by adding a root-level `errorComponent` (new
+`apps/web/src/components/route-error-fallback.tsx`, wired in
+`router.tsx`) that renders inside the app's own `AppShell` (nav stays
+usable) instead, plus defensive optional-chaining in
+`ConfiguredModelsCard`'s `model_card` usage so the one realistic shape-drift
+case doesn't even reach the boundary. Separately, made judge/mutator/
+rubric-generation auto-selection (fixed in code by commit `128bc94`, per
+that commit's own note "No UI surfaces the effective/overridden judge or
+mutator model yet") visible: new read-only "System models" card in
+Settings, backed by a new `GET /settings/system-models` endpoint that calls
+the exact same `select_model()` apps/api's real run paths use. See the
+dated section below for the full design, root-cause trace, and the
+Playwright evidence (including a deliberately-injected malformed API
+response proving the crash-to-fallback path actually works). `apps/api`
+**168 passed** (165 + 3 new), `apps/web` **119 passed** (117 + 2 new) +
+clean `tsc --noEmit`, `packages/core` untouched (**286 passed, 21
+skipped**, this worktree's own environment-dependent skip count — see
+Phase 1's note on why that number varies by machine).
+**Per-stage target-model overrides + migration CTA [DONE — 2026-07-16]**:
+`TargetModelConfig` gains optional `stage_overrides: {stage_id: [models]}`
+— pin specific model(s) per stage, other stages keep the global `models`
+list (`optimizer_runner._get_target_models_for_stage` resolves override
+first). Wizard gains an "Advanced: customize per stage" disclosure
+(pre-filled with the global selection, only diffs submitted), and the
+Migrations tab shows a prominent "+ Start a migration" CTA when none
+exists. Note: the agent building this hit a session limit before writing
+docs/committing — code was verified green and committed by the main
+session; `docs/TESTING.md` click-path for the per-stage section is still
+owed (next session: add it, the feature itself is fully tested — apps/api
+177 passed incl. 9 new, apps/web 130 passed incl. 8 new on merged master).
+**"Settings STILL empty" — definitive root cause: ghost dev server serving
+pre-fix code [SOLVED — 2026-07-16]**: the owner's report after the fixes
+merged was real but was never a code bug — the browser was talking to an
+orphaned uvicorn worker (spawned 12:41, before the merge) that survived its
+parent's death and kept serving the pre-fix backend; netstat blamed the
+dead parent's PID (unkillable "ghost"), but the orphan itself was findable
+and killable via WMI command-line match. Proven by the stale process's own
+`/openapi.json`: 27 paths, **no `/settings/system-models`** — vs 29 paths
+including it after a real restart. Port 8000 was recovered (no port change
+needed). New `scripts/dev-restart.ps1` does the reliable
+kill-by-commandline → verify-ports-free → fresh-start → serving-current-code
+health check in one command; `docs/TESTING.md` §2 now leads with it. See
+the dated section below.
+**Fix overlapping stage node text [DONE — 2026-07-17]**: the product owner
+reported stage nodes' text overlapping on the Canvas — reproduced live with
+Playwright (import `packages/core/tests/fixtures/mixed_12stage.json`,
+12 stages, long names/models, across both layout presets and both
+orientations). Root cause was inter-node spacing, not internal card text
+(the name/model text already truncate with a `title` tooltip): the grid and
+layered layout algorithms in `apps/web/src/lib/canvas-layout.ts` used one
+`CROSS_GAP` (190px, tuned for a card's ~150-175px height) for the cross axis
+regardless of orientation, but in **vertical** orientation the cross axis
+runs left-to-right, where cards are 224px wide (`w-56`) — so cards packed
+only 190px apart overlapped directly, borders and text colliding across
+node boundaries. Fixed by splitting into `CROSS_GAP_HORIZONTAL` (190,
+unchanged) and `CROSS_GAP_VERTICAL` (280, matching the width-tuned
+`MAIN_GAP`), picked via a new `crossGapFor(orientation)` helper; horizontal
+orientation's layout is byte-for-byte unchanged. `canvas-layout.test.ts`'s
+two "swaps axes" tests updated to reflect the now-intentionally-different
+cross gap per orientation instead of asserting a literal axis swap.
+`apps/web` **149 passed** (unchanged count — no new tests added, existing
+coverage updated in place) + clean `tsc --noEmit`. `apps/api`/
+`packages/core` untouched.
 **Not started**: Phase 6 (final end-to-end manual verification).
 
 **Note for future sessions/developers**: each phase above updates
@@ -107,6 +215,403 @@ new), `packages/core` untouched (305 passed, 2 skipped).
 `docs/TESTING.md` for anything screen/behavior-facing. Don't create a
 separate status doc; just flag completion inline in whichever `.md` file
 the change actually touches.
+
+## Ghost dev-server root cause — "Settings STILL empty" [SOLVED — 2026-07-16]
+
+The product owner reported Settings still empty *after* the fixes
+(root error boundary, System models card, `GET /settings/system-models`)
+were verifiably merged to master. Root cause found and proven — not a code
+bug, and not "works for me":
+
+**Evidence trail (all commands run 2026-07-16 ~22:30):**
+1. `netstat -ano` showed port 8000 LISTENING, owned by PID **32756** — but
+   `Get-Process -Id 32756` says that PID **does not exist**. The classic
+   ghost socket this repo's `stop.sh` header already documents.
+2. The ghost still served requests: `GET http://localhost:8000/openapi.json`
+   returned **27 paths with no `/settings/system-models`** — i.e. the
+   owner's browser was hitting a **pre-fix backend**. That's the smoking
+   gun: the frontend (Vite, live process, serves current disk files) called
+   the new endpoint, got 404s/stale shapes, and Settings looked broken
+   regardless of what was merged.
+3. WMI (`Get-CimInstance Win32_Process`) found the ghost's real body: PID
+   25076, `python.exe -c "from multiprocessing.spawn import spawn_main;
+   spawn_main(parent_pid=32756, ...)"`, created **12:41** — spawned by a
+   long-dead uvicorn reloader parent (32756, the PID netstat still blamed)
+   *before* the fixes landed. A second orphan (PID 12664, parent 34948) and
+   a leftover worktree vite were also found and killed.
+4. `Stop-Process` on the orphan (by its real PID, found via command line —
+   never via netstat's PID column) freed port 8000 immediately. **No port
+   change was needed** — 8000/5173 stay the dev ports.
+5. Fresh servers: `/openapi.json` now returns **29 paths including
+   `/settings/system-models`**, and an authenticated request (dev
+   magic-link flow → `Authorization: Bearer <session_token>`) to
+   `GET /settings/system-models` returns real data — all three purposes
+   (`rubric_generation`/`judge`/`mutator`) with a selected model.
+
+**Mechanism (why this keeps happening):** uvicorn `--reload` on Windows
+spawns its worker via `multiprocessing`. Killing/closing the parent does
+not cascade to the child; the orphan keeps the port and the *old code*
+loaded in memory. Later "restarts" fail to bind (or die silently), and the
+browser keeps talking to the orphan — so every fix ever merged looks like
+it didn't ship. netstat reporting the dead parent's PID makes the orphan
+look unkillable, which is why previous sessions concluded "ghost socket,
+gave up" (see the "Product owner report" section below).
+
+**Permanent fix:** new `scripts/dev-restart.ps1` — kills all dev-server
+processes by WMI command-line match (uvicorn reloader, its
+`multiprocessing.spawn` orphans, this repo's vite; deliberately never
+matches vitest or pytest), verifies both ports are genuinely free (with an
+explicit orphan hunt if a ghost listener remains), starts fresh servers via
+the same terminal-window pattern as `start.sh`, then polls until the API
+provably serves a **current-code** route (`/settings/system-models` in the
+openapi spec) — so "restarted but still stale" can never silently pass
+again. Script was tested end-to-end twice this session (first run caught
+two script bugs: its vite pattern also matched a running vitest process,
+and a 30s health timeout was too tight when another `uv` process holds the
+venv lock — both fixed). `docs/TESTING.md` §2 now tells the owner to always
+restart via this script and hard-refresh after.
+
+## Canvas tab live migration overlay [DONE — 2026-07-16]
+
+Product owner complaint: "the canvas is static, it should be dynamic like
+a graph that should also be able to reflect what is going on when the
+pipeline is running." Root cause: live migration status (per-stage
+running/done/failed coloring, pulsing nodes, sub-step labels) only ever
+rendered inside the Migrations tab's own embedded
+`<PipelineCanvas stageStates={...} runningSubstep={...} />` (in
+`migration-success-screen.tsx`). The main Canvas tab
+(`pipeline-workspace.tsx`, the default landing tab) always rendered a
+static, uncolored DAG regardless of whether a migration was actively
+running in the background — the two views of the exact same
+`<PipelineCanvas>` component just never shared a poll.
+
+**Shared hook, not duplicated polling logic**: extracted
+`apps/web/src/hooks/use-migration-status-poll.ts`'s
+`useMigrationStatusPoll(pipelineId, migrationId, options?)` out of
+`migration-success-screen.tsx`'s inline `statusQuery` `useQuery` block
+(same `["migration-status", pipelineId, migrationId]` queryKey,
+`getMigrationStatus` queryFn, and `refetchInterval` — 2000ms while
+`status === "running"`, `false` otherwise — byte-for-byte the same
+convention, just parameterized by `enabled`/`initialData` instead of
+hardcoded to `started`/`migration`). Low-risk extraction (a `useQuery` call
+wrapped 1:1, no behavior change) rather than the "risky refactor" the task
+brief flagged as an acceptable reason to duplicate instead — chose to
+extract. `migration-success-screen.tsx` now calls
+`useMigrationStatusPoll(pid, migration.id, { enabled: started, initialData:
+started ? migration : undefined })` in place of its old inline block;
+`getMigrationStatus` import removed from that file (no longer called
+directly there).
+
+**Canvas tab wiring** (`apps/web/src/routes/pipeline-workspace.tsx`, new
+`CanvasTabContent`, mounted only inside the existing
+`{tab === "canvas" && (...)}` conditional — so both polls below exist only
+while a user is actually on this tab, never in the background on another
+tab):
+- A lightweight `listMigrations(pipelineId)` check, `refetchInterval:
+  5000` (a deliberately lighter cadence than the live-status poll — this
+  one only exists to notice a migration starting/finishing while parked on
+  the Canvas tab). Reuses the exact same `["migrations", pipelineId]`
+  query key `MigrationsTab` (same file) already uses, so switching to/from
+  the Migrations tab is a cache hit, not a second fetch, in the common
+  case.
+- `.find((m) => m.status === "running")` → if found, hands its id to
+  `useMigrationStatusPoll` (the same shared hook above), which takes over
+  with the real 2s live-coloring poll — its `stage_states`/
+  `progress_substep` feed straight into the Canvas tab's existing
+  `<PipelineCanvas>` (same component, same optional props it already
+  accepted from the Migrations-tab usage — no prop-shape changes needed,
+  confirmed via `pipeline-canvas.tsx`'s `PipelineCanvasProps`).
+- If nothing is running: `useMigrationStatusPoll` is `enabled: false` (no
+  status poll at all), `<PipelineCanvas>` gets no `stageStates`/
+  `runningSubstep` props — pixel-identical to the pre-existing static
+  Canvas tab. Conditional, not always-on, per the task brief.
+- Small UI nicety (task brief's point 4): a pill — "Migration running —
+  view in Migrations →" with a pulsing dot (reusing the same
+  `animate-ping` dot pattern `stage-node.tsx`'s running-node pulse already
+  established) — renders above the canvas whenever `liveStatus?.status ===
+  "running"`, clicking it calls the same `goToTab("migrations")` the tab
+  bar itself uses. Rendered as a plain sibling of `<PipelineCanvas>` inside
+  a JSX fragment (not a new wrapping `<div>`) specifically to avoid
+  reintroducing the flex-height bug from the "Product owner report" section
+  below — the outer `flex flex-1 flex-col overflow-y-auto` wrapper and
+  `<PipelineCanvas>`'s own `h-full min-h-[480px] flex-1` sizing chain are
+  untouched; the pill just takes its natural content height as a
+  non-`flex-1` sibling above it.
+
+**Tests**: new `apps/web/src/routes/pipeline-workspace.canvas-live.test.tsx`
+(4 new) — its own `<PipelineCanvas>` mock echoes `stageStates`/
+`runningSubstep` back as text (unlike the main `pipeline-workspace.test.tsx`
+suite's bare-button stub, which only cares about tab/drawer wiring) so the
+live props are actually assertable: stays static with no `stageStates`/
+badge/`getMigrationStatus` call when no migration is running; colors the
+canvas and shows the badge when one is; never polls or renders the overlay
+at all while parked on a non-Canvas tab; clicking the badge navigates to
+the Migrations tab. Existing `pipeline-workspace.test.tsx` needed one fix,
+not a workaround: its shared `beforeEach` never gave `listMigrations` a
+default resolved value (only `MigrationsTab` called it before, and
+individual tests that cared already set their own), so once
+`CanvasTabContent` became a second caller, tests that start on the Canvas
+tab hit React Query's "query function returned undefined" console error via
+the bare `vi.fn()` mock — fixed by adding
+`vi.mocked(listMigrations).mockResolvedValue([])` to that file's
+`beforeEach` (tests needing a specific list still override it themselves,
+unchanged). `apps/web`: **121 passed** (117 baseline + 4 new), clean
+`tsc --noEmit`. `apps/api`/`packages/core` untouched (confirmed via `git
+status` — only files under `apps/web/src/` and this doc changed).
+
+**What a user actually sees**: start a migration from the Migrations tab,
+then switch to the Canvas tab while it's still running — the DAG there now
+pulses/colors live exactly like the Migrations tab's own view, with a
+small "Migration running" pill making it obvious why nodes are suddenly
+colored and offering a one-click way back to the full run screen. Open the
+Canvas tab with nothing running (or after a migration finishes) and it's
+exactly the static view it always was, with no background polling.
+
+## Settings empty-page perception fix + System models visibility [DONE — 2026-07-16]
+
+Two separate but related asks: (1) the product owner reported a genuinely
+empty `/settings` screenshot, despite the "Canvas has nothing in it,
+Settings is empty, no rename" investigation directly below already having
+found "Configured models" renders fine — that investigation only drove the
+happy path (signed in, in a browser, no crash injection), not
+unauthenticated/zero-key states or render-crash resilience; (2)
+`select_model()`-based judge/mutator/rubric-generation auto-selection was
+fixed in code (`128bc94`, "Fix judge/mutator self-grading bias") but that
+phase's own closing note flagged "No UI surfaces the effective/overridden
+judge or mutator model yet" as a known gap — hard to trust a backend-only
+fix with zero visibility.
+
+**Investigation — driven live, not read from code.** Set up this worktree
+from scratch (`scripts/setup.sh`) and ran the API/web dev servers on
+isolated ports (`:8010`/`:5183`, not the main checkout's `:8000`/`:5173`,
+per this task's "don't touch the main checkout" constraint — required a
+temporary local-only CORS allowlist addition and `REPROMPT_WEB_BASE_URL`
+override to make the dev magic-link flow work cross-port; both reverted
+before committing, not part of the diff). Wrote a throwaway Playwright
+driver script (not committed — ad hoc verification, not a permanent spec)
+covering all three real states end-to-end:
+
+1. **Unauthenticated** — `/settings` shows "Sign in to manage your
+   workspace settings." with a sign-in link. Not blank. Screenshot
+   confirms a clean, small, centered message (this alone could misread as
+   "empty" in a careless glance, but it's the deliberate, correct
+   unauthenticated state, not a bug).
+2. **Signed in, zero BYOK keys** — full page renders: Workspace card, "No
+   API keys configured yet.", Configured models showing the 2 no-key-
+   required Ollama models, zero console errors. `GET /settings/workspace`,
+   `/settings/api-keys`, `/settings/models` all return 200 with real data.
+   Not blank.
+3. **Signed in, with a BYOK key** — same, now also showing `gpt-4o`/
+   `gpt-4o-mini` under the new provider group. Not blank.
+
+**None of the three real states reproduce a blank page** — consistent with
+(and extending) the prior investigation's conclusion. So the actual gap
+had to be something none of the three states exercises: a crash, not a
+data state. Grepped the whole frontend for `ErrorBoundary` /
+`componentDidCatch` / `getDerivedStateFromError` — **zero results**. No
+route in `router.tsx` set an `errorComponent` either. Proved this
+concretely with `page.route()`: intercepted `GET /settings/models` and
+injected a malformed entry (`model_card: null`, simulating a version-skewed
+frontend/backend pair — a real risk in a codebase built across several
+parallel worktrees that get hand-merged, exactly the working model this
+very task runs under). Result: `ConfiguredModelsCard` threw
+`Cannot read properties of null (reading 'family')`, and the **entire page
+— including the nav sidebar — unmounted**, replaced by TanStack Router's
+default `CatchBoundary` fallback: an unstyled "Something went wrong! /
+Hide Error / [stack trace]" with no branding, no nav, mostly whitespace.
+That is visually indistinguishable from "the page is empty" in a quick
+screenshot, and it's reachable from *any* uncaught render exception on
+*any* route in the app, not just this one triggered case — a real,
+reproducible mechanism for the report, even though the specific data
+condition that would trigger it in production wasn't identified (every
+field `ConfiguredModelOut`/`SystemModelOut` return is currently
+non-optional on the Pydantic side, so this exact null wouldn't happen
+today without a schema regression — but "a regression in a fast-moving
+multi-worktree repo causes a shape mismatch" is exactly the class of
+failure this project's own workflow makes newly plausible, not a
+hypothetical).
+
+**Fix — two layers**:
+1. **App-wide crash fallback**: new `apps/web/src/components/route-error-fallback.tsx`
+   (`RouteErrorFallback`), wired as `rootRoute`'s `errorComponent` in
+   `router.tsx`. Renders inside the app's own `AppShell` (nav rail stays
+   live/clickable — a crash on one screen no longer stops the user
+   navigating elsewhere) with a styled Card: "Something went wrong", the
+   real error message in a mono block, "Try again" (calls TanStack
+   Router's `reset()` to re-render the failed route without a full page
+   reload) and "Go to Pipelines". Re-ran the same injected-crash script
+   after this change: page body now reads "Reprompt / Pipelines / Trace
+   format / Settings / Something went wrong / ... / Try again / Go to
+   Pipelines" — nav intact, message legible, screenshot confirms it reads
+   as a real (if broken) part of the app, not a blank/dead page. This is a
+   root-level fix (covers every route, not just Settings) since the
+   underlying gap — zero error boundaries — was never Settings-specific.
+2. **Defensive guard in the one card most tied to the original report**:
+   `ConfiguredModelsCard`'s `model.model_card` access is now
+   optional-chained with a graceful "Prompt family info unavailable for
+   this model." fallback per-model, and `rules` defaults to `[]` — so the
+   specific null-`model_card` case no longer even reaches the error
+   boundary; a genuinely deeper anomaly (tested by injecting
+   `rules: "not-an-array"`, which the optional-chaining can't sensibly
+   guard against) still correctly falls through to the new boundary rather
+   than crashing silently. `SystemModelsCard`'s purpose-label lookups
+   (`SYSTEM_MODEL_PURPOSE_LABEL`/`_DESCRIPTION`) also fall back to the raw
+   purpose string rather than rendering `undefined` for an unrecognized
+   purpose.
+
+**System models visibility** — the second ask, addressed alongside since
+both land in Settings and share the "make an already-correct backend
+decision visible" framing:
+- **`apps/api/src/reprompt_api/settings.py`**: new `GET
+  /settings/system-models` → `SystemModelOut[]`
+  (`{purpose, selected_model, reason}`), one entry per
+  `reprompt_core.llm.model_select.Purpose` (`rubric_generation`/`judge`/
+  `mutator`). Calls the exact same `get_available_models(db, workspace)` +
+  `select_model(purpose, available)` pair `optimizer_runner.py`/
+  `rubrics.py` already call for a real run — no new selection logic, per
+  the task's "don't touch `select_model()`, just call it" constraint.
+  `reason` is always `"best available"` today: this view is deliberately
+  workspace-scoped, not migration-scoped, since a specific migration's own
+  `target_model_config.judge_model`/`mutator_model` override (added in
+  `128bc94`) only makes sense in the context of that migration's own
+  `target_models` — there's no single "current migration" at the
+  Settings level to read an override from, so this always shows the
+  no-override auto-select path (i.e. what a *new* migration would get by
+  default). **Considered and deliberately not built**: a workspace-level
+  default override (would need a new `Workspace` column) — per the task's
+  own "keep this scoped, read-only is the priority, don't over-build it"
+  instruction, and because it would sit awkwardly between "always
+  auto-select" and "set it per migration" without a clear use case driving
+  it yet.
+- **`apps/web`**: `lib/api.ts` gained `SystemModel`/`SystemModelPurpose` +
+  `listSystemModels()`. `routes/settings.tsx` gained `SystemModelsCard`,
+  rendered below the existing "Configured models" card — a table of
+  Purpose / Model / Why, with a human-readable label + one-line description
+  per purpose, and a closing note that a specific migration can still
+  override the judge/mutator model when created. Empty state
+  ("No system models to show yet.") for symmetry with the other cards,
+  even though `available_models` is never actually empty in practice (the
+  no-key-required local models guarantee at least a tier-3 fallback).
+- **Tests**: `apps/api/tests/test_settings.py` (3 new) —
+  `test_list_system_models_covers_all_three_purposes` (all three purposes
+  present, every entry names a real non-empty model/reason even with zero
+  BYOK keys), `test_list_system_models_selects_a_stronger_model_once_a_byok_key_is_added`
+  (zero keys → local Ollama fallback for all three purposes; adding an
+  Anthropic key upgrades all three to `claude-sonnet-4-5` — proves the
+  live upgrade path, not just a static response), `test_list_system_models_only_reflects_this_workspaces_keys`
+  (workspace isolation, same pattern as the existing `/settings/models`
+  isolation test). Also added `/settings/system-models` to the existing
+  "all endpoints reject unauthenticated requests" test.
+  `apps/web/src/routes/settings.test.tsx` (2 new): renders all three
+  purposes with their models/reasons when populated; shows the empty state
+  when the list is empty. Both new suites required adding
+  `listSystemModels: vi.fn()` to the existing `vi.mock("@/lib/api", ...)`
+  block and a default `mockResolvedValue([])` in `beforeEach`, same pattern
+  every other query in this test file already follows.
+
+**Verified**: `cd apps/api && uv run pytest -q` → **168 passed** (165
+baseline + 3 new). `cd apps/web && npx tsc --noEmit` → clean; `npx vitest
+run` → **119 passed** (117 baseline + 2 new), 15 test files.
+`cd packages/core && uv run pytest -q` → **286 passed, 21 skipped**,
+confirmed unchanged and untouched (`git status` shows no `packages/core`
+files in the diff at any point in this session) — this worktree's own
+environment-dependent skip count (see Phase 1's own note on why 21 vs. 2
+skips varies by machine, unrelated to this work). Full click-path to
+re-verify by hand: sign in → Settings → scroll past "Configured models" →
+"System models" card shows Rubric generation / Judge / Mutator rows, each
+with a real model name and "best available"; to see the crash-fallback,
+temporarily break any Settings card's data access and reload — the nav
+stays live and a styled "Something went wrong" card appears instead of a
+bare error line.
+
+## Product owner report — "Canvas has nothing in it, Settings is empty, no rename" [FIXED — 2026-07-16]
+
+Product owner was looking at the live Pipelines home page (real, populated
+table - matches this file's own description of it) and raised three
+complaints. Killed stale dev-server processes first (Windows `netstat -ano`
++ PowerShell `Stop-Process`, `kill -0`/`kill %N` don't work reliably here -
+see `feedback_gitbash_kill0_unreliable.md`; one port-8000 process turned
+out to be an unkillable-but-healthy Windows networking ghost socket with no
+matching PID in `Get-Process`/`tasklist`/`Get-CimInstance` - verified it
+was actually still the correct live API via `GET /openapi.json` rather than
+fight it further), then actually drove the app with Playwright (already a
+project dependency for `apps/web/e2e/`, `playwright.config.ts` has
+`reuseExistingServer: true` so it attached to the already-running dev
+server) via the dev magic-link flow, rather than assuming from reading code
+or repeating "just hard refresh."
+
+**1. "Nothing is in Settings" - did not reproduce.** `/settings`'s
+"Configured models" card (built in "Settings page — real
+model-configuration content [DONE — 2026-07-15]" below) rendered fully
+with real data (the curated no-key-required Ollama models, cost, prompt
+family, transform-rule pills) on a fresh sign-in, zero console errors,
+screenshot confirms it visually matches the rest of the app's Card-based
+design language. Not a regression to fix.
+
+**2. "The canvas and all, nothing is there" - REAL bug, found and fixed.**
+Clicking a pipeline row on the home list correctly routed to
+`/pipelines/$id?tab=canvas` (`apps/web/src/routes/home.tsx`'s row
+`onClick`) and the DOM/React Query data were both genuinely present (35
+stage nodes with real names/models/token counts in `body.innerText`,
+`.react-flow__node` count = 35, 0 console errors) - but a screenshot of the
+same page showed a **completely blank canvas**. Root-caused via
+`page.evaluate()` measuring `getBoundingClientRect`/`getComputedStyle` down
+the DOM chain in `apps/web/src/routes/pipeline-workspace.tsx`: the Canvas
+tab's content wrapper (`<div className="flex-1 overflow-y-auto">`, line
+~169) is a plain block div, not `display:flex` - so `PipelineCanvas`'s own
+wrapper (`h-full min-h-[480px] flex-1`, `pipeline-canvas.tsx` line 98) only
+ever got its height from `min-height` (480px), never from `h-full`. Per the
+CSS spec, a `min-height`-derived size does not count as an "explicitly
+specified" (definite) height for descendants' `height:100%` resolution -
+so `@xyflow/react`'s own `.react-flow` root (inline `height:100%`, and all
+its meaningful children are `position:absolute` so it has no in-flow
+content to size itself by either) collapsed to computed `height:0px`.
+React Flow then laid out and positioned all 35 nodes correctly *inside a
+zero-height viewport* - real data, real DOM, invisible paint. This is
+exactly the failure mode unit tests can't catch (jsdom doesn't run real
+CSS layout - `pipeline-workspace.test.tsx`'s existing "renders the
+pipeline canvas" test passed before, during, and after this fix, because
+it only asserts the DOM node exists, never that it has nonzero height).
+
+Confirmed via the working sibling case first
+(`migration-success-screen.tsx` line 174 wraps the same `PipelineCanvas` in
+a div with an *explicit* `h-[420px]`, not `min-h-`, and that one has always
+rendered correctly) before changing anything, then fixed at the actual
+root of the chain rather than patching every intermediate layer: changed
+`pipeline-workspace.tsx`'s outer workspace container from
+`"flex h-full min-h-[calc(100vh-1px)] flex-col"` to
+`"flex h-[calc(100vh-1px)] flex-col"` (an explicit height, still
+viewport-relative so no behavior change in the normal case, but now a
+spec-definite size that correctly propagates through every `flex-1`/
+`h-full` step below it) and made the Canvas tab's content wrapper a real
+flex container (`"flex-1 overflow-y-auto"` → `"flex flex-1 flex-col
+overflow-y-auto"`) so `PipelineCanvas`'s own `flex-1` (previously inert -
+its parent wasn't `display:flex`) actually takes effect. Re-measured after
+the fix: `.react-flow` height went from `0px` to `603.4px`, screenshot
+confirms all 35 stage nodes now paint with names/models/token counts and
+working pan/zoom controls. Single child per tab (the four tab branches are
+mutually exclusive) so this doesn't change layout for Data/Rubrics/
+Migrations.
+
+**3. "Edit pipeline name is not there" - real gap, not a bug (expected,
+called out in the task brief).** Inline rename already existed in the
+pipeline workspace header (`pipeline-workspace.tsx`'s `startEditingName`/
+`saveName`, click-to-edit pattern) but not on the Pipelines home list the
+owner was actually looking at. Added the identical pattern to
+`apps/web/src/routes/home.tsx`: click a row's name → editable `Input` →
+`Enter`/blur saves via the same `PATCH /pipelines/{id}`
+(`updatePipeline`) the workspace already uses → optimistic
+`queryClient.setQueryData` update, same pattern the row's own delete
+button already uses on this screen. `event.stopPropagation()` on the name
+button/input so clicking to rename doesn't also trigger the row's
+navigate-into-workspace `onClick`. Verified round-trip live (rename →
+confirm persisted in the table → rename back), no accidental navigation.
+
+**Verification**: `apps/web` typecheck clean, `117 passed` (unchanged from
+baseline - confirmed via `git stash` before/after comparison, since this
+CSS bug and its fix are both invisible to jsdom-based Vitest either way).
+`apps/api` `165 passed` (untouched - this was a frontend-only investigation
+and fix). `packages/core` untouched. No schema/API changes.
 
 ## Model auto-selection for rubric generation [DONE — 2026-07-16]
 

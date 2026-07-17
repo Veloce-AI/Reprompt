@@ -22,6 +22,24 @@ proves the outputs still match. Full plain-language explanation: `README.md`.
 5. `docs/trace-format.md` — the data format the whole system is built on
 6. `docs/LESSONS.md` — real bugs found and why, worth reading before
    touching auth, React Query mutations, or Windows dev-server processes
+7. `.claude/skills/` — **MANDATORY, not optional background context.** Ten
+   skills live here now: `saas-product-design`/`frontend-design`/
+   `system-design` (written for this project specifically, encode real bugs
+   this project already hit — read these before ANY UI/UX or architecture
+   work, not just when a task looks design-y), `impeccable`/`design-system`/
+   `ui-styling`/`frontend-design-anthropic`/`theme-factory` (frontend
+   craft), `webapp-testing` (drive-the-real-app discipline — this project
+   has repeatedly shipped bugs that passed unit tests but broke on real
+   render/CSS, see `saas-product-design`'s point 5 and `system-design`'s
+   point 5), `skill-creator` (for writing more of these well). See
+   `.claude/skills/ATTRIBUTION.md` for exact sources/licenses before adding
+   more; `anthropics/claude-code`'s own skills are NOT available to pull
+   from (checked, all-rights-reserved). **If you are dispatching a
+   sub-agent for UI, testing, or architecture work, name the specific
+   relevant skill(s) in its prompt explicitly** — a skill sitting in this
+   folder does nothing on its own if nobody is told to actually read and
+   apply it; this was a real gap already found and fixed once in this
+   project's own history, don't reintroduce it.
 
 ## Current state (see docs/DEVELOPMENT.md for full detail)
 

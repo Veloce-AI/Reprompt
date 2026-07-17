@@ -171,6 +171,11 @@ beforeEach(() => {
 
   vi.mocked(listPipelines).mockResolvedValue([basePipeline()]);
   vi.mocked(getPipelineDag).mockResolvedValue(baseDag());
+  // Default to "no migrations yet" - both the Canvas tab's live-migration
+  // overlay (CanvasTabContent) and the workspace's own "Migrations" tab
+  // label/"+ Start a migration" CTA decision read listMigrations now.
+  // Tests that care about a specific migrations list override this.
+  vi.mocked(listMigrations).mockResolvedValue([]);
 });
 
 describe("PipelineWorkspace", () => {
@@ -179,6 +184,57 @@ describe("PipelineWorkspace", () => {
 
     expect(await screen.findByText("mock-node-10")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Canvas" })).toHaveAttribute("aria-current", "page");
+  });
+
+  it("shows a prominent 'Start a migration' CTA in place of the plain tab label when the pipeline has no Migration yet, and reverts once one exists", async () => {
+    vi.mocked(listModelOptions).mockResolvedValue([]);
+
+    renderAt("/pipelines/1");
+    await screen.findByText("mock-node-10");
+
+    // No Migration yet (default mock above) - the tab reads as a CTA, not a
+    // plain nav label, so it's discoverable as an action rather than easy
+    // to dismiss as passive navigation next to Canvas/Data/Rubrics. Async:
+    // this depends on the migrations query resolving, not just the canvas.
+    const cta = await screen.findByRole("button", { name: "+ Start a migration" });
+    expect(screen.queryByRole("button", { name: "Migrations" })).not.toBeInTheDocument();
+
+    fireEvent.click(cta);
+    expect(await screen.findByText("Target models")).toBeInTheDocument();
+    // Once actually on the tab, it goes back to reading like every other
+    // tab (no need to shout at the user once they're already there).
+    expect(screen.getByRole("button", { name: "Migrations" })).toHaveAttribute(
+      "aria-current",
+      "page"
+    );
+  });
+
+  it("does not show the 'Start a migration' CTA once a Migration already exists for the pipeline", async () => {
+    const migration: MigrationOut = {
+      id: 1,
+      pipeline_id: 1,
+      target_model_config: { models: ["gpt-4o-mini"] },
+      budget: 10,
+      parity_threshold: 0.9,
+      status: "pending",
+      total_cost_usd: null,
+      stopped_early: false,
+      stop_reason: null,
+      progress_stage_name: null,
+      progress_current: null,
+      progress_total: null,
+      progress_substep: null,
+      activity_log: null,
+      completed_at: null,
+      stage_states: {},
+    };
+    vi.mocked(listMigrations).mockResolvedValue([migration]);
+
+    renderAt("/pipelines/1");
+    await screen.findByText("mock-node-10");
+
+    expect(await screen.findByRole("button", { name: "Migrations" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "+ Start a migration" })).not.toBeInTheDocument();
   });
 
   it("switches to the rubrics tab when its tab button is clicked", async () => {

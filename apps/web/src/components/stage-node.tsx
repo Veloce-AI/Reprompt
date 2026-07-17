@@ -4,8 +4,16 @@ import { Badge } from "@/components/ui/badge";
 import { ParityBeam } from "@/components/parity-beam";
 import { cn } from "@/lib/utils";
 import type { StageInfo, StagePhase, StageRunState } from "@/lib/api";
+import type { CanvasOrientation } from "@/lib/canvas-layout";
 
-export type StageNodeData = { stage: StageInfo; runState?: StageRunState; substep?: StagePhase | null };
+export type StageNodeData = {
+  stage: StageInfo;
+  runState?: StageRunState;
+  substep?: StagePhase | null;
+  /** Flow direction of the canvas layout — decides which sides the edge
+   * handles sit on. Defaults to horizontal (the original behavior). */
+  orientation?: CanvasOrientation;
+};
 export type StageFlowNode = Node<StageNodeData, "stage">;
 
 // Human-readable labels for reprompt_core.optimizer.loop.StagePhase — never
@@ -65,16 +73,25 @@ function statsLabel(stage: StageInfo): string {
 }
 
 export function StageNode({ data }: NodeProps<StageFlowNode>) {
-  const { stage, runState, substep } = data;
+  const { stage, runState, substep, orientation } = data;
+  const vertical = orientation === "vertical";
 
   return (
     <Card
       className={cn(
         "w-56 border-2 transition-colors duration-base ease-out",
-        runState ? STATE_BORDER[runState] : "border-line"
+        runState ? STATE_BORDER[runState] : "border-line",
+        // Soft --beam halo while an LLM call is happening in this stage -
+        // the "light is here right now" signal (pulse disabled under
+        // prefers-reduced-motion, see globals.css).
+        runState === "running" && "stage-node-glow"
       )}
     >
-      <Handle type="target" position={Position.Left} className="!bg-beam" />
+      <Handle
+        type="target"
+        position={vertical ? Position.Top : Position.Left}
+        className="!bg-beam"
+      />
       <CardContent className="space-y-2 p-4">
         <div className="flex items-center justify-between gap-2">
           <p className="min-w-0 truncate text-14 font-medium text-ink" title={stage.name}>
@@ -104,7 +121,11 @@ export function StageNode({ data }: NodeProps<StageFlowNode>) {
             is exactly right here, and becomes a real score once M4 lands. */}
         <ParityBeam />
       </CardContent>
-      <Handle type="source" position={Position.Right} className="!bg-beam" />
+      <Handle
+        type="source"
+        position={vertical ? Position.Bottom : Position.Right}
+        className="!bg-beam"
+      />
     </Card>
   );
 }

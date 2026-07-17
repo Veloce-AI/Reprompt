@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from "react";
+import { useReducer, useState, type FormEvent } from "react";
 import { Link } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -10,10 +10,14 @@ import {
   getWorkspaceSettings,
   listApiKeys,
   listConfiguredModels,
+  listSystemModels,
   updateWorkspaceSettings,
   type ConfiguredModel,
+  type SystemModel,
+  type SystemModelPurpose,
 } from "@/lib/api";
 import { AppShell } from "@/components/app-shell";
+import { DevSignInButton } from "@/components/dev-sign-in-button";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -43,17 +47,43 @@ function formatDate(iso: string): string {
 }
 
 export default function Settings() {
+  // getSessionToken() reads localStorage on every render, so signing in via
+  // the dev button below only needs a re-render, not a reload/navigation.
+  const [, rerender] = useReducer((n: number) => n + 1, 0);
   const isSignedIn = Boolean(getSessionToken());
 
   if (!isSignedIn) {
     return (
-      <div className="mx-auto max-w-[640px] p-8 pt-24 text-center">
-        <h1 className="font-display text-28 font-semibold leading-display text-ink">Settings</h1>
-        <p className="mt-2 text-14 text-ink-soft">Sign in to manage your workspace settings.</p>
-        <Link to="/login" className="mt-4 inline-block text-13 text-beam hover:underline">
-          Go to sign in
-        </Link>
-      </div>
+      <AppShell>
+        <div className="mx-auto max-w-[640px] p-8 pt-16">
+          <h1 className="text-center font-display text-28 font-semibold leading-display text-ink">
+            Settings
+          </h1>
+          <Card className="mt-6">
+            <CardHeader>
+              <CardTitle>Sign in to unlock your workspace settings</CardTitle>
+              <CardDescription>
+                Settings is where your workspace lives — signing in takes a few seconds and
+                needs no password, just a one-time email link.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-6">
+              <ul className="space-y-2 text-13 text-ink-soft">
+                <li>• Rename your workspace</li>
+                <li>• Add BYOK provider API keys (encrypted at rest, never shown again)</li>
+                <li>• See every model your keys unlock, with cost and prompt-family info</li>
+                <li>• See which models Reprompt itself uses for rubrics, judging and mutation</li>
+              </ul>
+              <div className="flex flex-col items-center gap-4 border-t border-line pt-6">
+                <Link to="/login">
+                  <Button variant="primary">Sign in</Button>
+                </Link>
+                <DevSignInButton onSignedIn={rerender} />
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+      </AppShell>
     );
   }
 
@@ -70,6 +100,7 @@ export default function Settings() {
         <WorkspaceNameCard />
         <ApiKeysCard />
         <ConfiguredModelsCard />
+        <SystemModelsCard />
       </div>
     </div>
     </AppShell>
@@ -431,33 +462,145 @@ function ConfiguredModelsCard() {
                       {formatCost(model.output_cost_per_1m)} out
                     </span>
                   </div>
-                  <p className="mt-2 text-12 text-ink-soft">
-                    Prompt family: <span className="font-medium text-ink">{model.model_card.family}</span>
-                    {model.model_card.is_small_variant && " (small variant)"}
-                    {" — "}
-                    {model.model_card.description}
-                  </p>
-                  <ul className="mt-2 flex flex-wrap gap-2">
-                    {model.model_card.rules
-                      .filter((rule) => rule.will_apply)
-                      .map((rule) => (
-                        <li
-                          key={rule.name}
-                          className="rounded-full bg-beam-soft px-2 py-1 text-12 text-beam"
-                          title={rule.description}
-                        >
-                          {rule.name.replace(/_/g, " ")}
-                        </li>
-                      ))}
-                    {model.model_card.rules.every((rule) => !rule.will_apply) && (
-                      <li className="text-12 text-ink-soft">No transform rules apply.</li>
-                    )}
-                  </ul>
+                  {/* model_card is a required field on the wire contract, but this
+                      reads it defensively (optional chaining + fallbacks) rather than
+                      assuming the live response always matches the TS type exactly -
+                      a version-skewed backend/frontend pair (a real risk in a codebase
+                      built across several parallel worktrees that get hand-merged) is
+                      not something a compile-time type can catch, and a card that
+                      degrades gracefully here beats one that throws and blanks the
+                      whole page (see route-error-fallback.tsx's docstring). */}
+                  {model.model_card ? (
+                    <>
+                      <p className="mt-2 text-12 text-ink-soft">
+                        Prompt family:{" "}
+                        <span className="font-medium text-ink">{model.model_card.family}</span>
+                        {model.model_card.is_small_variant && " (small variant)"}
+                        {" — "}
+                        {model.model_card.description}
+                      </p>
+                      <ul className="mt-2 flex flex-wrap gap-2">
+                        {(model.model_card.rules ?? [])
+                          .filter((rule) => rule.will_apply)
+                          .map((rule) => (
+                            <li
+                              key={rule.name}
+                              className="rounded-full bg-beam-soft px-2 py-1 text-12 text-beam"
+                              title={rule.description}
+                            >
+                              {rule.name.replace(/_/g, " ")}
+                            </li>
+                          ))}
+                        {(model.model_card.rules ?? []).every((rule) => !rule.will_apply) && (
+                          <li className="text-12 text-ink-soft">No transform rules apply.</li>
+                        )}
+                      </ul>
+                    </>
+                  ) : (
+                    <p className="mt-2 text-12 text-ink-soft">
+                      Prompt family info unavailable for this model.
+                    </p>
+                  )}
                 </div>
               ))}
             </div>
           </div>
         ))}
+      </CardContent>
+    </Card>
+  );
+}
+
+const SYSTEM_MODEL_PURPOSE_LABEL: Record<SystemModelPurpose, string> = {
+  rubric_generation: "Rubric generation",
+  judge: "Judge",
+  mutator: "Mutator",
+};
+
+const SYSTEM_MODEL_PURPOSE_DESCRIPTION: Record<SystemModelPurpose, string> = {
+  rubric_generation: "Reverse-engineers a rubric from your example traces.",
+  judge: "Scores each candidate prompt's output against the rubric.",
+  mutator: "Proposes and critiques/refines candidate prompt rewrites.",
+};
+
+function SystemModelsCard() {
+  const modelsQuery = useQuery({
+    queryKey: ["settings-system-models"],
+    queryFn: listSystemModels,
+    retry: false,
+  });
+
+  if (modelsQuery.isError && isUnauthorized(modelsQuery.error)) {
+    return (
+      <Card>
+        <CardContent className="p-8">
+          <SessionExpiredNotice />
+        </CardContent>
+      </Card>
+    );
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>System models</CardTitle>
+        <CardDescription>
+          Reprompt's own harness — rubric generation, judging, and prompt mutation — picks a model
+          independently from whatever you're optimizing, so a candidate never grades or refines its
+          own output. This is what it's actually using right now, given your configured providers
+          above.
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        {modelsQuery.isLoading && (
+          <p className="text-14 text-ink-soft" role="status">
+            Loading…
+          </p>
+        )}
+        {modelsQuery.isError && !isUnauthorized(modelsQuery.error) && (
+          <p className="text-14 text-parity-fail" role="alert">
+            Couldn&apos;t load system models.
+          </p>
+        )}
+
+        {modelsQuery.data && modelsQuery.data.length === 0 && (
+          <p className="text-13 text-ink-soft">No system models to show yet.</p>
+        )}
+
+        {modelsQuery.data && modelsQuery.data.length > 0 && (
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Purpose</TableHead>
+                <TableHead>Model</TableHead>
+                <TableHead>Why</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {modelsQuery.data.map((entry: SystemModel) => (
+                <TableRow key={entry.purpose}>
+                  <TableCell className="text-ink">
+                    <div className="font-medium">
+                      {SYSTEM_MODEL_PURPOSE_LABEL[entry.purpose] ?? entry.purpose}
+                    </div>
+                    <div className="text-12 text-ink-soft">
+                      {SYSTEM_MODEL_PURPOSE_DESCRIPTION[entry.purpose] ?? ""}
+                    </div>
+                  </TableCell>
+                  <TableCell className="font-mono font-medium text-ink">
+                    {entry.selected_model}
+                  </TableCell>
+                  <TableCell className="text-ink-soft">{entry.reason}</TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        )}
+
+        <p className="mt-4 text-12 text-ink-soft">
+          A specific migration can still override the judge or mutator model when you create it;
+          this always shows what a new migration would get by default.
+        </p>
       </CardContent>
     </Card>
   );

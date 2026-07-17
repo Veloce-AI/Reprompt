@@ -31,7 +31,7 @@ app = FastAPI(title="Reprompt API", version="0.0.1", lifespan=lifespan)
 # Tighten/replace this with real origin config before deploying anywhere.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
+    allow_origins=["http://localhost:5173", "http://localhost:5174"],
     allow_methods=["*"],
     allow_headers=["*"],
 )

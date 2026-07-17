@@ -1,4 +1,5 @@
 import { createRouter, createRoute, createRootRoute, Outlet, redirect } from "@tanstack/react-router";
+import { RouteErrorFallback } from "./components/route-error-fallback";
 import Home from "./routes/home";
 import DevKit from "./routes/dev-kit";
 import PipelinesImport from "./routes/pipelines-import";
@@ -9,8 +10,17 @@ import AuthVerify from "./routes/auth-verify";
 import Settings from "./routes/settings";
 import SchemaReference from "./routes/schema";
 
+// errorComponent catches any uncaught render exception from *any* route
+// (a card fed an unexpected/partial API response shape, a bad merge across
+// the parallel worktrees this project builds in, etc.) and renders it
+// inside the app's own AppShell instead of TanStack Router's bare default
+// "Something went wrong!" text - which, with no nav/branding around it, is
+// visually indistinguishable from a genuinely blank page. See
+// RouteErrorFallback's own docstring and DEV_TRACKER.md's "Settings page
+// reported empty" section for the investigation this closes.
 const rootRoute = createRootRoute({
   component: () => <Outlet />,
+  errorComponent: RouteErrorFallback,
 });
 
 const homeRoute = createRoute({

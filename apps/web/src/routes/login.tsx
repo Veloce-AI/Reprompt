@@ -1,12 +1,15 @@
 import { useState, type FormEvent } from "react";
 import { useMutation } from "@tanstack/react-query";
+import { useNavigate } from "@tanstack/react-router";
 import { requestMagicLink } from "@/lib/api";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { DevSignInButton } from "@/components/dev-sign-in-button";
 
 export default function Login() {
   const [email, setEmail] = useState("");
+  const navigate = useNavigate();
 
   const requestLinkMutation = useMutation({
     mutationFn: (email: string) => requestMagicLink(email),
@@ -54,6 +57,15 @@ export default function Login() {
             </p>
           )}
         </form>
+      )}
+
+      {!requestLinkMutation.isSuccess && (
+        <div className="border-t border-line pt-4">
+          <DevSignInButton
+            email={email}
+            onSignedIn={() => navigate({ to: "/" })}
+          />
+        </div>
       )}
 
       {requestLinkMutation.isSuccess && (

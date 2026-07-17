@@ -14,6 +14,7 @@ import {
   type PipelineSummary,
   type RubricOut,
 } from "@/lib/api";
+import { useMigrationStatusPoll } from "@/hooks/use-migration-status-poll";
 import {
   describeDeterministicCheck,
   describeJudgeCriterion,
@@ -77,6 +78,16 @@ export default function PipelineWorkspace() {
   const pipelinesQuery = useQuery({ queryKey: ["pipelines"], queryFn: listPipelines });
   const pipeline = pipelinesQuery.data?.find((p) => p.id === pid);
 
+  // Same queryKey MigrationsTab uses below, so this shares its cache - no
+  // second network round trip. Read here only to know whether the
+  // "Migrations" tab needs a louder entry point: with no Migration yet, the
+  // tab was previously a plain label identical in weight to Canvas/Data/
+  // Rubrics, easy to read as passive navigation rather than "click here to
+  // add the models you want to test" - see DEV_TRACKER.md's "Migration
+  // wizard discoverability" note.
+  const migrationsQuery = useQuery({ queryKey: ["migrations", pid], queryFn: () => listMigrations(pid) });
+  const hasNoMigrationYet = migrationsQuery.data?.length === 0;
+
   const renameMutation = useMutation({
     mutationFn: (name: string) => updatePipeline(pid, { name }),
     onSuccess: (updated) => {
@@ -107,7 +118,16 @@ export default function PipelineWorkspace() {
 
   return (
     <AppShell>
-      <div className="flex h-full min-h-[calc(100vh-1px)] flex-col">
+      {/* h-[calc(100vh-1px)], not min-h - AppShell's <main> wrapper
+          ("mx-auto max-w-[1440px]") has no explicit height of its own, so
+          only an explicit (not min-) height here is a "definite size" per
+          the flexbox spec for percentage/flex-basis resolution to propagate
+          down through the Canvas tab's nested flex-item chain to
+          react-flow's own height:100% root - min-height alone produced a
+          real pixel value at each layer but never a spec-definite one, so
+          react-flow's DAG silently rendered in a 0-height viewport (see the
+          Canvas tab wrapper below for the fuller trace). */}
+      <div className="flex h-[calc(100vh-1px)] flex-col">
         <div className="border-b border-line px-8 py-4">
           <div className="flex items-start justify-between gap-4">
           {isEditingName ? (
@@ -147,30 +167,52 @@ export default function PipelineWorkspace() {
           </div>
 
           <nav className="mt-4 flex gap-1" aria-label="Pipeline workspace tabs">
-            {WORKSPACE_TABS.map((t) => (
-              <button
-                key={t}
-                type="button"
-                onClick={() => goToTab(t)}
-                aria-current={tab === t ? "page" : undefined}
-                className={cn(
-                  "rounded-control px-3 py-1.5 text-13 font-medium transition-colors duration-fast ease-out",
-                  tab === t
-                    ? "bg-beam-soft text-beam"
-                    : "text-ink-soft hover:bg-beam-soft/50 hover:text-ink"
-                )}
-              >
-                {TAB_LABELS[t]}
-              </button>
-            ))}
+            {WORKSPACE_TABS.map((t) => {
+              // While no Migration exists yet for this pipeline and we're not
+              // already on that tab, render it as an obvious primary-styled
+              // call-to-action ("+ Start a migration") instead of a plain tab
+              // label - once a Migration exists (or the user is on the tab
+              // itself), it goes back to behaving like every other tab.
+              const isMigrationsCta = t === "migrations" && hasNoMigrationYet && tab !== "migrations";
+              return (
+                <button
+                  key={t}
+                  type="button"
+                  onClick={() => goToTab(t)}
+                  aria-current={tab === t ? "page" : undefined}
+                  className={cn(
+                    "rounded-control px-3 py-1.5 text-13 font-medium transition-colors duration-fast ease-out",
+                    tab === t
+                      ? "bg-beam-soft text-beam"
+                      : isMigrationsCta
+                        ? "bg-beam text-paper hover:brightness-110"
+                        : "text-ink-soft hover:bg-beam-soft/50 hover:text-ink"
+                  )}
+                >
+                  {isMigrationsCta ? "+ Start a migration" : TAB_LABELS[t]}
+                </button>
+              );
+            })}
           </nav>
         </div>
 
-        <div className="flex-1 overflow-y-auto">
+        {/* flex + flex-col (not just the flex-1 item class) so the Canvas
+            tab's PipelineCanvas - whose default wrapper div is itself
+            "h-full min-h-[480px] flex-1" - gets a real flex-item main size
+            to grow into. Without display:flex here, that inner flex-1 is
+            inert (this div isn't a flex *container*), height:100% has no
+            definite ancestor height to resolve against (min-height doesn't
+            count per spec), and react-flow's own 100%-height root collapses
+            to 0 - the DAG's nodes render in the DOM (data/labels are all
+            present) but paint in a zero-height viewport, i.e. invisible.
+            Single child per tab (mutually exclusive conditionals below) so
+            this doesn't change layout for Data/Rubrics/Migrations. */}
+        <div className="flex flex-1 flex-col overflow-y-auto">
           {tab === "canvas" && (
-            <PipelineCanvas
+            <CanvasTabContent
               pipelineId={pid}
               onNodeClick={(stageId) => setSelectedStageId(stageId)}
+              onJumpToMigrations={() => goToTab("migrations")}
             />
           )}
           {tab === "data" && <DataTable pipelineId={pid} />}
@@ -204,6 +246,95 @@ export default function PipelineWorkspace() {
         onClose={() => setIsImportRunOpen(false)}
       />
     </AppShell>
+  );
+}
+
+// Lighter cadence than the 2s live-status poll below — this one only exists
+// to notice a migration starting/finishing while a user is parked on the
+// Canvas tab, not to drive per-stage coloring itself.
+const MIGRATION_LIST_POLL_INTERVAL_MS = 5000;
+
+/**
+ * Canvas tab's live-migration overlay. Product owner complaint this
+ * addresses: "the canvas is static, it should be dynamic ... reflect what
+ * is going on when the pipeline is running" — previously only the
+ * Migrations tab's own embedded `<PipelineCanvas>` (in
+ * `MigrationSuccessScreen`) ever received `stageStates`/`runningSubstep`;
+ * the Canvas tab always rendered the same static, uncolored DAG regardless
+ * of a migration running in the background. See DEV_TRACKER.md's "Canvas
+ * tab live migration overlay" for the full design.
+ *
+ * Mounted only while the Canvas tab itself is active — a direct consequence
+ * of the `{tab === "canvas" && (...)}` conditional in `PipelineWorkspace`
+ * above — so both polls below exist only for as long as a user is actually
+ * looking at this tab, never in the background on another tab. Two tiers,
+ * not one:
+ * - `listMigrations` at a lighter 5s cadence, just to notice a migration
+ *   starting/finishing while parked here. Reuses the exact same
+ *   `["migrations", pipelineId]` query key `MigrationsTab` below already
+ *   uses, so switching to/from the Migrations tab is a cache hit, not a
+ *   second fetch, in the common case.
+ * - Once a running migration is found, `useMigrationStatusPoll` (shared
+ *   with `MigrationSuccessScreen`'s own run view, see
+ *   `hooks/use-migration-status-poll.ts`) takes over with the real 2s
+ *   live-coloring poll — same queryKey/refetchInterval convention, so the
+ *   two "poll a migration's stage_states" call sites can't drift apart.
+ *
+ * When nothing is running, this renders exactly what the Canvas tab always
+ * rendered before this change — no `stageStates`/`runningSubstep` props, no
+ * badge, and (since `useMigrationStatusPoll` is disabled whenever
+ * `runningMigration` is `null`) no status poll at all. Static, no polling
+ * overhead beyond the lightweight 5s list check.
+ */
+function CanvasTabContent({
+  pipelineId,
+  onNodeClick,
+  onJumpToMigrations,
+}: {
+  pipelineId: number;
+  onNodeClick: (stageId: number) => void;
+  onJumpToMigrations: () => void;
+}) {
+  const migrationsQuery = useQuery({
+    queryKey: ["migrations", pipelineId],
+    queryFn: () => listMigrations(pipelineId),
+    refetchInterval: MIGRATION_LIST_POLL_INTERVAL_MS,
+  });
+
+  const runningMigration = migrationsQuery.data?.find((m) => m.status === "running") ?? null;
+
+  const statusQuery = useMigrationStatusPoll(pipelineId, runningMigration?.id ?? null, {
+    enabled: runningMigration !== null,
+    initialData: runningMigration ?? undefined,
+  });
+
+  // Guard against a stale poll result outliving its migration (e.g. the
+  // list's next 5s tick already dropped this id from "running") — only
+  // trust statusQuery.data while runningMigration still names it.
+  const liveStatus = runningMigration ? statusQuery.data : undefined;
+
+  return (
+    <>
+      {liveStatus?.status === "running" && (
+        <button
+          type="button"
+          onClick={onJumpToMigrations}
+          className="mx-4 mt-3 flex w-fit items-center gap-1.5 rounded-full border border-line bg-beam-soft/50 px-3 py-1 text-12 font-medium text-ink transition-colors duration-fast ease-out hover:bg-beam-soft"
+        >
+          <span className="relative flex h-2 w-2">
+            <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-beam opacity-75" />
+            <span className="relative inline-flex h-2 w-2 rounded-full bg-beam" />
+          </span>
+          Migration running — view in Migrations →
+        </button>
+      )}
+      <PipelineCanvas
+        pipelineId={pipelineId}
+        stageStates={liveStatus?.stage_states}
+        runningSubstep={liveStatus?.progress_substep}
+        onNodeClick={onNodeClick}
+      />
+    </>
   );
 }
 

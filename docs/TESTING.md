@@ -147,6 +147,29 @@ upgrade head` again (not just `rm` + start the API — see the "Database"
 step in §1.3 for why letting the API's own auto-create rebuild it instead
 causes a later `alembic upgrade head` to fail).
 
+### Restarting — ALWAYS use the restart script on Windows
+
+```powershell
+# From repo root — kills every old dev-server process (including ghosts),
+# starts fresh ones, and health-checks that the API is serving CURRENT code:
+powershell -ExecutionPolicy Bypass -File scripts\dev-restart.ps1
+```
+
+**Why this matters (confirmed 2026-07-16, root of the "Settings is still
+empty" report)**: on Windows, uvicorn `--reload`'s real worker is a child
+python process. If the parent terminal dies without a clean stop, that
+worker survives as an orphan that keeps port 8000 and keeps serving
+**whatever code existed when it started** — for hours or days. You then
+"restart the server", the new uvicorn fails to bind (port busy) or you
+never notice it didn't, and your browser keeps talking to the stale
+orphan: new features look missing, fixed bugs look unfixed. `netstat`
+makes it worse by blaming the *dead parent's* PID, so
+`Stop-Process -Id <that pid>` says "Cannot find a process" while the port
+stays held (the "ghost socket"). `scripts/dev-restart.ps1` kills the
+orphan by matching its command line via WMI instead, and refuses to
+declare success until the fresh API provably serves a current-code route.
+After any restart, hard-refresh the browser (`Ctrl+Shift+R`).
+
 ## 3. How to navigate — the full screen map
 
 ```
@@ -227,7 +250,20 @@ drawer.
 4. On the Canvas tab, click any stage node → a drawer slides in from the
    right showing that stage's rubric (format checks + content criteria) and
    an "Approve" button. Approving from the drawer updates the badge in
-   place without closing the drawer or navigating away.
+   place without closing the drawer or navigating away. (A CSS layout bug
+   made this tab paint completely blank — correct data, zero-height
+   viewport — until 2026-07-16; see `DEV_TRACKER.md`'s "Product owner
+   report" section for the root cause. If nodes ever go invisible again on
+   this tab specifically, check the Canvas tab's content wrapper is still a
+   real `flex` container, not just a `flex-1` item, before assuming it's a
+   data problem.)
+4a. The canvas's top-right toolbar (Grid/Layered preset, →/↓ orientation)
+    is layout-only, no data change — check any pipeline with 10+ stages in
+    **vertical** orientation specifically: cards must have a visible gap
+    between them, not overlap (fixed 2026-07-17, see `DEV_TRACKER.md`'s "Fix
+    overlapping stage node text" — the cross-axis gap used to reuse the
+    horizontal orientation's height-tuned constant even when stacking
+    224px-wide cards side by side).
 5. In the drawer, click "View full rubric →" → the workspace switches to
    the Rubrics tab and scrolls straight to that stage's card (each card has
    an anchor id — no other card should end up at the top of the viewport
@@ -317,6 +353,33 @@ migrations/candidates), no soft-delete/undo.
    stage/rubric/migration/candidate rows are actually gone, not orphaned.
 6. Delete an id that doesn't exist (e.g. `curl -X DELETE
    localhost:8000/pipelines/999999`) → confirm `404`, not a 500.
+
+### 3.1f Inline rename (Pipelines home)
+
+Added 2026-07-16 — see `DEV_TRACKER.md`'s "Product owner report — 'Canvas
+has nothing in it, Settings is empty, no rename'" section. Rename already
+existed one click deeper, in the workspace header (§3.1b step 1) — this
+adds it to the home list itself, same `PATCH /pipelines/{id}` endpoint.
+
+**Trigger via pipeline name click** (original affordance):
+1. On `/`, click directly on a pipeline's name in the table (not the row
+   itself — clicking elsewhere in the row still navigates into the
+   workspace as before) → it turns into a text input, same click-to-edit
+   affordance as the workspace header.
+
+**Trigger via edit/pencil icon button** (added 2026-07-16 for discoverability):
+1. On `/`, click the pencil/edit icon in the row's action-icon area (same
+   cell as the trash/delete icon) → the pipeline name turns into a text
+   input, identical to the click-on-name behavior above.
+
+**Either trigger, then**:
+2. Change it, press Enter (or click away) → confirm it saves and the table
+   cell shows the new name. Confirm the page does **not** navigate away
+   (renaming from the list should never accidentally open the pipeline).
+3. Press Escape while editing → confirm it discards the draft instead of
+   saving.
+4. Reload `/` → confirm the new name persisted server-side, not just in
+   local state.
 
 ### 3.2 Rubric review (Rubrics tab, screen 4)
 
@@ -478,6 +541,43 @@ pattern as §3.3a:
    migration's results; not built here, scope was the backend
    plumbing/self-grading-bias fix only.
 
+### 3.3c Canvas tab live migration overlay
+
+Added 2026-07-16 — closes the product owner complaint "the canvas is
+static, it should be dynamic ... reflect what is going on when the
+pipeline is running." Before this, live per-stage coloring/pulsing/
+sub-step text only ever rendered inside the Migrations tab's own embedded
+canvas (§3.3, step 6); the Canvas tab itself always showed a static,
+uncolored DAG even while a migration was actively running in the
+background. See `DEV_TRACKER.md`'s "Canvas tab live migration overlay" for
+the full design (`apps/web/src/routes/pipeline-workspace.tsx`'s
+`CanvasTabContent`, sharing `apps/web/src/hooks/use-migration-status-poll.ts`
+with `MigrationSuccessScreen`'s own run view).
+
+1. Start a migration from the Migrations tab (§3.3, steps 1–5) so it's
+   actually `running`, then click the **Canvas** tab (`?tab=canvas`) while
+   it's still going.
+2. **Expected**: within a couple of seconds, a small pill appears just
+   under the tab bar reading "Migration running — view in Migrations →"
+   with a pulsing dot — click it to jump straight to the Migrations tab
+   (`?tab=migrations`), landing back on the same live run screen.
+3. The Canvas tab's own DAG now shows the same live coloring as the
+   Migrations tab's embedded canvas — the currently-optimizing stage node
+   pulsing indigo with its sub-step label, finished stages green, a
+   failed/budget-stopped stage red — reading off the same
+   `stage_states`/`progress_substep` fields, polled the same ~2s cadence.
+4. Once the migration reaches a terminal state (or if you open the Canvas
+   tab when nothing is running), the pill disappears and the DAG reverts to
+   the static, uncolored view — same as before this change. Open devtools'
+   network tab to confirm: no `GET .../migrations/{id}/status` polling
+   happens on the Canvas tab while no migration is running (only a light
+   ~5s `GET .../migrations` list check, just enough to notice one starting
+   without leaving the tab).
+5. Switch away to another tab (Data/Rubrics/Migrations) while a migration
+   is running, then confirm via devtools that the Canvas tab's polling
+   stops entirely while it isn't the active tab — both polls are scoped to
+   the Canvas tab actually being mounted, not global background polling.
+
 ### 3.4 Auth + Settings (M5)
 
 1. Go to `/login`, enter any email, submit.
@@ -510,6 +610,34 @@ pattern as §3.3a:
    workspace BYOK keys via `complete_with_workspace_credentials`
    (`apps/api/src/reprompt_api/llm_context.py`). Not wired: nothing left
    outstanding here that's specific to Settings itself.
+9. Below "Configured models," the **"System models"** card (new,
+   2026-07-16) shows which model Reprompt's own harness — rubric
+   generation, judge, mutator — is currently auto-selecting, via
+   `GET /settings/system-models`
+   (`apps/api/src/reprompt_api/settings.py`), which calls the exact same
+   `reprompt_core.llm.model_select.select_model()` the real
+   optimizer/rubric-generation call sites use. With zero BYOK keys this
+   should show a local `ollama/...` model for all three purposes ("best
+   available"); add an Anthropic or OpenAI key and reload — all three
+   should upgrade to that provider's tier-1 model (`claude-sonnet-4-5` /
+   `gpt-4o`), proving the visibility is live, not a static label. This
+   closes the trust gap called out when `128bc94` ("Fix judge/mutator
+   self-grading bias") fixed the underlying selection but left it
+   invisible in the UI. A specific migration can still override the
+   judge/mutator model via its own `target_model_config` when created
+   (§3.3a) — this card always shows the no-override default, since there's
+   no single "current migration" at the Settings level to read an override
+   from (see DEV_TRACKER.md's "Settings empty-page perception fix + System
+   models visibility" for why a workspace-level override wasn't added).
+10. **If the page ever looks blank/broken**: as of 2026-07-16 every route
+    has a shared crash fallback (`rootRoute`'s `errorComponent` in
+    `router.tsx`, `apps/web/src/components/route-error-fallback.tsx`) — a
+    genuine render exception anywhere now shows a styled "Something went
+    wrong" card with the nav rail still usable, instead of no boundary at
+    all (previously: a full-page unmount to the router's bare, unstyled
+    default text, easy to mistake for a blank page in a screenshot). If
+    you ever see that bare default instead of this styled card, the
+    boundary itself has regressed — worth a bug report on its own.
 
 ### 3.5 Design system sanity check
 

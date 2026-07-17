@@ -112,6 +112,13 @@ describe("Login", () => {
     expect(screen.getByRole("button", { name: "Send magic link" })).toBeInTheDocument();
   });
 
+  it("offers the one-click dev sign-in shortcut alongside the email form", async () => {
+    renderLogin();
+
+    // import.meta.env.DEV is true under vitest, so the shortcut renders.
+    expect(await screen.findByRole("button", { name: "Sign in (dev)" })).toBeInTheDocument();
+  });
+
   it("does not submit on an empty email", async () => {
     renderLogin();
 

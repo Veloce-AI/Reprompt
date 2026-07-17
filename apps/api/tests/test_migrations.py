@@ -233,6 +233,109 @@ def test_create_migration_omits_judge_and_mutator_model_when_not_given(client: T
     assert response.json()["target_model_config"] == {"models": ["gpt-4o-mini"]}
 
 
+def test_create_migration_persists_stage_overrides(
+    client: TestClient, session_factory: sessionmaker
+) -> None:
+    """stage_overrides is additive: keyed by real stage id (string), each
+    entry replaces `models` for that stage only - see DEV_TRACKER.md's
+    "Per-stage target model override" note. Confirms it round-trips through
+    TargetModelConfig's schema/model_dump() exactly as sent."""
+    pipeline_id = _upload(client, _diamond_trace_file())
+    stage_ids = _stage_ids(session_factory, pipeline_id)
+    root_id = str(stage_ids["root"])
+
+    response = client.post(
+        f"/pipelines/{pipeline_id}/migrations",
+        json={
+            "target_model_config": {
+                "models": ["gpt-4o-mini"],
+                "stage_overrides": {root_id: ["claude-haiku-4-5", "gpt-4o"]},
+            },
+            "budget": 25.0,
+        },
+    )
+    assert response.status_code == 201, response.text
+    assert response.json()["target_model_config"] == {
+        "models": ["gpt-4o-mini"],
+        "stage_overrides": {root_id: ["claude-haiku-4-5", "gpt-4o"]},
+    }
+
+
+def test_create_migration_omits_stage_overrides_when_not_given(client: TestClient) -> None:
+    """The common case - no advanced per-stage customization - must keep
+    storing the same bare {"models": [...]} shape as before this field
+    existed, not padded with an explicit `null` key."""
+    pipeline_id = _upload(client, _diamond_trace_file())
+
+    response = client.post(
+        f"/pipelines/{pipeline_id}/migrations",
+        json={"target_model_config": {"models": ["gpt-4o-mini"]}, "budget": 10.0},
+    )
+    assert response.status_code == 201, response.text
+    assert response.json()["target_model_config"] == {"models": ["gpt-4o-mini"]}
+
+
+def test_create_migration_rejects_stage_overrides_referencing_unknown_stage_id(
+    client: TestClient,
+) -> None:
+    pipeline_id = _upload(client, _diamond_trace_file())
+
+    response = client.post(
+        f"/pipelines/{pipeline_id}/migrations",
+        json={
+            "target_model_config": {
+                "models": ["gpt-4o-mini"],
+                "stage_overrides": {"999999": ["claude-haiku-4-5"]},
+            },
+            "budget": 10.0,
+        },
+    )
+    assert response.status_code == 422
+    assert "999999" in response.json()["detail"]
+
+
+def test_create_migration_rejects_stage_overrides_referencing_another_pipelines_stage(
+    client: TestClient, session_factory: sessionmaker
+) -> None:
+    """A real, existing stage id — just not one that belongs to *this*
+    pipeline — must also be rejected, not silently accepted."""
+    pipeline_a = _upload(client, _diamond_trace_file())
+    pipeline_b = _upload(client, _diamond_trace_file())
+    other_stage_id = str(_stage_ids(session_factory, pipeline_b)["root"])
+
+    response = client.post(
+        f"/pipelines/{pipeline_a}/migrations",
+        json={
+            "target_model_config": {
+                "models": ["gpt-4o-mini"],
+                "stage_overrides": {other_stage_id: ["claude-haiku-4-5"]},
+            },
+            "budget": 10.0,
+        },
+    )
+    assert response.status_code == 422
+    assert other_stage_id in response.json()["detail"]
+
+
+def test_create_migration_rejects_empty_model_list_in_a_stage_override(
+    client: TestClient, session_factory: sessionmaker
+) -> None:
+    pipeline_id = _upload(client, _diamond_trace_file())
+    root_id = str(_stage_ids(session_factory, pipeline_id)["root"])
+
+    response = client.post(
+        f"/pipelines/{pipeline_id}/migrations",
+        json={
+            "target_model_config": {
+                "models": ["gpt-4o-mini"],
+                "stage_overrides": {root_id: []},
+            },
+            "budget": 10.0,
+        },
+    )
+    assert response.status_code == 422
+
+
 def test_create_migration_defaults_parity_threshold_to_95_percent(client: TestClient) -> None:
     pipeline_id = _upload(client, _diamond_trace_file())
 

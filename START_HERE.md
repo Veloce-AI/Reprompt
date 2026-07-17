@@ -37,7 +37,16 @@ proves the outputs still match. Full plain-language explanation: `README.md`.
    discipline — read `ponytail` before any implementation task, it's the
    concrete version of this project's own "Simplicity First / No Laziness"
    rule), `code-simplifier` (post-hoc simplification pass — read after
-   writing/editing code, before calling a change done). See
+   writing/editing code, before calling a change done), `design-references`
+   (real SaaS DESIGN.md specs — Linear/Stripe/PostHog — for comparison when
+   unsure how a data-dense serious-tool screen should look; reference
+   points, never templates to copy verbatim), `code-reviewer-persona`/
+   `ai-code-security-auditor`/`appsec-engineer-persona` (read
+   `ai-code-security-auditor` specifically before treating any AI-agent-
+   generated code as done — this project's whole workflow is multi-agent
+   code generation, exactly the failure mode this skill exists for:
+   hardcoded secrets, disabled row-level security, prompt-injection sinks
+   shipped because a demo happened to work without them). See
    `.claude/skills/ATTRIBUTION.md` for exact sources/licenses before adding
    more; `anthropics/claude-code`'s own skills are NOT available to pull
    from (checked, all-rights-reserved). **If you are dispatching a

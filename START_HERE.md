@@ -31,7 +31,13 @@ proves the outputs still match. Full plain-language explanation: `README.md`.
    craft), `webapp-testing` (drive-the-real-app discipline — this project
    has repeatedly shipped bugs that passed unit tests but broke on real
    render/CSS, see `saas-product-design`'s point 5 and `system-design`'s
-   point 5), `skill-creator` (for writing more of these well). See
+   point 5), `skill-creator` (for writing more of these well),
+   `ponytail`/`ponytail-audit`/`ponytail-debt`/`ponytail-gain`/
+   `ponytail-help`/`ponytail-review` (write-minimal-necessary-code
+   discipline — read `ponytail` before any implementation task, it's the
+   concrete version of this project's own "Simplicity First / No Laziness"
+   rule), `code-simplifier` (post-hoc simplification pass — read after
+   writing/editing code, before calling a change done). See
    `.claude/skills/ATTRIBUTION.md` for exact sources/licenses before adding
    more; `anthropics/claude-code`'s own skills are NOT available to pull
    from (checked, all-rights-reserved). **If you are dispatching a

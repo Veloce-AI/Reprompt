@@ -24,6 +24,8 @@ record of what's ours vs. pulled from elsewhere, and under what terms.
 | `theme-factory/` | same repo, `skills/theme-factory` | Apache 2.0 | Full skill (`SKILL.md`, `LICENSE.txt`, `theme-showcase.pdf` reference). |
 | `webapp-testing/` | same repo, `skills/webapp-testing` | Apache 2.0 | Full skill — Playwright-based web app testing guidance, directly applicable given how many bugs this project has caught by actually driving the app instead of trusting unit tests alone. |
 | `skill-creator/` | same repo, `skills/skill-creator` | Apache 2.0 | Full skill — meta-skill for writing better skills, useful when this project needs to author more of its own. |
+| `ponytail/`, `ponytail-audit/`, `ponytail-debt/`, `ponytail-gain/`, `ponytail-help/`, `ponytail-review/` | [DietrichGebert/ponytail](https://github.com/DietrichGebert/ponytail) | MIT | All 6 skills, full directories. "Write minimal necessary code" discipline (skip unneeded code → reuse → stdlib → native → dependency → one-liner → minimum viable, in that order) — directly matches this project's own standing "Simplicity First / No Laziness" instruction. |
+| `code-simplifier/` | [anthropics/claude-plugins-official](https://github.com/anthropics/claude-plugins-official), `plugins/code-simplifier` | Apache 2.0 | Full plugin (`agents/code-simplifier.md`, `.claude-plugin/plugin.json`, its own `LICENSE`). Distinct from `anthropics/claude-code` (all-rights-reserved, checked separately) — `claude-plugins-official` is a different, genuinely Apache-2.0 Anthropic repo. |
 
 **Explicitly NOT pulled, checked and rejected**: `anthropics/claude-code`'s
 `frontend-design` plugin — its `LICENSE.md` is "All rights reserved,
@@ -41,6 +43,25 @@ would just be a stale duplicate) were checked and deliberately skipped.
 `docx`/`pdf`/`pptx`/`xlsx` in that same repo are explicitly marked
 "source-available, not open source" in its README — not pulled, and don't
 revisit without actually reading their specific terms first.
+
+**Second round, also checked**: `lak7/devildev` (Apache 2.0, but a whole
+standalone Next.js/Prisma SaaS app, not a skill — nothing shaped like a
+portable instruction set to pull, regardless of license); `enuno/claude-
+command-and-control` (no LICENSE file anywhere in the repo — default
+copyright means all-rights-reserved, not pulled, though its `docs/best-
+practices/` looked like genuinely useful multi-agent-orchestration reading
+if a license ever gets added); `getdesign.md` (a web catalog service,
+nothing downloadable); `OpenHands/OpenHands` (a whole self-hosted agent
+platform, not a skill); `msitarzewski/agency-agents` (a library of agent
+personas for other tools, not `SKILL.md` format); `elder-plinius/T3MP3ST`
+(checked specifically because that account is known for jailbreak/prompt-
+injection content — turned out to be a legitimate authorized-pentesting
+framework, not adversarial, but has zero relevance to a prompt-optimization
+product regardless — skipped on relevance, not safety, grounds).
+`modelcontextprotocol/servers`' `sequentialthinking` server is a real,
+useful, official MIT-licensed MCP server — but it's a different artifact
+type (a running server configured as an MCP connector), not a file that
+belongs in this skills folder; worth knowing about, not pullable here.
 
 If a future session wants to pull from a new external repo, follow the same
 process: find the actual `LICENSE` file (not a README badge — verify the

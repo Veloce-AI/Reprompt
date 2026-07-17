@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { Link } from "@tanstack/react-router";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import {
   ApiError,
@@ -193,7 +194,15 @@ export function MigrationSuccessScreen({
               />
             )}
 
-            <div className="mt-6">
+            <div className="mt-6 flex gap-3">
+              {isTerminal && (
+                <Link
+                  to="/pipelines/$pipelineId/migrations/$migrationId"
+                  params={{ pipelineId, migrationId: String(migration.id) }}
+                >
+                  <Button variant="primary">View full results →</Button>
+                </Link>
+              )}
               <Button variant="secondary" onClick={onBackToCanvas}>
                 Back to pipeline canvas
               </Button>

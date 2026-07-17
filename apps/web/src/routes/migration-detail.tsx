@@ -5,6 +5,7 @@ import { AppShell } from "@/components/app-shell";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { ParityBeam, parityStatus } from "@/components/parity-beam";
+import { diffWords } from "@/lib/text-diff";
 import {
   Table,
   TableBody,
@@ -30,6 +31,21 @@ const STATUS_VARIANTS: Record<string, "outline" | "pass" | "fail" | "neutral" | 
   stopped_early: "near",
 };
 
+function DiffPrompt({ original, winning }: { original: string; winning: string }) {
+  const ops = diffWords(original, winning);
+  return (
+    <pre className="max-h-40 overflow-auto rounded border border-line bg-paper p-2 font-mono text-11 leading-normal text-ink whitespace-pre-wrap">
+      {ops.map((op, i) => {
+        if (op.type === "delete")
+          return <span key={i} className="bg-parity-fail/10 text-parity-fail line-through">{op.text}</span>;
+        if (op.type === "insert")
+          return <span key={i} className="bg-parity-pass/10 text-parity-pass">{op.text}</span>;
+        return <span key={i}>{op.text}</span>;
+      })}
+    </pre>
+  );
+}
+
 function StageResultRow({
   result,
   parityThreshold,
@@ -44,14 +60,7 @@ function StageResultRow({
     <TableRow>
       <TableCell className="align-top font-medium text-ink">{result.stage_name}</TableCell>
       <TableCell className="align-top">
-        <pre className="max-h-32 overflow-auto rounded border border-line bg-paper/50 p-2 font-mono text-11 text-ink-soft whitespace-pre-wrap">
-          {result.original_prompt}
-        </pre>
-      </TableCell>
-      <TableCell className="align-top">
-        <pre className="max-h-32 overflow-auto rounded border border-line bg-beam-soft/20 p-2 font-mono text-11 text-ink whitespace-pre-wrap">
-          {result.winning_prompt}
-        </pre>
+        <DiffPrompt original={result.original_prompt} winning={result.winning_prompt} />
       </TableCell>
       <TableCell className="align-top font-mono text-12 text-ink-soft">
         {result.winning_model}
@@ -188,8 +197,7 @@ export default function MigrationDetail() {
               <TableHeader>
                 <TableRow>
                   <TableHead>Stage</TableHead>
-                  <TableHead>Original prompt</TableHead>
-                  <TableHead>Winning prompt</TableHead>
+                  <TableHead>Prompt diff (original → winning)</TableHead>
                   <TableHead>Model</TableHead>
                   <TableHead>Score</TableHead>
                 </TableRow>

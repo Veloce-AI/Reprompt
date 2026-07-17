@@ -17,7 +17,6 @@ import {
   loadCanvasLayoutChoice,
   saveCanvasLayoutChoice,
   type CanvasLayoutChoice,
-  type CanvasLayoutPreset,
   type CanvasOrientation,
 } from "@/lib/canvas-layout";
 import { cn } from "@/lib/utils";
@@ -49,12 +48,13 @@ export interface PipelineCanvasProps {
  * the migration run screen (with `stageStates`, polled live — see Phase 2 /
  * DEV_TRACKER.md "Live DAG/run status view").
  *
- * Layout is user-switchable (see lib/canvas-layout.ts for the presets and
- * why "grid" is the default) via the toolbar in the top-right corner, and
- * the choice is remembered per pipeline. During a live migration, edges
- * touching the running stage carry the animated "beam" treatment and edges
- * between finished stages settle into the pass color — the DAG reads as a
- * picture of how far the light has travelled, not just colored dots.
+ * Node positions come from `@dagrejs/dagre` (see lib/canvas-layout.ts) —
+ * flow direction (horizontal/vertical) is user-switchable via the toolbar in
+ * the top-right corner, and the choice is remembered per pipeline. During a
+ * live migration, edges touching the running stage carry the animated
+ * "beam" treatment and edges between finished stages settle into the pass
+ * color — the DAG reads as a picture of how far the light has travelled,
+ * not just colored dots.
  */
 export function PipelineCanvas({
   pipelineId,
@@ -78,7 +78,7 @@ export function PipelineCanvas({
   const { nodes, edges } = useMemo(() => {
     if (!data) return { nodes: [] as StageFlowNode[], edges: [] as Edge[] };
 
-    const positions = computeCanvasLayout(data.layers, layout);
+    const positions = computeCanvasLayout(data.layers, data.edges, layout);
 
     const nodes: StageFlowNode[] = data.layers.flatMap((layer) =>
       layer.stage_ids.map((stageId) => {
@@ -140,6 +140,8 @@ export function PipelineCanvas({
         edges={edges}
         nodeTypes={nodeTypes}
         fitView
+        fitViewOptions={FIT_VIEW_OPTIONS}
+        minZoom={CANVAS_MIN_ZOOM}
         proOptions={{ hideAttribution: true }}
         onNodeClick={onNodeClick ? (_event, node) => onNodeClick(Number(node.id)) : undefined}
       >
@@ -148,44 +150,92 @@ export function PipelineCanvas({
         <Panel position="top-right">
           <CanvasLayoutToolbar layout={layout} onChange={setLayout} />
         </Panel>
-        <RefitOnChange nodeCount={nodes.length} layout={layout} />
+        {/* `stageStates !== undefined` (not its contents) as a refit
+            trigger: pipeline-workspace.tsx's Canvas tab overlay mounts its
+            "Migration running" pill as a sibling *above* this whole
+            component once a live migration is found - a real layout change
+            (the canvas's available height shrinks) that isn't captured by
+            nodeCount/layout alone, and arrives on a later render than this
+            component's own mount (the migrations-list/status queries
+            resolve asynchronously), so the initial `fitView` already
+            measured the taller, pre-pill height. Deliberately not keyed on
+            `stageStates`'s contents/identity - that changes every 2s poll
+            while running, and refitting that often would yank a user's pan/
+            zoom out from under them while they're watching the live view. */}
+        <RefitOnChange
+          nodeCount={nodes.length}
+          layout={layout}
+          hasLiveOverlay={stageStates !== undefined}
+        />
       </ReactFlow>
     </div>
   );
 }
 
+// React Flow's own default minZoom is 0.5 — plenty for a small DAG, but a
+// real wide pipeline (many parallel stages at the same dependency depth, or
+// a long chain) can need a far smaller zoom to fit the whole graph in the
+// viewport at once. Without lowering this, fitView silently clamps at 0.5
+// and nodes past that point render off-screen even though "fitView ran" -
+// React Flow's own fitView implementation reads its call-site `minZoom`
+// option ahead of the instance-wide prop, so both are set here for
+// belt-and-suspenders (the prop also raises the ceiling a user's own manual
+// zoom-out can reach).
+const CANVAS_MIN_ZOOM = 0.05;
+const FIT_VIEW_OPTIONS = { padding: 0.1, minZoom: CANVAS_MIN_ZOOM };
+
 /** Re-run fitView whenever the layout choice or the stage count changes —
- * the `fitView` prop only applies on first mount, so without this a preset
- * switch (or a new run adding stages) leaves the graph half off-screen. */
+ * the `fitView` prop only applies on first mount, so without this an
+ * orientation switch (or a new run adding stages) leaves the graph half
+ * off-screen. */
 function RefitOnChange({
   nodeCount,
   layout,
+  hasLiveOverlay,
 }: {
   nodeCount: number;
   layout: CanvasLayoutChoice;
+  hasLiveOverlay: boolean;
 }) {
   const { fitView } = useReactFlow();
   useEffect(() => {
     if (nodeCount === 0) return;
-    // Next frame: let React Flow measure the repositioned nodes first.
+    // Two nested frames, not one: React Flow measures each node's real
+    // rendered size via ResizeObserver (nodes here have no explicit
+    // width/height, so fitView's bounds are only as good as that
+    // measurement) and ResizeObserver callbacks land *after* a frame's
+    // layout/style pass, i.e. one frame later than a same-frame
+    // requestAnimationFrame callback can see. A single rAF was measured
+    // (Playwright, real DOM) to occasionally fit against a not-yet-updated
+    // size for a node whose height depends on its live run state (the
+    // "running" node's extra sub-step line) - one frame short. Waiting an
+    // extra frame gives that observer time to fire first.
+    let cleanupInner = () => {};
     const frame = requestAnimationFrame(() => {
-      fitView({ padding: 0.1 });
+      const frame2 = requestAnimationFrame(() => {
+        fitView(FIT_VIEW_OPTIONS);
+      });
+      cleanupInner = () => cancelAnimationFrame(frame2);
     });
-    return () => cancelAnimationFrame(frame);
-  }, [nodeCount, layout, fitView]);
+    return () => {
+      cancelAnimationFrame(frame);
+      cleanupInner();
+    };
+  }, [nodeCount, layout, hasLiveOverlay, fitView]);
   return null;
 }
-
-const PRESET_OPTIONS: { value: CanvasLayoutPreset; label: string; title: string }[] = [
-  { value: "grid", label: "Grid", title: "Compact wrap — fits big pipelines on screen" },
-  { value: "layered", label: "Layered", title: "One column per dependency layer" },
-];
 
 const ORIENTATION_OPTIONS: { value: CanvasOrientation; label: string; title: string }[] = [
   { value: "horizontal", label: "→", title: "Horizontal (left to right)" },
   { value: "vertical", label: "↓", title: "Vertical (top to bottom)" },
 ];
 
+// Dagre computes real, non-overlapping spacing from the graph's own edges,
+// so the old hand-rolled "Grid" (compact wrap) vs. "Layered" (one column per
+// dependency layer) preset picker no longer has a job to do — both existed
+// only to work around the previous hand-rolled layout math's failure modes.
+// Flow direction is still a real, user-meaningful choice (a wide pipeline
+// often reads better top-to-bottom), so that toggle stays.
 function CanvasLayoutToolbar({
   layout,
   onChange,
@@ -195,12 +245,6 @@ function CanvasLayoutToolbar({
 }) {
   return (
     <div className="flex items-center gap-2" role="toolbar" aria-label="Canvas layout">
-      <SegmentedGroup
-        ariaLabel="Layout preset"
-        options={PRESET_OPTIONS}
-        value={layout.preset}
-        onSelect={(preset) => onChange({ ...layout, preset })}
-      />
       <SegmentedGroup
         ariaLabel="Layout orientation"
         options={ORIENTATION_OPTIONS}

@@ -5,107 +5,129 @@ import {
   loadCanvasLayoutChoice,
   saveCanvasLayoutChoice,
   DEFAULT_CANVAS_LAYOUT,
-  MAX_PER_LINE,
+  type XY,
 } from "./canvas-layout";
 
-function chainLayers(count: number): { stage_ids: number[] }[] {
-  // A mostly-sequential pipeline: one node per layer (the owner's real
-  // 35-stage trace is 31 layers, 29 of them single-node).
+/** Card footprint dagre lays out around — must match the constants inside
+ * canvas-layout.ts (not exported, so re-declared here; a drift between the
+ * two would only make this test's overlap margin wrong, never mask a real
+ * regression, since dagre itself is still the one deciding positions). */
+const NODE_WIDTH = 232;
+const NODE_HEIGHT = 150;
+
+function chain(count: number): { stage_ids: number[] }[] {
   return Array.from({ length: count }, (_, i) => ({ stage_ids: [i + 1] }));
 }
 
-describe("computeCanvasLayout - grid preset", () => {
-  it("wraps a long chain into rows of MAX_PER_LINE instead of one endless strip", () => {
-    const positions = computeCanvasLayout(chainLayers(35), {
-      preset: "grid",
-      orientation: "horizontal",
-    });
+function chainEdges(count: number): { from_stage_id: number; to_stage_id: number }[] {
+  return Array.from({ length: count - 1 }, (_, i) => ({
+    from_stage_id: i + 1,
+    to_stage_id: i + 2,
+  }));
+}
 
-    const xs = Object.values(positions).map((p) => p.x);
-    const ys = Object.values(positions).map((p) => p.y);
-    // Width is capped at MAX_PER_LINE slots; height grows instead.
-    expect(Math.max(...xs)).toBe((MAX_PER_LINE - 1) * 280);
-    expect(Math.max(...ys)).toBe(Math.floor(34 / MAX_PER_LINE) * 190);
-    // 7 x 5 grid is ~4x squarer than a 35-wide strip - fitView can show it
-    // at a readable zoom on a laptop.
-    expect(Math.max(...xs) / Math.max(...ys)).toBeLessThan(2);
-  });
+/** True if two node boxes (top-left `positions[id]`, fixed NODE_WIDTH/
+ * NODE_HEIGHT footprint) overlap at all. */
+function boxesOverlap(a: XY, b: XY): boolean {
+  return (
+    a.x < b.x + NODE_WIDTH &&
+    b.x < a.x + NODE_WIDTH &&
+    a.y < b.y + NODE_HEIGHT &&
+    b.y < a.y + NODE_HEIGHT
+  );
+}
 
-  it("snakes odd rows so consecutive stages stay adjacent", () => {
-    const positions = computeCanvasLayout(chainLayers(12), {
-      preset: "grid",
-      orientation: "horizontal",
-    });
-
-    // Row 0 runs left-to-right...
-    expect(positions["1"]).toEqual({ x: 0, y: 0 });
-    expect(positions["5"]).toEqual({ x: 4 * 280, y: 0 });
-    // ...row 1 runs right-to-left, so stage 6 sits directly under stage 5.
-    expect(positions["6"]).toEqual({ x: 4 * 280, y: 190 });
-    expect(positions["10"]).toEqual({ x: 0, y: 190 });
-    // ...row 2 flips back.
-    expect(positions["11"]).toEqual({ x: 0, y: 2 * 190 });
-  });
-
-  it("swaps axes in vertical orientation", () => {
-    const horizontal = computeCanvasLayout(chainLayers(7), {
-      preset: "grid",
-      orientation: "horizontal",
-    });
-    const vertical = computeCanvasLayout(chainLayers(7), {
-      preset: "grid",
-      orientation: "vertical",
-    });
-
-    for (const id of Object.keys(horizontal)) {
-      expect(vertical[id]).toEqual({ x: horizontal[id].y, y: horizontal[id].x });
+function assertNoOverlaps(positions: Record<string, XY>) {
+  const entries = Object.values(positions);
+  for (let i = 0; i < entries.length; i++) {
+    for (let j = i + 1; j < entries.length; j++) {
+      expect(boxesOverlap(entries[i], entries[j])).toBe(false);
     }
-  });
-});
+  }
+}
 
-describe("computeCanvasLayout - layered preset", () => {
-  it("keeps the classic one-column-per-layer shape for narrow layers", () => {
-    const positions = computeCanvasLayout(
-      [{ stage_ids: [1] }, { stage_ids: [2, 3] }, { stage_ids: [4] }],
-      { preset: "layered", orientation: "horizontal" }
-    );
+describe("computeCanvasLayout (dagre)", () => {
+  it("lays out a long mostly-sequential chain (the owner's real 35-stage shape) with zero overlaps", () => {
+    // 31 layers, 29 of them single-node - the same shape DEV_TRACKER.md
+    // records as the real pipeline that used to overflow the viewport.
+    const layers = chain(35);
+    const edges = chainEdges(35);
+    const positions = computeCanvasLayout(layers, edges, { orientation: "horizontal" });
 
-    expect(positions["1"]).toEqual({ x: 0, y: 0 });
-    expect(positions["2"]).toEqual({ x: 280, y: 0 });
-    expect(positions["3"]).toEqual({ x: 280, y: 190 });
-    expect(positions["4"]).toEqual({ x: 2 * 280, y: 0 });
-  });
-
-  it("wraps a very wide layer into extra columns and shifts later layers over", () => {
-    const wide = Array.from({ length: 8 }, (_, i) => i + 1); // > MAX_PER_LAYER_LINE
-    const positions = computeCanvasLayout(
-      [{ stage_ids: wide }, { stage_ids: [100] }],
-      { preset: "layered", orientation: "horizontal" }
-    );
-
-    // First 6 stack in column 0, overflow continues in column 1...
-    expect(positions["1"]).toEqual({ x: 0, y: 0 });
-    expect(positions["6"]).toEqual({ x: 0, y: 5 * 190 });
-    expect(positions["7"]).toEqual({ x: 280, y: 0 });
-    expect(positions["8"]).toEqual({ x: 280, y: 190 });
-    // ...and the next layer starts after the wrapped layer's two columns.
-    expect(positions["100"]).toEqual({ x: 2 * 280, y: 0 });
+    expect(Object.keys(positions)).toHaveLength(35);
+    assertNoOverlaps(positions);
   });
 
-  it("swaps axes in vertical orientation", () => {
-    const layers = [{ stage_ids: [1] }, { stage_ids: [2, 3] }];
-    const horizontal = computeCanvasLayout(layers, {
-      preset: "layered",
-      orientation: "horizontal",
-    });
-    const vertical = computeCanvasLayout(layers, {
-      preset: "layered",
-      orientation: "vertical",
-    });
+  it("handles one very wide layer (many nodes with no edges between them) with zero overlaps", () => {
+    // A single wide layer is exactly the shape the old hand-rolled
+    // "layered" preset special-cased (MAX_PER_LAYER_LINE wrapping) - dagre
+    // needs no special case, it just spaces same-rank nodes apart.
+    const wideLayer = Array.from({ length: 12 }, (_, i) => i + 1);
+    const layers = [{ stage_ids: wideLayer }, { stage_ids: [100] }];
+    const edges = wideLayer.map((id) => ({ from_stage_id: id, to_stage_id: 100 }));
 
-    for (const id of Object.keys(horizontal)) {
-      expect(vertical[id]).toEqual({ x: horizontal[id].y, y: horizontal[id].x });
-    }
+    const positions = computeCanvasLayout(layers, edges, { orientation: "horizontal" });
+
+    expect(Object.keys(positions)).toHaveLength(13);
+    assertNoOverlaps(positions);
+  });
+
+  it("places dependent stages in increasing order along the flow axis", () => {
+    const layers = [{ stage_ids: [1] }, { stage_ids: [2] }, { stage_ids: [3] }];
+    const edges = [
+      { from_stage_id: 1, to_stage_id: 2 },
+      { from_stage_id: 2, to_stage_id: 3 },
+    ];
+
+    const horizontal = computeCanvasLayout(layers, edges, { orientation: "horizontal" });
+    expect(horizontal["1"].x).toBeLessThan(horizontal["2"].x);
+    expect(horizontal["2"].x).toBeLessThan(horizontal["3"].x);
+
+    const vertical = computeCanvasLayout(layers, edges, { orientation: "vertical" });
+    expect(vertical["1"].y).toBeLessThan(vertical["2"].y);
+    expect(vertical["2"].y).toBeLessThan(vertical["3"].y);
+  });
+
+  it("swaps the dominant axis between horizontal and vertical orientation", () => {
+    const layers = [{ stage_ids: [1] }, { stage_ids: [2, 3] }, { stage_ids: [4] }];
+    const edges = [
+      { from_stage_id: 1, to_stage_id: 2 },
+      { from_stage_id: 1, to_stage_id: 3 },
+      { from_stage_id: 2, to_stage_id: 4 },
+      { from_stage_id: 3, to_stage_id: 4 },
+    ];
+
+    const horizontal = computeCanvasLayout(layers, edges, { orientation: "horizontal" });
+    const vertical = computeCanvasLayout(layers, edges, { orientation: "vertical" });
+
+    // Horizontal: rank (dependency depth) drives x, same-rank siblings (2,3)
+    // spread across y. Vertical: rank drives y, siblings spread across x.
+    expect(horizontal["2"].x).toBe(horizontal["3"].x);
+    expect(horizontal["2"].y).not.toBe(horizontal["3"].y);
+    expect(vertical["2"].y).toBe(vertical["3"].y);
+    expect(vertical["2"].x).not.toBe(vertical["3"].x);
+  });
+
+  it("places an isolated node with no edges without throwing", () => {
+    const layers = [{ stage_ids: [1] }, { stage_ids: [2] }];
+    const positions = computeCanvasLayout(layers, [], { orientation: "horizontal" });
+
+    expect(Object.keys(positions)).toHaveLength(2);
+    assertNoOverlaps(positions);
+  });
+
+  it("returns an empty map for an empty pipeline", () => {
+    expect(computeCanvasLayout([], [], { orientation: "horizontal" })).toEqual({});
+  });
+
+  it("skips an edge referencing an unknown stage id instead of throwing", () => {
+    const layers = [{ stage_ids: [1] }, { stage_ids: [2] }];
+    const edges = [
+      { from_stage_id: 1, to_stage_id: 2 },
+      { from_stage_id: 1, to_stage_id: 999 }, // 999 isn't in `layers`
+    ];
+
+    expect(() => computeCanvasLayout(layers, edges, { orientation: "horizontal" })).not.toThrow();
   });
 });
 
@@ -132,15 +154,15 @@ describe("layout choice persistence", () => {
     localStorage.clear();
   });
 
-  it("defaults to the grid preset when nothing is stored", () => {
+  it("defaults to horizontal orientation when nothing is stored", () => {
     expect(loadCanvasLayoutChoice(42)).toEqual(DEFAULT_CANVAS_LAYOUT);
-    expect(DEFAULT_CANVAS_LAYOUT.preset).toBe("grid");
+    expect(DEFAULT_CANVAS_LAYOUT.orientation).toBe("horizontal");
   });
 
   it("round-trips a saved choice per pipeline", () => {
-    saveCanvasLayoutChoice(42, { preset: "layered", orientation: "vertical" });
+    saveCanvasLayoutChoice(42, { orientation: "vertical" });
 
-    expect(loadCanvasLayoutChoice(42)).toEqual({ preset: "layered", orientation: "vertical" });
+    expect(loadCanvasLayoutChoice(42)).toEqual({ orientation: "vertical" });
     // A different pipeline keeps its own default.
     expect(loadCanvasLayoutChoice(7)).toEqual(DEFAULT_CANVAS_LAYOUT);
   });
@@ -149,7 +171,15 @@ describe("layout choice persistence", () => {
     localStorage.setItem("reprompt.canvas-layout.42", "{not json");
     expect(loadCanvasLayoutChoice(42)).toEqual(DEFAULT_CANVAS_LAYOUT);
 
-    localStorage.setItem("reprompt.canvas-layout.42", JSON.stringify({ preset: "bogus" }));
+    localStorage.setItem("reprompt.canvas-layout.42", JSON.stringify({ orientation: "bogus" }));
     expect(loadCanvasLayoutChoice(42)).toEqual(DEFAULT_CANVAS_LAYOUT);
+  });
+
+  it("ignores a stale 'preset' field from before the dagre migration", () => {
+    localStorage.setItem(
+      "reprompt.canvas-layout.42",
+      JSON.stringify({ preset: "layered", orientation: "vertical" })
+    );
+    expect(loadCanvasLayoutChoice(42)).toEqual({ orientation: "vertical" });
   });
 });

@@ -20,12 +20,25 @@ import type { StageRunState } from "@/lib/api";
 
 export type CanvasOrientation = "horizontal" | "vertical";
 
+/**
+ * Spacing preset — a real, visually distinct dagre configuration choice, not
+ * a cosmetic label. "Compact" is dagre's tight default spacing (unchanged
+ * from before this option existed). "Spacious" roughly doubles the gap
+ * between ranks and within a rank, giving a long mostly-linear chain (the
+ * product owner's real 30+ stage pipeline shape) more breathing room between
+ * cards when the user wants it — purely a `nodesep`/`ranksep` change, dagre
+ * still computes the actual non-overlapping positions either way.
+ */
+export type CanvasSpacing = "compact" | "spacious";
+
 export interface CanvasLayoutChoice {
   orientation: CanvasOrientation;
+  spacing: CanvasSpacing;
 }
 
 export const DEFAULT_CANVAS_LAYOUT: CanvasLayoutChoice = {
   orientation: "horizontal",
+  spacing: "compact",
 };
 
 /** Must match stage-node.tsx's Card: `w-56` = 224px, plus a little slack for
@@ -40,11 +53,14 @@ const NODE_WIDTH = 232;
  * cards never actually touch even when a real one renders taller. */
 const NODE_HEIGHT = 150;
 /** Gap between adjacent ranks (the flow direction) and within a rank
- * (across the flow direction) — generous enough that two adjacent node
- * cards' real DOM boxes (which can render a bit taller/wider than the
- * NODE_WIDTH/NODE_HEIGHT estimate above) still never overlap. */
-const RANK_SEP = 96;
-const NODE_SEP = 48;
+ * (across the flow direction) for each spacing preset — generous enough
+ * even at "compact" that two adjacent node cards' real DOM boxes (which can
+ * render a bit taller/wider than the NODE_WIDTH/NODE_HEIGHT estimate above)
+ * still never overlap. "Spacious" roughly doubles both gaps. */
+const SPACING: Record<CanvasSpacing, { rankSep: number; nodeSep: number }> = {
+  compact: { rankSep: 96, nodeSep: 48 },
+  spacious: { rankSep: 176, nodeSep: 96 },
+};
 
 export interface XY {
   x: number;
@@ -75,11 +91,12 @@ export function computeCanvasLayout(
   const stageIds = layers.flatMap((layer) => layer.stage_ids);
   if (stageIds.length === 0) return {};
 
+  const { rankSep, nodeSep } = SPACING[choice.spacing];
   const graph = new dagre.graphlib.Graph();
   graph.setGraph({
     rankdir: choice.orientation === "horizontal" ? "LR" : "TB",
-    nodesep: NODE_SEP,
-    ranksep: RANK_SEP,
+    nodesep: nodeSep,
+    ranksep: rankSep,
   });
   graph.setDefaultEdgeLabel(() => ({}));
 
@@ -140,10 +157,16 @@ export function loadCanvasLayoutChoice(pipelineId: number): CanvasLayoutChoice {
   try {
     const raw = localStorage.getItem(storageKey(pipelineId));
     if (!raw) return DEFAULT_CANVAS_LAYOUT;
+    // `Partial` on purpose: an older saved value may predate the `spacing`
+    // field (or, from before the dagre migration, may carry a stale
+    // `preset` field instead) — both are simply ignored/defaulted rather
+    // than treated as corrupt, so an existing user's saved orientation isn't
+    // lost by either past or future layout-choice changes.
     const parsed = JSON.parse(raw) as Partial<CanvasLayoutChoice>;
     const orientation: CanvasOrientation =
       parsed.orientation === "vertical" ? "vertical" : "horizontal";
-    return { orientation };
+    const spacing: CanvasSpacing = parsed.spacing === "spacious" ? "spacious" : "compact";
+    return { orientation, spacing };
   } catch {
     return DEFAULT_CANVAS_LAYOUT;
   }

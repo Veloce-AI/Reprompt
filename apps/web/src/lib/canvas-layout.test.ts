@@ -52,7 +52,7 @@ describe("computeCanvasLayout (dagre)", () => {
     // records as the real pipeline that used to overflow the viewport.
     const layers = chain(35);
     const edges = chainEdges(35);
-    const positions = computeCanvasLayout(layers, edges, { orientation: "horizontal" });
+    const positions = computeCanvasLayout(layers, edges, { orientation: "horizontal", spacing: "compact" });
 
     expect(Object.keys(positions)).toHaveLength(35);
     assertNoOverlaps(positions);
@@ -66,7 +66,7 @@ describe("computeCanvasLayout (dagre)", () => {
     const layers = [{ stage_ids: wideLayer }, { stage_ids: [100] }];
     const edges = wideLayer.map((id) => ({ from_stage_id: id, to_stage_id: 100 }));
 
-    const positions = computeCanvasLayout(layers, edges, { orientation: "horizontal" });
+    const positions = computeCanvasLayout(layers, edges, { orientation: "horizontal", spacing: "compact" });
 
     expect(Object.keys(positions)).toHaveLength(13);
     assertNoOverlaps(positions);
@@ -79,11 +79,11 @@ describe("computeCanvasLayout (dagre)", () => {
       { from_stage_id: 2, to_stage_id: 3 },
     ];
 
-    const horizontal = computeCanvasLayout(layers, edges, { orientation: "horizontal" });
+    const horizontal = computeCanvasLayout(layers, edges, { orientation: "horizontal", spacing: "compact" });
     expect(horizontal["1"].x).toBeLessThan(horizontal["2"].x);
     expect(horizontal["2"].x).toBeLessThan(horizontal["3"].x);
 
-    const vertical = computeCanvasLayout(layers, edges, { orientation: "vertical" });
+    const vertical = computeCanvasLayout(layers, edges, { orientation: "vertical", spacing: "compact" });
     expect(vertical["1"].y).toBeLessThan(vertical["2"].y);
     expect(vertical["2"].y).toBeLessThan(vertical["3"].y);
   });
@@ -97,8 +97,8 @@ describe("computeCanvasLayout (dagre)", () => {
       { from_stage_id: 3, to_stage_id: 4 },
     ];
 
-    const horizontal = computeCanvasLayout(layers, edges, { orientation: "horizontal" });
-    const vertical = computeCanvasLayout(layers, edges, { orientation: "vertical" });
+    const horizontal = computeCanvasLayout(layers, edges, { orientation: "horizontal", spacing: "compact" });
+    const vertical = computeCanvasLayout(layers, edges, { orientation: "vertical", spacing: "compact" });
 
     // Horizontal: rank (dependency depth) drives x, same-rank siblings (2,3)
     // spread across y. Vertical: rank drives y, siblings spread across x.
@@ -110,14 +110,14 @@ describe("computeCanvasLayout (dagre)", () => {
 
   it("places an isolated node with no edges without throwing", () => {
     const layers = [{ stage_ids: [1] }, { stage_ids: [2] }];
-    const positions = computeCanvasLayout(layers, [], { orientation: "horizontal" });
+    const positions = computeCanvasLayout(layers, [], { orientation: "horizontal", spacing: "compact" });
 
     expect(Object.keys(positions)).toHaveLength(2);
     assertNoOverlaps(positions);
   });
 
   it("returns an empty map for an empty pipeline", () => {
-    expect(computeCanvasLayout([], [], { orientation: "horizontal" })).toEqual({});
+    expect(computeCanvasLayout([], [], { orientation: "horizontal", spacing: "compact" })).toEqual({});
   });
 
   it("skips an edge referencing an unknown stage id instead of throwing", () => {
@@ -127,7 +127,38 @@ describe("computeCanvasLayout (dagre)", () => {
       { from_stage_id: 1, to_stage_id: 999 }, // 999 isn't in `layers`
     ];
 
-    expect(() => computeCanvasLayout(layers, edges, { orientation: "horizontal" })).not.toThrow();
+    expect(() => computeCanvasLayout(layers, edges, { orientation: "horizontal", spacing: "compact" })).not.toThrow();
+  });
+
+  it("'spacious' places ranks and same-rank siblings further apart than 'compact', still with zero overlaps", () => {
+    // A long chain (rank spacing) plus one wide rank (sibling spacing), so
+    // both `ranksep` and `nodesep` are actually exercised, not just one.
+    const wideLayer = [10, 11, 12];
+    const layers = [{ stage_ids: [1] }, { stage_ids: [2] }, { stage_ids: wideLayer }, { stage_ids: [3] }];
+    const edges = [
+      { from_stage_id: 1, to_stage_id: 2 },
+      ...wideLayer.map((id) => ({ from_stage_id: 2, to_stage_id: id })),
+      ...wideLayer.map((id) => ({ from_stage_id: id, to_stage_id: 3 })),
+    ];
+
+    const compact = computeCanvasLayout(layers, edges, { orientation: "horizontal", spacing: "compact" });
+    const spacious = computeCanvasLayout(layers, edges, { orientation: "horizontal", spacing: "spacious" });
+    assertNoOverlaps(compact);
+    assertNoOverlaps(spacious);
+
+    // Rank spacing (ranksep, the flow/x axis in horizontal orientation):
+    // stage 1 to stage 2's gap must be strictly larger under "spacious".
+    const compactRankGap = compact["2"].x - compact["1"].x;
+    const spaciousRankGap = spacious["2"].x - spacious["1"].x;
+    expect(spaciousRankGap).toBeGreaterThan(compactRankGap);
+
+    // Sibling spacing (nodesep, the cross axis): the wide rank's outermost
+    // two nodes' y-gap must also be strictly larger under "spacious".
+    const compactYs = wideLayer.map((id) => compact[String(id)].y).sort((a, b) => a - b);
+    const spaciousYs = wideLayer.map((id) => spacious[String(id)].y).sort((a, b) => a - b);
+    const compactSiblingSpan = compactYs[compactYs.length - 1] - compactYs[0];
+    const spaciousSiblingSpan = spaciousYs[spaciousYs.length - 1] - spaciousYs[0];
+    expect(spaciousSiblingSpan).toBeGreaterThan(compactSiblingSpan);
   });
 });
 
@@ -154,17 +185,23 @@ describe("layout choice persistence", () => {
     localStorage.clear();
   });
 
-  it("defaults to horizontal orientation when nothing is stored", () => {
+  it("defaults to horizontal orientation and compact spacing when nothing is stored", () => {
     expect(loadCanvasLayoutChoice(42)).toEqual(DEFAULT_CANVAS_LAYOUT);
     expect(DEFAULT_CANVAS_LAYOUT.orientation).toBe("horizontal");
+    expect(DEFAULT_CANVAS_LAYOUT.spacing).toBe("compact");
   });
 
-  it("round-trips a saved choice per pipeline", () => {
-    saveCanvasLayoutChoice(42, { orientation: "vertical" });
+  it("round-trips a saved choice (orientation and spacing) per pipeline", () => {
+    saveCanvasLayoutChoice(42, { orientation: "vertical", spacing: "spacious" });
 
-    expect(loadCanvasLayoutChoice(42)).toEqual({ orientation: "vertical" });
+    expect(loadCanvasLayoutChoice(42)).toEqual({ orientation: "vertical", spacing: "spacious" });
     // A different pipeline keeps its own default.
     expect(loadCanvasLayoutChoice(7)).toEqual(DEFAULT_CANVAS_LAYOUT);
+  });
+
+  it("defaults spacing to 'compact' for a saved value that predates the spacing field", () => {
+    localStorage.setItem("reprompt.canvas-layout.42", JSON.stringify({ orientation: "vertical" }));
+    expect(loadCanvasLayoutChoice(42)).toEqual({ orientation: "vertical", spacing: "compact" });
   });
 
   it("falls back to the default on corrupted storage", () => {
@@ -180,6 +217,6 @@ describe("layout choice persistence", () => {
       "reprompt.canvas-layout.42",
       JSON.stringify({ preset: "layered", orientation: "vertical" })
     );
-    expect(loadCanvasLayoutChoice(42)).toEqual({ orientation: "vertical" });
+    expect(loadCanvasLayoutChoice(42)).toEqual({ orientation: "vertical", spacing: "compact" });
   });
 });

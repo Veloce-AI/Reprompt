@@ -381,43 +381,69 @@ adds it to the home list itself, same `PATCH /pipelines/{id}` endpoint.
 4. Reload `/` → confirm the new name persisted server-side, not just in
    local state.
 
-### 3.1g Canvas layout (dagre auto-layout)
+### 3.1g Canvas layout (dagre auto-layout + legible zoom floor)
 
-Added 2026-07-17 — see `DEV_TRACKER.md`'s "Canvas: dagre-based auto layout"
-section. Replaces the hand-rolled grid/layered position math (which still
-let a real, large pipeline render outside the viewport or with overlapping
-nodes) with `@dagrejs/dagre`-computed positions. The two-preset picker
-("Grid"/"Layered") is gone — dagre's own layout supersedes both — the
-toolbar in the canvas's top-right corner now only has the horizontal/
-vertical orientation toggle.
+Added 2026-07-17, corrected same day — see `DEV_TRACKER.md`'s "Canvas:
+dagre-based auto layout" section and the "Canvas: legible zoom floor +
+spacing picker" section that supersedes its "fits on screen" claim. The
+dagre position math itself (replacing the old hand-rolled grid/layered
+math) was and still is correct — the bug was in what the canvas did with
+those positions: `fitView` shrank the whole graph to fit the viewport with
+almost no zoom floor (`minZoom: 0.05`), which is fine for a WIDE graph but
+crushes a TALL, mostly-linear chain (the product owner's real ~35-stage
+pipeline: one node per row for nearly the whole thing) into illegible
+slivers of card, long before it visually "fits". The fix: a legible zoom
+floor (`CANVAS_MIN_ZOOM = 0.5` in `pipeline-canvas.tsx`, confirmed by
+screenshot — not guessed — to keep a stage-node.tsx card's name/model
+badge/stats line readable) that `fitView` never shrinks past; a graph too
+large to fit the viewport at that zoom is simply pannable, the same way
+Figma/Miro/Linear's own graph views work, rather than shrunk further. A
+real "Compact"/"Spacious" spacing picker (dagre `nodesep`/`ranksep`) sits
+next to the existing horizontal/vertical orientation toggle in the canvas's
+top-right toolbar, both persisted per pipeline (localStorage).
 
-1. Import a pipeline with many stages (the bigger and more branchy, the
-   better a stress test — a wide layer with 10+ parallel stages at the same
-   dependency depth is the sharpest case). On the Canvas tab, confirm every
-   node is fully visible on screen after it loads — no node's card is cut
-   off at an edge or rendered off-canvas, and no two node cards overlap
-   each other.
-2. Click the orientation toggle's "↓" button (top-right toolbar) → the DAG
-   redraws top-to-bottom instead of left-to-right, still fully on-screen
-   with no overlaps. Click "→" to switch back.
-3. Reload the page → the last-chosen orientation persisted (localStorage,
-   per pipeline) and the DAG still fits.
-4. Start a migration and watch the Canvas tab while it's running (§3.3c) →
+1. Import a pipeline with many stages, mostly in a single dependency chain
+   (one node per layer) with only occasional multi-stage branch points —
+   this is the shape that actually matters; a wide, many-parallel-stages
+   layer no longer needs a separate stress test since it hits the same
+   zoom floor either way. On the Canvas tab, at the default zoom: **read
+   the text on a node card** — the stage name, model badge, and token/
+   latency line should be legible, not a blurred sliver. If you can't read
+   a node's name without zooming in first, the fix has regressed.
+2. Click the "Spacious" button (top-right toolbar, next to Compact) → the
+   gap between connected node cards visibly widens; nodes remain legible
+   and non-overlapping. Click "Compact" to return to the tighter default.
+3. Click the orientation toggle's "↓" button → the DAG redraws
+   top-to-bottom instead of left-to-right; repeat the legibility and
+   spacing checks in this orientation too. Click "→" to switch back.
+4. Reload the page → the last-chosen orientation *and* spacing both
+   persisted (localStorage, per pipeline).
+5. Use the zoom controls in the bottom-left corner: zoom in on a specific
+   node and confirm you can read it clearly at a larger size; zoom out
+   repeatedly and confirm the "Zoom Out" button disables itself once it
+   hits the legible floor rather than continuing to shrink nodes into
+   illegibility.
+6. Start a migration and watch the Canvas tab while it's running (§3.3c) →
    the live per-stage coloring/pulsing/sub-step label still work exactly as
-   before (dagre only changed *where* nodes sit, not how they're colored),
-   and the DAG still fits on screen once the "Migration running" pill
-   appears above it (that pill shrinks the canvas's available height after
-   the DAG's first paint — confirm nothing pokes out from under it).
+   before (this task's changes are additive to zoom bounds and layout
+   spacing, not a rewrite of what the canvas renders).
 
 Automated coverage: `apps/web/src/lib/canvas-layout.test.ts` (dagre position
 math — zero overlaps for a long chain and for a wide layer, dependency order
 along the flow axis, orientation axis swap, an isolated/no-edge node,
-malformed-edge resilience) and `apps/web/e2e/canvas-layout.spec.ts` (real
-Playwright/Chromium render of a mocked 35-stage DAG across 6 layers,
-including two 12-node-wide layers — asserts zero node-vs-node overlap and
-zero nodes outside the `.react-flow` viewport's bounding box after fitView,
-in both orientations, and with a mocked running migration's live coloring/
-beam-flow edges layered on top).
+malformed-edge resilience, and the "spacious" spacing preset producing a
+strictly larger real rank/sibling gap than "compact") and
+`apps/web/e2e/canvas-layout.spec.ts` (real Playwright/Chromium render of a
+mocked ~38-stage, mostly-linear DAG modeled directly on the product owner's
+own screenshot — zero overlap AND a legible node bounding-box size in both
+orientations, the spacing picker measurably widening the real DOM gap
+between connected nodes, orientation+spacing persistence across a reload,
+and the zoom controls' floor actually holding; plus a second suite
+re-verifying the original wide 35-stage/12-node-wide-layer shape still has
+zero overlaps and legible nodes — its old "fits entirely inside the
+viewport" assertion was deliberately removed, since expecting that was the
+bug — together with the running-migration live-coloring/beam-flow-edge
+checks on that same wide shape).
 
 ### 3.2 Rubric review (Rubrics tab, screen 4)
 

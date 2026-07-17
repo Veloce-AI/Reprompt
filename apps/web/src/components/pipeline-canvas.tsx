@@ -18,6 +18,7 @@ import {
   saveCanvasLayoutChoice,
   type CanvasLayoutChoice,
   type CanvasOrientation,
+  type CanvasSpacing,
 } from "@/lib/canvas-layout";
 import { cn } from "@/lib/utils";
 
@@ -49,9 +50,12 @@ export interface PipelineCanvasProps {
  * DEV_TRACKER.md "Live DAG/run status view").
  *
  * Node positions come from `@dagrejs/dagre` (see lib/canvas-layout.ts) —
- * flow direction (horizontal/vertical) is user-switchable via the toolbar in
- * the top-right corner, and the choice is remembered per pipeline. During a
- * live migration, edges touching the running stage carry the animated
+ * both flow direction (horizontal/vertical) and card spacing (compact/
+ * spacious) are user-switchable via the toolbar in the top-right corner, and
+ * the choice is remembered per pipeline. Layout never shrinks nodes below a
+ * legible zoom floor (`CANVAS_MIN_ZOOM` below) to force everything on
+ * screen — a graph too large to fit at that zoom is pannable instead. During
+ * a live migration, edges touching the running stage carry the animated
  * "beam" treatment and edges between finished stages settle into the pass
  * color — the DAG reads as a picture of how far the light has travelled,
  * not just colored dots.
@@ -172,16 +176,25 @@ export function PipelineCanvas({
   );
 }
 
-// React Flow's own default minZoom is 0.5 — plenty for a small DAG, but a
-// real wide pipeline (many parallel stages at the same dependency depth, or
-// a long chain) can need a far smaller zoom to fit the whole graph in the
-// viewport at once. Without lowering this, fitView silently clamps at 0.5
-// and nodes past that point render off-screen even though "fitView ran" -
-// React Flow's own fitView implementation reads its call-site `minZoom`
-// option ahead of the instance-wide prop, so both are set here for
-// belt-and-suspenders (the prop also raises the ceiling a user's own manual
-// zoom-out can reach).
-const CANVAS_MIN_ZOOM = 0.05;
+// A first pass at this canvas (see DEV_TRACKER.md's "dagre-based auto
+// layout" entry) lowered this to 0.05 so `fitView` could always shrink the
+// *entire* graph onto screen at once, no matter how large. That was wrong
+// for the shape that actually matters most here: the product owner's real
+// pipeline is a long, mostly-linear chain of ~30 single-node layers, and
+// "shrink until the whole chain fits in the viewport" crushes every node
+// into an illegible sliver (confirmed by rendering that exact shape in a
+// real browser — a node card shrank to ~20x12px, no text readable) long
+// before it actually "fits". Real diagram tools (Figma, Miro, Linear's own
+// graph views) don't chase that goal — they hold a legible zoom floor and
+// let the user pan/scroll to the part they want, so that's the model here
+// too: 0.5 is React Flow's own conventional default floor, and was
+// confirmed by screenshot (not guessed) to keep the stage name, model
+// badge, and stats line on stage-node.tsx's Card fully readable. If the
+// laid-out graph doesn't fit the viewport at this zoom, `fitView` clamps to
+// it and centers on the graph's overall bounds — the excess is simply
+// off-screen, reachable by panning (React Flow's own drag-to-pan, no extra
+// wiring needed) or by the zoom controls in the corner, not shrunk further.
+const CANVAS_MIN_ZOOM = 0.5;
 const FIT_VIEW_OPTIONS = { padding: 0.1, minZoom: CANVAS_MIN_ZOOM };
 
 /** Re-run fitView whenever the layout choice or the stage count changes —
@@ -230,12 +243,21 @@ const ORIENTATION_OPTIONS: { value: CanvasOrientation; label: string; title: str
   { value: "vertical", label: "↓", title: "Vertical (top to bottom)" },
 ];
 
-// Dagre computes real, non-overlapping spacing from the graph's own edges,
-// so the old hand-rolled "Grid" (compact wrap) vs. "Layered" (one column per
-// dependency layer) preset picker no longer has a job to do — both existed
-// only to work around the previous hand-rolled layout math's failure modes.
-// Flow direction is still a real, user-meaningful choice (a wide pipeline
-// often reads better top-to-bottom), so that toggle stays.
+// The old hand-rolled "Grid" vs. "Layered" preset picker (both existed only
+// to work around the previous hand-rolled layout math's own failure modes)
+// is gone for good — dagre computes real, non-overlapping spacing from the
+// graph's own edges regardless of preset. What replaced it is a genuinely
+// different choice: how much breathing room dagre leaves between cards
+// (`nodesep`/`ranksep`, see lib/canvas-layout.ts's `SPACING` map) — real for
+// a long chain specifically, where "Compact" packs stages tightly and
+// "Spacious" gives each one more room to read comfortably. Flow direction
+// remains its own, orthogonal, real choice (a wide pipeline often reads
+// better top-to-bottom), so both toggles sit side by side.
+const SPACING_OPTIONS: { value: CanvasSpacing; label: string; title: string }[] = [
+  { value: "compact", label: "Compact", title: "Compact spacing (tight)" },
+  { value: "spacious", label: "Spacious", title: "Spacious spacing (more room between cards)" },
+];
+
 function CanvasLayoutToolbar({
   layout,
   onChange,
@@ -245,6 +267,12 @@ function CanvasLayoutToolbar({
 }) {
   return (
     <div className="flex items-center gap-2" role="toolbar" aria-label="Canvas layout">
+      <SegmentedGroup
+        ariaLabel="Node spacing"
+        options={SPACING_OPTIONS}
+        value={layout.spacing}
+        onSelect={(spacing) => onChange({ ...layout, spacing })}
+      />
       <SegmentedGroup
         ariaLabel="Layout orientation"
         options={ORIENTATION_OPTIONS}

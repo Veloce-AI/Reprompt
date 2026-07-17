@@ -2,58 +2,119 @@ import { test, expect, type Page } from "@playwright/test";
 
 /**
  * Verifies the dagre-based canvas layout (see lib/canvas-layout.ts,
- * DEV_TRACKER.md's "Canvas: dagre-based auto layout") against the real
- * failure mode the product owner reported: a real, large pipeline (35
- * stages) going outside the viewport / overlapping under the old hand-rolled
- * grid/layered position math. Entirely network-mocked (no live API server,
- * no auth) — the router has no auth gate on `/pipelines/$id`
- * (router.tsx), and every fetch the workspace route makes is intercepted
- * below, so this only needs the Vite dev server (playwright.config.ts's
- * `webServer`) to be up, same as every other e2e spec here.
+ * DEV_TRACKER.md's "Canvas: dagre-based auto layout" and the
+ * "Canvas: legible zoom floor + spacing picker" entry that corrects it).
  *
- * A jsdom/Vitest unit test cannot stand in for this: DEV_TRACKER.md's
- * "Product owner report" section already documents a real case where a
- * layout bug was fully invisible to Vitest (jsdom doesn't run real CSS
- * layout/paint) but plainly visible in a screenshot - overlap and
- * out-of-viewport placement are exactly that class of bug.
+ * The first dagre pass fixed node overlap and got everything technically
+ * "inside the viewport" for a WIDE 35-stage mock (two 12-node-wide layers)
+ * — but the product owner's real pipeline is the opposite shape: a long,
+ * mostly-linear chain of ~30-40 single-node layers with a few 3-wide branch
+ * points. "Shrink until it fits" crushes a TALL chain into an illegible
+ * sliver long before it visually "fits" a short viewport — confirmed by
+ * rendering this exact shape and measuring node boxes around 20x12px with
+ * `fitView`'s old `minZoom: 0.05` floor. The fix replaces "everything
+ * visible, no scroll" with a legible zoom floor (nodes never render below
+ * ~0.5 zoom) plus panning for graphs too large to fit at that zoom, and adds
+ * a real "Compact"/"Spacious" spacing picker alongside the existing
+ * orientation toggle. This spec's primary suite below tests exactly that
+ * shape; a second suite re-verifies the original wide-shape case still has
+ * zero overlaps (its "fits inside the viewport" assertion is gone on
+ * purpose — expecting a graph to shrink to fit was the bug).
+ *
+ * Entirely network-mocked (no live API server, no auth) — same pattern as
+ * every other e2e spec here. A jsdom/Vitest unit test cannot stand in for
+ * this: legibility and real pixel gaps are exactly the class of bug jsdom's
+ * fake layout can't catch (see DEV_TRACKER.md's "Product owner report"
+ * section for the precedent).
  */
 
 const PIPELINE_ID = 1;
-const RUNNING_MIGRATION_ID = 99;
 
 interface MockStage {
   id: number;
   name: string;
 }
 
-/** 35 stages across 6 layers, including two wide layers (12 nodes each) -
- * the shape DEV_TRACKER.md records as the owner's real pipeline (many
- * single/few-node layers) stress-tested further with genuinely wide layers,
- * since dagre must space an arbitrary-width rank correctly with no
- * special-casing (unlike the old "layered" preset's MAX_PER_LAYER_LINE
- * wrap). */
-function buildMockDag() {
+// ---- Shape 1: the real reported bug — tall, mostly-linear, narrow ----
+
+/** ~38 stages across ~30 layers: a long single-node chain interrupted by
+ * four 3-wide branch-and-immediately-merge points — modeled directly on the
+ * product owner's screenshot ("a single, mostly-linear vertical column ...
+ * a handful of 3-wide branch points, everything else is 1 node per row"),
+ * not the wide shape the previous fix's own test happened to use. */
+function buildTallNarrowDag() {
+  const layerIds: number[][] = [];
+  const edges: { from_stage_id: number; to_stage_id: number }[] = [];
+  let nextId = 1;
+  let prev: number[] | null = null;
+
+  function addLayer(width: number) {
+    const ids = Array.from({ length: width }, () => nextId++);
+    layerIds.push(ids);
+    if (prev) {
+      const from = prev;
+      ids.forEach((toId, i) => edges.push({ from_stage_id: from[i % from.length], to_stage_id: toId }));
+    }
+    prev = ids;
+  }
+
+  addLayer(1); // root
+  for (let i = 0; i < 6; i++) addLayer(1);
+  for (let branch = 0; branch < 4; branch++) {
+    addLayer(3); // branch point
+    addLayer(1); // immediate merge
+    for (let i = 0; i < 5; i++) addLayer(1);
+  }
+
+  const stages: Record<string, MockStage & Record<string, unknown>> = {};
+  for (const layer of layerIds) {
+    for (const id of layer) {
+      stages[String(id)] = {
+        id,
+        name: `Stage ${id} — classify_and_route`,
+        model: "gpt-4o-mini",
+        avg_tokens_in: 120,
+        avg_tokens_out: 80,
+        avg_latency_ms: 450,
+      };
+    }
+  }
+
+  return {
+    dag: {
+      pipeline_id: PIPELINE_ID,
+      layers: layerIds.map((stage_ids) => ({ stage_ids })),
+      stages,
+      edges,
+    },
+    total: nextId - 1,
+  };
+}
+
+// ---- Shape 2: the previous fix's wide shape — kept for regression ----
+
+/** 35 stages across 6 layers, including two wide layers (12 nodes each) —
+ * the shape the original dagre-layout fix's own test used. Kept to confirm
+ * this task's changes (raising the zoom floor, adding spacing) don't
+ * reintroduce overlap for a wide graph. */
+function buildWideDag() {
   const layerRanges: number[][] = [
-    [1], // root
+    [1],
     [2, 3, 4],
-    Array.from({ length: 12 }, (_, i) => i + 5), // 5..16 - wide layer
-    Array.from({ length: 12 }, (_, i) => i + 17), // 17..28 - wide layer
+    Array.from({ length: 12 }, (_, i) => i + 5),
+    Array.from({ length: 12 }, (_, i) => i + 17),
     [29, 30, 31, 32, 33],
     [34, 35],
   ];
 
   const stages: Record<string, MockStage> = {};
   for (const layer of layerRanges) {
-    for (const id of layer) {
-      stages[String(id)] = { id, name: `Stage ${id}` };
-    }
+    for (const id of layer) stages[String(id)] = { id, name: `Stage ${id}` };
   }
 
   const edges: { from_stage_id: number; to_stage_id: number }[] = [];
   const connect = (from: number[], to: number[]) => {
-    to.forEach((toId, i) => {
-      edges.push({ from_stage_id: from[i % from.length], to_stage_id: toId });
-    });
+    to.forEach((toId, i) => edges.push({ from_stage_id: from[i % from.length], to_stage_id: toId }));
   };
   connect(layerRanges[0], layerRanges[1]);
   connect(layerRanges[1], layerRanges[2]);
@@ -76,17 +137,20 @@ function buildMockDag() {
   );
 
   return {
-    pipeline_id: PIPELINE_ID,
-    layers: layerRanges.map((stage_ids) => ({ stage_ids })),
-    stages: dagStages,
-    edges,
+    dag: {
+      pipeline_id: PIPELINE_ID,
+      layers: layerRanges.map((stage_ids) => ({ stage_ids })),
+      stages: dagStages,
+      edges,
+    },
+    total: 35,
   };
 }
 
-const MOCK_DAG = buildMockDag();
-
 async function mockPipelineApi(
   page: Page,
+  dag: ReturnType<typeof buildTallNarrowDag>["dag"],
+  total: number,
   options: { runningMigration?: boolean; stageStates?: Record<string, string> } = {}
 ) {
   await page.route("**/pipelines", (route) =>
@@ -94,8 +158,8 @@ async function mockPipelineApi(
       json: [
         {
           id: PIPELINE_ID,
-          name: "Big pipeline (35 stages)",
-          stage_count: 35,
+          name: "Renamed via curl test",
+          stage_count: total,
           models_used: ["gpt-4o-mini"],
           benchmark_query_count: 10,
         },
@@ -103,11 +167,11 @@ async function mockPipelineApi(
     })
   );
 
-  await page.route(`**/pipelines/${PIPELINE_ID}/dag`, (route) => route.fulfill({ json: MOCK_DAG }));
+  await page.route(`**/pipelines/${PIPELINE_ID}/dag`, (route) => route.fulfill({ json: dag }));
 
   const migration = options.runningMigration
     ? {
-        id: RUNNING_MIGRATION_ID,
+        id: 99,
         pipeline_id: PIPELINE_ID,
         target_model_config: { models: ["gpt-4o-mini"] },
         budget: 10,
@@ -118,7 +182,7 @@ async function mockPipelineApi(
         stop_reason: null,
         progress_stage_name: "Stage 17",
         progress_current: 17,
-        progress_total: 35,
+        progress_total: total,
         progress_substep: "critiquing",
         activity_log: [],
         completed_at: null,
@@ -129,9 +193,8 @@ async function mockPipelineApi(
   await page.route(`**/pipelines/${PIPELINE_ID}/migrations`, (route) =>
     route.fulfill({ json: migration ? [migration] : [] })
   );
-
   if (migration) {
-    await page.route(`**/pipelines/${PIPELINE_ID}/migrations/${RUNNING_MIGRATION_ID}/status`, (route) =>
+    await page.route(`**/pipelines/${PIPELINE_ID}/migrations/99/status`, (route) =>
       route.fulfill({ json: migration })
     );
   }
@@ -148,15 +211,6 @@ function boxesOverlap(a: Box, b: Box): boolean {
   return a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height;
 }
 
-function boxInsideContainer(node: Box, container: Box, tolerance = 4): boolean {
-  return (
-    node.x >= container.x - tolerance &&
-    node.y >= container.y - tolerance &&
-    node.x + node.width <= container.x + container.width + tolerance &&
-    node.y + node.height <= container.y + container.height + tolerance
-  );
-}
-
 async function getNodeBoxes(page: Page): Promise<Box[]> {
   const nodes = page.locator(".react-flow__node");
   const count = await nodes.count();
@@ -169,16 +223,7 @@ async function getNodeBoxes(page: Page): Promise<Box[]> {
   return boxes;
 }
 
-async function assertFitsAndNoOverlap(page: Page) {
-  const container = await page.locator(".react-flow").boundingBox();
-  expect(container).not.toBeNull();
-  const boxes = await getNodeBoxes(page);
-  expect(boxes).toHaveLength(35);
-
-  for (const box of boxes) {
-    expect(boxInsideContainer(box, container!)).toBe(true);
-  }
-
+function assertNoOverlap(boxes: Box[]) {
   for (let i = 0; i < boxes.length; i++) {
     for (let j = i + 1; j < boxes.length; j++) {
       expect(boxesOverlap(boxes[i], boxes[j]), `nodes ${i} and ${j} should not overlap`).toBe(false);
@@ -186,64 +231,227 @@ async function assertFitsAndNoOverlap(page: Page) {
   }
 }
 
-test.describe("canvas dagre auto-layout — 35-stage pipeline", () => {
-  test("fits every node on screen with zero overlaps, in both orientations", async ({ page }) => {
-    await mockPipelineApi(page);
+// stage-node.tsx's Card renders at ~224px wide (w-56) at zoom 1. At the
+// canvas's legible zoom floor (pipeline-canvas.tsx's CANVAS_MIN_ZOOM, 0.5,
+// confirmed by screenshot to keep the stage name/model badge/stats line
+// readable), a node box should render at roughly half that. This threshold
+// sits comfortably below that expected value (tolerating layout/measurement
+// slack) but well above the ~20px slivers the pre-fix bug produced —
+// exactly the gap this regression check needs to catch.
+const MIN_LEGIBLE_WIDTH = 90;
+const MIN_LEGIBLE_HEIGHT = 50;
+
+function assertLegible(boxes: Box[]) {
+  for (const box of boxes) {
+    expect(box.width, "node width should stay above the legible-zoom floor").toBeGreaterThanOrEqual(
+      MIN_LEGIBLE_WIDTH
+    );
+    expect(box.height, "node height should stay above the legible-zoom floor").toBeGreaterThanOrEqual(
+      MIN_LEGIBLE_HEIGHT
+    );
+  }
+}
+
+async function getZoomScale(page: Page): Promise<number> {
+  const style = await page.locator(".react-flow__viewport").getAttribute("style");
+  const match = style?.match(/scale\(([\d.]+)\)/);
+  expect(match, `expected a scale(...) transform in "${style}"`).not.toBeNull();
+  return Number(match![1]);
+}
+
+function nodeForStage(page: Page, name: string) {
+  return page.locator(".react-flow__node").filter({ has: page.locator(`p[title="${name}"]`) });
+}
+
+test.describe("canvas dagre auto-layout — tall/narrow pipeline (~38 stages, mostly linear)", () => {
+  test("renders every node at a legible size with zero overlap, in both orientations", async ({ page }) => {
+    const { dag, total } = buildTallNarrowDag();
+    await mockPipelineApi(page, dag, total);
+
+    await page.goto(`/pipelines/${PIPELINE_ID}?tab=canvas`);
+    await expect(page.locator(".react-flow__node")).toHaveCount(total);
+    await page.waitForTimeout(300);
+
+    let boxes = await getNodeBoxes(page);
+    assertNoOverlap(boxes);
+    assertLegible(boxes);
+    // This shape is far taller than any reasonable viewport at a legible
+    // zoom, so fitView should clamp to the floor exactly, not something
+    // in between - proof the floor is actually being enforced.
+    expect(await getZoomScale(page)).toBeCloseTo(0.5, 2);
+
+    await page.getByRole("button", { name: "↓", exact: true }).click();
+    await page.waitForTimeout(300);
+
+    boxes = await getNodeBoxes(page);
+    assertNoOverlap(boxes);
+    assertLegible(boxes);
+    expect(await getZoomScale(page)).toBeCloseTo(0.5, 2);
+  });
+
+  test("the spacing picker (Compact vs Spacious) measurably widens the real DOM gap between connected nodes, in both orientations, without ever going illegible", async ({
+    page,
+  }) => {
+    const { dag, total } = buildTallNarrowDag();
+    await mockPipelineApi(page, dag, total);
+
+    await page.goto(`/pipelines/${PIPELINE_ID}?tab=canvas`);
+    await expect(page.locator(".react-flow__node")).toHaveCount(total);
+    await page.waitForTimeout(300);
+
+    async function railGap(axis: "x" | "y"): Promise<number> {
+      const a = await nodeForStage(page, "Stage 1 — classify_and_route").boundingBox();
+      const b = await nodeForStage(page, "Stage 2 — classify_and_route").boundingBox();
+      expect(a).not.toBeNull();
+      expect(b).not.toBeNull();
+      return Math.abs(b![axis] - a![axis]);
+    }
+
+    // Horizontal, compact is the default.
+    const compactHorizontalGap = await railGap("x");
+    let boxes = await getNodeBoxes(page);
+    assertNoOverlap(boxes);
+    assertLegible(boxes);
+
+    await page.getByRole("button", { name: "Spacious", exact: true }).click();
+    await page.waitForTimeout(300);
+    const spaciousHorizontalGap = await railGap("x");
+    boxes = await getNodeBoxes(page);
+    assertNoOverlap(boxes);
+    assertLegible(boxes);
+    expect(spaciousHorizontalGap).toBeGreaterThan(compactHorizontalGap);
+
+    // Switch to vertical while still on "Spacious".
+    await page.getByRole("button", { name: "↓", exact: true }).click();
+    await page.waitForTimeout(300);
+    const spaciousVerticalGap = await railGap("y");
+    boxes = await getNodeBoxes(page);
+    assertNoOverlap(boxes);
+    assertLegible(boxes);
+
+    await page.getByRole("button", { name: "Compact", exact: true }).click();
+    await page.waitForTimeout(300);
+    const compactVerticalGap = await railGap("y");
+    boxes = await getNodeBoxes(page);
+    assertNoOverlap(boxes);
+    assertLegible(boxes);
+    expect(spaciousVerticalGap).toBeGreaterThan(compactVerticalGap);
+  });
+
+  test("orientation and spacing choices persist across a reload", async ({ page }) => {
+    const { dag, total } = buildTallNarrowDag();
+    await mockPipelineApi(page, dag, total);
+
+    await page.goto(`/pipelines/${PIPELINE_ID}?tab=canvas`);
+    await expect(page.locator(".react-flow__node")).toHaveCount(total);
+
+    await page.getByRole("button", { name: "↓", exact: true }).click();
+    await page.getByRole("button", { name: "Spacious", exact: true }).click();
+    await page.waitForTimeout(300);
+
+    await page.reload();
+    await expect(page.locator(".react-flow__node")).toHaveCount(total);
+    await page.waitForTimeout(300);
+
+    await expect(page.getByRole("button", { name: "↓", exact: true })).toHaveAttribute("aria-pressed", "true");
+    await expect(page.getByRole("button", { name: "Spacious", exact: true })).toHaveAttribute(
+      "aria-pressed",
+      "true"
+    );
+
+    const boxes = await getNodeBoxes(page);
+    assertNoOverlap(boxes);
+    assertLegible(boxes);
+  });
+
+  test("zoom controls zoom in past the legible floor and never below it on zoom-out", async ({ page }) => {
+    const { dag, total } = buildTallNarrowDag();
+    await mockPipelineApi(page, dag, total);
+
+    await page.goto(`/pipelines/${PIPELINE_ID}?tab=canvas`);
+    await expect(page.locator(".react-flow__node")).toHaveCount(total);
+    await page.waitForTimeout(300);
+
+    const initialZoom = await getZoomScale(page);
+    expect(initialZoom).toBeCloseTo(0.5, 2);
+
+    for (let i = 0; i < 3; i++) {
+      await page.locator(".react-flow__controls-zoomin").click();
+    }
+    await page.waitForTimeout(200);
+    const zoomedInScale = await getZoomScale(page);
+    expect(zoomedInScale).toBeGreaterThan(initialZoom);
+
+    // A user zoomed in on one node should be able to actually read it - the
+    // whole point of the fix.
+    const zoomedInBoxes = await getNodeBoxes(page);
+    assertLegible(zoomedInBoxes);
+
+    // React Flow disables its own Zoom Out button once minZoom is reached
+    // (confirmed here, not assumed) - so "never below the floor" is proven
+    // by the button becoming disabled, not by clicking indefinitely.
+    const zoomOutButton = page.locator(".react-flow__controls-zoomout");
+    for (let i = 0; i < 10; i++) {
+      if (await zoomOutButton.isDisabled()) break;
+      await zoomOutButton.click();
+      await page.waitForTimeout(100);
+    }
+    await expect(zoomOutButton).toBeDisabled();
+    const zoomedOutScale = await getZoomScale(page);
+    expect(zoomedOutScale).toBeGreaterThanOrEqual(0.5 - 0.01);
+  });
+});
+
+test.describe("canvas dagre auto-layout — wide pipeline (35 stages, two 12-wide layers) regression", () => {
+  test("lays out with zero overlaps and a legible node size, in both orientations", async ({ page }) => {
+    // Deliberately NOT asserting "every node fits inside the viewport"
+    // anymore - that was the bug this task fixes. A wide graph clamped to
+    // the legible zoom floor legitimately exceeds the viewport; a user
+    // pans to see the rest, same as the tall/narrow shape above.
+    const { dag, total } = buildWideDag();
+    await mockPipelineApi(page, dag, total);
 
     await page.goto(`/pipelines/${PIPELINE_ID}?tab=canvas`);
     await expect(page.locator(".react-flow__node")).toHaveCount(35);
-
-    // Horizontal is the default orientation.
-    await assertFitsAndNoOverlap(page);
-
-    // Switch to vertical - refit runs again (RefitOnChange in
-    // pipeline-canvas.tsx), same guarantees must hold.
-    await page.getByRole("button", { name: "↓", exact: true }).click();
-    // Let the orientation state update, dagre recompute, and the
-    // requestAnimationFrame-deferred fitView settle.
     await page.waitForTimeout(300);
-    await assertFitsAndNoOverlap(page);
+
+    let boxes = await getNodeBoxes(page);
+    assertNoOverlap(boxes);
+    assertLegible(boxes);
+
+    await page.getByRole("button", { name: "↓", exact: true }).click();
+    await page.waitForTimeout(300);
+
+    boxes = await getNodeBoxes(page);
+    assertNoOverlap(boxes);
+    assertLegible(boxes);
   });
 
-  test("colors and animates a running migration's stages on the same 35-node layout", async ({
-    page,
-  }) => {
+  test("colors and animates a running migration's stages on the same 35-node layout", async ({ page }) => {
     const stageStates: Record<string, string> = {};
     for (let id = 1; id <= 16; id++) stageStates[String(id)] = "done";
     stageStates["17"] = "running";
     for (let id = 18; id <= 35; id++) stageStates[String(id)] = "idle";
 
-    await mockPipelineApi(page, { runningMigration: true, stageStates });
+    const { dag, total } = buildWideDag();
+    await mockPipelineApi(page, dag, total, { runningMigration: true, stageStates });
 
     await page.goto(`/pipelines/${PIPELINE_ID}?tab=canvas`);
     await expect(page.locator(".react-flow__node")).toHaveCount(35);
 
-    // The Canvas tab's live-migration pill (pipeline-workspace.tsx's
-    // CanvasTabContent) shows once a running migration is found.
     await expect(page.getByText("Migration running — view in Migrations →")).toBeVisible();
 
-    // Locate by the stage-node.tsx name element's `title` attribute (exact
-    // match) rather than node text, since "Stage 1" is a substring of
-    // "Stage 10".."Stage 19" and would otherwise match the wrong node.
-    function nodeForStage(name: string) {
-      return page.locator(".react-flow__node").filter({ has: page.locator(`p[title="${name}"]`) });
-    }
-
-    // The running node (17) shows its live sub-step label.
-    const runningNode = nodeForStage("Stage 17");
+    const runningNode = nodeForStage(page, "Stage 17");
     await expect(runningNode.getByText(/Running — critiquing weakest candidates/)).toBeVisible();
 
-    // A finished node (Stage 1) shows the "Done" state dot, not a substep
-    // line.
-    const doneNode = nodeForStage("Stage 1");
+    const doneNode = nodeForStage(page, "Stage 1");
     await expect(doneNode.getByRole("img", { name: "Stage done" })).toBeVisible();
 
-    // Edges touching the running stage carry the beam-flow animation class;
-    // edges between two finished stages settle into "passed".
     await expect(page.locator(".react-flow__edge.edge-beam")).not.toHaveCount(0);
     await expect(page.locator(".react-flow__edge.edge-passed")).not.toHaveCount(0);
 
-    // Live coloring doesn't break the layout guarantee either.
-    await assertFitsAndNoOverlap(page);
+    const boxes = await getNodeBoxes(page);
+    assertNoOverlap(boxes);
+    assertLegible(boxes);
   });
 });

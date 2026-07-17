@@ -12,6 +12,14 @@ record of what's ours vs. pulled from elsewhere, and under what terms.
   motion-means-something, typography hierarchy).
 - `system-design/` — architecture principles specific to this project's
   headless-core / additive-schema / harness-vs-target-model split.
+- `spec-driven-planning/` — evidence-based architecture/spec writing
+  discipline. Methodology *inspired by* reading `lak7/devildev`'s
+  `prompts/ReverseArchitecture.ts` (Apache 2.0) — the actual approach
+  (evidence-over-hypothesis, ban idealized components, map every claim to
+  a real file) was rewritten in this project's own words/context rather
+  than copied, since the source is prose embedded in application code, not
+  a portable instruction file. See `EXTERNAL_TOOLS.md` in this same folder
+  for devildev itself (a whole standalone app, not pulled as a skill).
 
 ## Pulled from external repos (permissively licensed, verified before copying)
 

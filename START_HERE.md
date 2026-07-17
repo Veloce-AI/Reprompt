@@ -46,7 +46,16 @@ proves the outputs still match. Full plain-language explanation: `README.md`.
    generated code as done — this project's whole workflow is multi-agent
    code generation, exactly the failure mode this skill exists for:
    hardcoded secrets, disabled row-level security, prompt-injection sinks
-   shipped because a demo happened to work without them). See
+   shipped because a demo happened to work without them), `spec-driven-
+   planning` (evidence-based architecture writing — read before dispatching
+   any planning-only agent or writing a `DEV_TRACKER.md` phase section:
+   every claim traces to a real file, no hypothetical/idealized
+   components, one clear recommendation per open question). Separately,
+   `.claude/skills/EXTERNAL_TOOLS.md` lists standalone systems (not
+   skills — nothing to read, software you'd run on its own) that were
+   considered and are documented but NOT currently set up: an
+   architecture-spec drafting tool, an authorized-security-testing
+   framework for testing a deployed instance later. See
    `.claude/skills/ATTRIBUTION.md` for exact sources/licenses before adding
    more; `anthropics/claude-code`'s own skills are NOT available to pull
    from (checked, all-rights-reserved). **If you are dispatching a

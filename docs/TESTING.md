@@ -381,6 +381,44 @@ adds it to the home list itself, same `PATCH /pipelines/{id}` endpoint.
 4. Reload `/` → confirm the new name persisted server-side, not just in
    local state.
 
+### 3.1g Canvas layout (dagre auto-layout)
+
+Added 2026-07-17 — see `DEV_TRACKER.md`'s "Canvas: dagre-based auto layout"
+section. Replaces the hand-rolled grid/layered position math (which still
+let a real, large pipeline render outside the viewport or with overlapping
+nodes) with `@dagrejs/dagre`-computed positions. The two-preset picker
+("Grid"/"Layered") is gone — dagre's own layout supersedes both — the
+toolbar in the canvas's top-right corner now only has the horizontal/
+vertical orientation toggle.
+
+1. Import a pipeline with many stages (the bigger and more branchy, the
+   better a stress test — a wide layer with 10+ parallel stages at the same
+   dependency depth is the sharpest case). On the Canvas tab, confirm every
+   node is fully visible on screen after it loads — no node's card is cut
+   off at an edge or rendered off-canvas, and no two node cards overlap
+   each other.
+2. Click the orientation toggle's "↓" button (top-right toolbar) → the DAG
+   redraws top-to-bottom instead of left-to-right, still fully on-screen
+   with no overlaps. Click "→" to switch back.
+3. Reload the page → the last-chosen orientation persisted (localStorage,
+   per pipeline) and the DAG still fits.
+4. Start a migration and watch the Canvas tab while it's running (§3.3c) →
+   the live per-stage coloring/pulsing/sub-step label still work exactly as
+   before (dagre only changed *where* nodes sit, not how they're colored),
+   and the DAG still fits on screen once the "Migration running" pill
+   appears above it (that pill shrinks the canvas's available height after
+   the DAG's first paint — confirm nothing pokes out from under it).
+
+Automated coverage: `apps/web/src/lib/canvas-layout.test.ts` (dagre position
+math — zero overlaps for a long chain and for a wide layer, dependency order
+along the flow axis, orientation axis swap, an isolated/no-edge node,
+malformed-edge resilience) and `apps/web/e2e/canvas-layout.spec.ts` (real
+Playwright/Chromium render of a mocked 35-stage DAG across 6 layers,
+including two 12-node-wide layers — asserts zero node-vs-node overlap and
+zero nodes outside the `.react-flow` viewport's bounding box after fitView,
+in both orientations, and with a mocked running migration's live coloring/
+beam-flow edges layered on top).
+
 ### 3.2 Rubric review (Rubrics tab, screen 4)
 
 1. Either seed rubrics for the imported pipeline via the dev-only script

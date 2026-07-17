@@ -8,7 +8,7 @@ accurate so anyone (human or AI) can pick this up cold without
 re-deriving context. Read `START_HERE.md` first if you haven't — it
 points here plus the rest of the docs in reading order.
 
-Last updated: 2026-07-16.
+Last updated: 2026-07-17.
 
 **Edit button for inline pipeline rename [DONE — 2026-07-16]**: Added an
 explicit pencil/edit icon button next to the delete icon in the Pipelines
@@ -188,6 +188,26 @@ needed). New `scripts/dev-restart.ps1` does the reliable
 kill-by-commandline → verify-ports-free → fresh-start → serving-current-code
 health check in one command; `docs/TESTING.md` §2 now leads with it. See
 the dated section below.
+**Fix overlapping stage node text [DONE — 2026-07-17]**: the product owner
+reported stage nodes' text overlapping on the Canvas — reproduced live with
+Playwright (import `packages/core/tests/fixtures/mixed_12stage.json`,
+12 stages, long names/models, across both layout presets and both
+orientations). Root cause was inter-node spacing, not internal card text
+(the name/model text already truncate with a `title` tooltip): the grid and
+layered layout algorithms in `apps/web/src/lib/canvas-layout.ts` used one
+`CROSS_GAP` (190px, tuned for a card's ~150-175px height) for the cross axis
+regardless of orientation, but in **vertical** orientation the cross axis
+runs left-to-right, where cards are 224px wide (`w-56`) — so cards packed
+only 190px apart overlapped directly, borders and text colliding across
+node boundaries. Fixed by splitting into `CROSS_GAP_HORIZONTAL` (190,
+unchanged) and `CROSS_GAP_VERTICAL` (280, matching the width-tuned
+`MAIN_GAP`), picked via a new `crossGapFor(orientation)` helper; horizontal
+orientation's layout is byte-for-byte unchanged. `canvas-layout.test.ts`'s
+two "swaps axes" tests updated to reflect the now-intentionally-different
+cross gap per orientation instead of asserting a literal axis swap.
+`apps/web` **149 passed** (unchanged count — no new tests added, existing
+coverage updated in place) + clean `tsc --noEmit`. `apps/api`/
+`packages/core` untouched.
 **Not started**: Phase 6 (final end-to-end manual verification).
 
 **Note for future sessions/developers**: each phase above updates

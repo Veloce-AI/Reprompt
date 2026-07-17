@@ -47,19 +47,21 @@ describe("computeCanvasLayout - grid preset", () => {
     expect(positions["11"]).toEqual({ x: 0, y: 2 * 190 });
   });
 
-  it("swaps axes in vertical orientation", () => {
-    const horizontal = computeCanvasLayout(chainLayers(7), {
-      preset: "grid",
-      orientation: "horizontal",
-    });
+  it("swaps axes in vertical orientation, widening the cross-axis gap to clear the card's width", () => {
     const vertical = computeCanvasLayout(chainLayers(7), {
       preset: "grid",
       orientation: "vertical",
     });
 
-    for (const id of Object.keys(horizontal)) {
-      expect(vertical[id]).toEqual({ x: horizontal[id].y, y: horizontal[id].x });
-    }
+    // Main axis (now y) is unchanged: still MAIN_GAP-spaced per slot.
+    expect(vertical["1"]).toEqual({ x: 0, y: 0 });
+    expect(vertical["2"]).toEqual({ x: 0, y: 280 });
+    expect(vertical["5"]).toEqual({ x: 0, y: 4 * 280 });
+    // Cross axis (now x) uses the wider vertical cross gap (280, not 190)
+    // so 224px-wide cards don't overlap when stacked side by side - this is
+    // the fix for stage-node text overlapping in vertical orientation.
+    expect(vertical["6"]).toEqual({ x: 280, y: 4 * 280 });
+    expect(vertical["7"]).toEqual({ x: 280, y: 3 * 280 });
   });
 });
 
@@ -92,20 +94,19 @@ describe("computeCanvasLayout - layered preset", () => {
     expect(positions["100"]).toEqual({ x: 2 * 280, y: 0 });
   });
 
-  it("swaps axes in vertical orientation", () => {
+  it("swaps axes in vertical orientation, widening the cross-axis gap to clear the card's width", () => {
     const layers = [{ stage_ids: [1] }, { stage_ids: [2, 3] }];
-    const horizontal = computeCanvasLayout(layers, {
-      preset: "layered",
-      orientation: "horizontal",
-    });
     const vertical = computeCanvasLayout(layers, {
       preset: "layered",
       orientation: "vertical",
     });
 
-    for (const id of Object.keys(horizontal)) {
-      expect(vertical[id]).toEqual({ x: horizontal[id].y, y: horizontal[id].x });
-    }
+    // Main axis (now y) is unchanged: still MAIN_GAP-spaced per layer.
+    expect(vertical["1"]).toEqual({ x: 0, y: 0 });
+    expect(vertical["2"]).toEqual({ x: 0, y: 280 });
+    // Cross axis (now x) uses the wider vertical cross gap (280, not 190)
+    // so 224px-wide cards don't overlap when stacked side by side.
+    expect(vertical["3"]).toEqual({ x: 280, y: 280 });
   });
 });
 

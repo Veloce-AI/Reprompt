@@ -257,6 +257,13 @@ drawer.
    this tab specifically, check the Canvas tab's content wrapper is still a
    real `flex` container, not just a `flex-1` item, before assuming it's a
    data problem.)
+4a. The canvas's top-right toolbar (Grid/Layered preset, →/↓ orientation)
+    is layout-only, no data change — check any pipeline with 10+ stages in
+    **vertical** orientation specifically: cards must have a visible gap
+    between them, not overlap (fixed 2026-07-17, see `DEV_TRACKER.md`'s "Fix
+    overlapping stage node text" — the cross-axis gap used to reuse the
+    horizontal orientation's height-tuned constant even when stacking
+    224px-wide cards side by side).
 5. In the drawer, click "View full rubric →" → the workspace switches to
    the Rubrics tab and scrolls straight to that stage's card (each card has
    an anchor id — no other card should end up at the top of the viewport

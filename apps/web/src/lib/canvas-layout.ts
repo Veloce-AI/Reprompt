@@ -31,8 +31,22 @@ export const DEFAULT_CANVAS_LAYOUT: CanvasLayoutChoice = {
 
 /** Spacing along the flow direction (node card is w-56 = 224px). */
 const MAIN_GAP = 280;
-/** Spacing across the flow direction (node cards are ~150-175px tall). */
-const CROSS_GAP = 190;
+/**
+ * Spacing across the flow direction. This has to be orientation-aware: in
+ * "horizontal" orientation the cross axis runs top-to-bottom, so it only
+ * needs to clear the card's ~150-175px height. In "vertical" orientation
+ * the cross axis runs left-to-right, so it needs to clear the card's full
+ * 224px width (w-56) instead - reusing the height-tuned gap there packed
+ * cards 224px wide only 190px apart, overlapping them directly and making
+ * their text collide across node boundaries (see DEV_TRACKER.md "Fix
+ * overlapping stage node text").
+ */
+const CROSS_GAP_HORIZONTAL = 190;
+const CROSS_GAP_VERTICAL = 280;
+
+function crossGapFor(orientation: CanvasOrientation): number {
+  return orientation === "vertical" ? CROSS_GAP_VERTICAL : CROSS_GAP_HORIZONTAL;
+}
 /** Grid preset: how many nodes per row (horizontal) / column (vertical). */
 export const MAX_PER_LINE = 5;
 /** Layered preset: a single layer wider than this wraps into extra lines. */
@@ -67,13 +81,14 @@ function computeGridLayout(
 ): Record<string, XY> {
   const ordered = layers.flatMap((layer) => layer.stage_ids);
   const positions: Record<string, XY> = {};
+  const crossGap = crossGapFor(orientation);
   ordered.forEach((stageId, index) => {
     const line = Math.floor(index / MAX_PER_LINE);
     const rawSlot = index % MAX_PER_LINE;
     // Snake: odd lines run backwards so stage n+1 sits next to (or right
     // below) stage n instead of a full line-width away.
     const slot = line % 2 === 1 ? MAX_PER_LINE - 1 - rawSlot : rawSlot;
-    positions[String(stageId)] = oriented(slot * MAIN_GAP, line * CROSS_GAP, orientation);
+    positions[String(stageId)] = oriented(slot * MAIN_GAP, line * crossGap, orientation);
   });
   return positions;
 }
@@ -83,6 +98,7 @@ function computeLayeredLayout(
   orientation: CanvasOrientation
 ): Record<string, XY> {
   const positions: Record<string, XY> = {};
+  const crossGap = crossGapFor(orientation);
   // A very wide layer wraps into multiple main-axis lines instead of one
   // endless cross-axis strip; later layers shift over by however many lines
   // the wrapped layer occupied.
@@ -94,7 +110,7 @@ function computeLayeredLayout(
       const crossSlot = index % MAX_PER_LAYER_LINE;
       positions[String(stageId)] = oriented(
         (mainLine + lineWithinLayer) * MAIN_GAP,
-        crossSlot * CROSS_GAP,
+        crossSlot * crossGap,
         orientation
       );
     });

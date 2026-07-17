@@ -31,7 +31,31 @@ proves the outputs still match. Full plain-language explanation: `README.md`.
    craft), `webapp-testing` (drive-the-real-app discipline — this project
    has repeatedly shipped bugs that passed unit tests but broke on real
    render/CSS, see `saas-product-design`'s point 5 and `system-design`'s
-   point 5), `skill-creator` (for writing more of these well). See
+   point 5), `skill-creator` (for writing more of these well),
+   `ponytail`/`ponytail-audit`/`ponytail-debt`/`ponytail-gain`/
+   `ponytail-help`/`ponytail-review` (write-minimal-necessary-code
+   discipline — read `ponytail` before any implementation task, it's the
+   concrete version of this project's own "Simplicity First / No Laziness"
+   rule), `code-simplifier` (post-hoc simplification pass — read after
+   writing/editing code, before calling a change done), `design-references`
+   (real SaaS DESIGN.md specs — Linear/Stripe/PostHog — for comparison when
+   unsure how a data-dense serious-tool screen should look; reference
+   points, never templates to copy verbatim), `code-reviewer-persona`/
+   `ai-code-security-auditor`/`appsec-engineer-persona` (read
+   `ai-code-security-auditor` specifically before treating any AI-agent-
+   generated code as done — this project's whole workflow is multi-agent
+   code generation, exactly the failure mode this skill exists for:
+   hardcoded secrets, disabled row-level security, prompt-injection sinks
+   shipped because a demo happened to work without them), `spec-driven-
+   planning` (evidence-based architecture writing — read before dispatching
+   any planning-only agent or writing a `DEV_TRACKER.md` phase section:
+   every claim traces to a real file, no hypothetical/idealized
+   components, one clear recommendation per open question). Separately,
+   `.claude/skills/EXTERNAL_TOOLS.md` lists standalone systems (not
+   skills — nothing to read, software you'd run on its own) that were
+   considered and are documented but NOT currently set up: an
+   architecture-spec drafting tool, an authorized-security-testing
+   framework for testing a deployed instance later. See
    `.claude/skills/ATTRIBUTION.md` for exact sources/licenses before adding
    more; `anthropics/claude-code`'s own skills are NOT available to pull
    from (checked, all-rights-reserved). **If you are dispatching a

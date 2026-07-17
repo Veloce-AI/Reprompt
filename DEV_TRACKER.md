@@ -188,7 +188,8 @@ needed). New `scripts/dev-restart.ps1` does the reliable
 kill-by-commandline → verify-ports-free → fresh-start → serving-current-code
 health check in one command; `docs/TESTING.md` §2 now leads with it. See
 the dated section below.
-**Fix overlapping stage node text [DONE — 2026-07-17]**: the product owner
+**Fix overlapping stage node text [DONE — 2026-07-17, superseded same day
+— see the dagre entry directly below]**: the product owner
 reported stage nodes' text overlapping on the Canvas — reproduced live with
 Playwright (import `packages/core/tests/fixtures/mixed_12stage.json`,
 12 stages, long names/models, across both layout presets and both
@@ -207,7 +208,51 @@ two "swaps axes" tests updated to reflect the now-intentionally-different
 cross gap per orientation instead of asserting a literal axis swap.
 `apps/web` **149 passed** (unchanged count — no new tests added, existing
 coverage updated in place) + clean `tsc --noEmit`. `apps/api`/
-`packages/core` untouched.
+`packages/core` untouched. **Superseded**: the very same day, the whole
+gap-tuning approach this fix lived in (`CROSS_GAP_HORIZONTAL`/
+`CROSS_GAP_VERTICAL` in the hand-rolled grid/layered algorithm) was
+replaced wholesale by the dagre rewrite immediately below — a real
+graph-layout library computes spacing now, these constants no longer exist
+in the codebase. Kept as a historical record of the bug/fix reasoning, not
+because the code still matches this description.
+
+**Canvas: dagre-based auto layout [DONE — 2026-07-17]**: replaced the
+hand-rolled grid/layered position math in `pipeline-canvas.tsx`/
+`lib/canvas-layout.ts` with `@dagrejs/dagre`-computed positions — the real
+fix for the product owner's report that a large, real pipeline (35 stages)
+still rendered outside the viewport despite the grid/layered presets and
+refit work — see the dated section below for the full design, the two real
+bugs found and fixed along the way (React Flow's default `minZoom` silently
+capping how far a very tall/wide graph could shrink to fit, and a refit
+race against a live-migration overlay that resizes the canvas after first
+paint), and the Playwright evidence. `apps/web` 151 passed (149 baseline +
+2 net new in `canvas-layout.test.ts`) + clean `tsc --noEmit`, new
+`e2e/canvas-layout.spec.ts` (2 tests, real Chromium render) both green.
+`packages/core`/`apps/api` untouched.
+**Corrected same day — see "Canvas: legible zoom floor + spacing picker"
+below**: this entry's own verification used a WIDE mock DAG (6 layers, two
+12-nodes-wide) and its "fits entirely on screen" claim didn't hold for the
+product owner's actual pipeline shape (TALL/narrow, ~35 single-node layers)
+— `fitView`'s `minZoom: 0.05` let it shrink a long chain into illegible
+slivers to satisfy "everything visible," which is not the same thing as
+"legible." The position math (dagre itself) was and remains correct; only
+the zoom-floor/fit philosophy was wrong. Left in place below as the
+accurate record of what dagre itself fixed (real position computation from
+graph edges) — the entry below is what fixed how the canvas *uses* those
+positions.
+**Canvas: legible zoom floor + spacing picker [DONE — 2026-07-17]**: fixed
+the real bug — `fitView`'s near-zero `minZoom` (0.05) let a tall/narrow
+pipeline (the product owner's actual ~35-stage shape, mostly one node per
+layer) shrink into illegible slivers to satisfy "everything visible."
+Raised the floor to 0.5 (empirically confirmed legible via screenshot, not
+guessed), let an oversized graph pan instead of shrinking further, and
+brought back a real "Compact"/"Spacious" spacing picker (dagre
+`nodesep`/`ranksep`) next to the existing orientation toggle, both
+persisted per pipeline. See the dated section below for the full
+root-cause chain and verification (six new/rewritten Playwright e2e tests
+against the real reported shape, not just the previous round's wide mock).
+`apps/web` 153 passed (151 + 2 net new) + clean `tsc --noEmit`.
+`packages/core`/`apps/api` untouched.
 **Not started**: Phase 6 (final end-to-end manual verification).
 
 **Note for future sessions/developers**: each phase above updates
@@ -270,6 +315,256 @@ two script bugs: its vite pattern also matched a running vitest process,
 and a 30s health timeout was too tight when another `uv` process holds the
 venv lock — both fixed). `docs/TESTING.md` §2 now tells the owner to always
 restart via this script and hard-refresh after.
+
+## Canvas: dagre-based auto layout [DONE — 2026-07-17]
+
+Product owner report: the DAG canvas still goes outside the viewport for a
+real, large pipeline (35 stages), despite the "grid/layered layout presets,
+orientation toggle, refit" work (commit `3151574` — never got its own
+DEV_TRACKER.md entry; this section supersedes that gap too, since most of
+what it built is replaced here). Root cause per that task's own hypothesis,
+confirmed: hand-computed node x/y positions (`lib/canvas-layout.ts`'s old
+`computeGridLayout`/`computeLayeredLayout`) don't generalize to arbitrary
+DAG shapes — a preset tuned for a mostly-sequential chain (snake-wrap into
+rows of 5) or classic per-layer columns (wrapping at a fixed per-layer line
+count) both fall over on a shape neither hand-tuned constant anticipated.
+
+**The fix — real graph layout, not hand-rolled math.** Added
+`@dagrejs/dagre` (the actively-maintained fork; the old `dagre` package is
+unmaintained) as an `apps/web` dependency — the standard pairing with React
+Flow for hierarchical DAG layout. `lib/canvas-layout.ts`'s
+`computeCanvasLayout(layers, edges, choice)` now builds a dagre graph from
+the pipeline's real stage ids and dependency edges (previously only `layers`
+was used — position math never looked at the actual edges, just topological
+layer membership), sets `rankdir: "LR"` or `"TB"` from the existing
+orientation toggle (dagre supports this natively — no custom orientation
+math needed anymore, `oriented()`'s axis-swap helper is gone), runs
+`dagre.layout()`, and maps each node's center-based output position to
+React Flow's top-left-corner convention. `CanvasLayoutChoice` dropped its
+`preset` field entirely (`"grid" | "layered"` is gone) — dagre computes
+correct, non-overlapping spacing directly from the graph structure, so the
+old presets' only job (working around the hand-rolled math's failure modes)
+no longer exists. `pipeline-canvas.tsx`'s toolbar lost the preset
+segmented-control; only the horizontal/vertical orientation toggle remains
+(a real, user-meaningful choice — a wide pipeline can read better
+top-to-bottom — so it stayed). `loadCanvasLayoutChoice` still parses a
+stale `{preset: ...}` value from localStorage without erroring (just
+ignores that field), so an existing user's saved orientation isn't lost by
+this change.
+
+**Two real bugs found and fixed along the way, both by actually rendering a
+35-node pipeline in a real browser (Playwright) rather than trusting unit
+tests** — same "jsdom doesn't do real CSS layout/paint" caution the
+"Product owner report" section above already learned the hard way for a
+different bug class:
+
+1. **React Flow's default `minZoom` (0.5) silently capped how far a large
+   graph could shrink to fit.** A wide dagre rank (many parallel stages at
+   the same dependency depth — exactly the shape a real branchy pipeline
+   produces, and exactly what this task's own verification stress-tests
+   with a 12-node-wide layer) can need a zoom well below 0.5 to fit the
+   whole graph in the viewport at once; `fitView` was silently clamping at
+   0.5 and leaving the excess off-screen — "fitView ran" but the result
+   still overflowed, the literal bug being investigated. Fixed by setting
+   both the `<ReactFlow minZoom={0.05}>` instance-wide prop and a matching
+   `minZoom` in the shared `FIT_VIEW_OPTIONS` object passed to every
+   `fitView()` call (React Flow's `fitViewport` reads the call-site option
+   ahead of the instance prop, so both need setting for belt-and-suspenders
+   — confirmed by reading `@xyflow/system`'s own `fitViewport`/
+   `getViewportForBounds` source, not guessed).
+2. **A refit race against the live-migration overlay.** The Canvas tab's
+   "Migration running" pill (`pipeline-workspace.tsx`'s `CanvasTabContent`,
+   see "Canvas tab live migration overlay" below) mounts as a sibling
+   *above* `<PipelineCanvas>` once a running migration is found — a real
+   layout change (the canvas's available height shrinks) that arrives
+   asynchronously, on a later render than `PipelineCanvas`'s own mount
+   (the migrations-list/status queries resolve after the first paint), so
+   `RefitOnChange`'s existing `nodeCount`/`layout`-only dependency list
+   never re-fit for it — a live-migration-view load could leave the last
+   couple of nodes poking out from under the now-shorter viewport. Fixed by
+   adding a third `hasLiveOverlay` (`stageStates !== undefined`) dependency
+   to `RefitOnChange`'s effect — deliberately keyed on *presence*, not
+   `stageStates`'s contents, since that changes every 2s poll while running
+   and refitting that often would yank a user's pan/zoom during the live
+   view (an existing, deliberate constraint from the "Canvas tab live
+   migration overlay" work, preserved here). Separately (found via the same
+   Playwright run, a ~12px/563px discrepancy that a 4px tolerance in the
+   test's own overlap-margin check caught): `RefitOnChange`'s single
+   `requestAnimationFrame` occasionally fired a frame before
+   ResizeObserver's own measurement of a node whose height depends on live
+   run state (the "running" node's extra sub-step line) had landed — React
+   Flow has no explicit width/height on these nodes, so `fitView`'s bounds
+   are only as good as that measurement. Fixed with a second nested
+   `requestAnimationFrame` before calling `fitView` (ResizeObserver
+   callbacks land after a frame's layout/style pass, one frame later than a
+   same-frame rAF can see them — a documented general ordering gotcha, not
+   specific to this codebase).
+
+**Verification** — real Chromium, not jsdom, per the task's own "must be
+real, with evidence" requirement: new `apps/web/e2e/canvas-layout.spec.ts`,
+entirely network-mocked (no live API server or auth needed — the workspace
+route has no auth gate, and every fetch it makes is intercepted) against a
+constructed 35-stage DAG across 6 layers, including two 12-node-wide layers
+(the shape that actually exercises the `minZoom` bug above — the real
+pipeline's own shape, "31 layers, 29 single-node," happens not to trigger
+it). Two tests: (1) zero node-vs-node overlap and zero nodes outside the
+`.react-flow` viewport's own bounding box after `fitView`, asserted in both
+horizontal and vertical orientation; (2) the same layout guarantee holds
+with a mocked running migration's `stage_states`/`progress_substep` layered
+on top, plus asserts the pre-existing live-coloring/beam-flow-animation
+behavior is genuinely unchanged (a done node's state dot, the running
+node's sub-step label, `edge-beam`/`edge-passed` edge classes) — this task's
+"preserve everything else exactly" constraint, checked, not assumed. Both
+passed against this worktree's own dev server (run on an isolated port via
+a throwaway local Playwright config, not committed — the shared
+`playwright.config.ts`'s `webServer` targets port 5173 with
+`reuseExistingServer: true`, which in this session would have silently
+attached to the *main checkout's* already-running dev server instead of
+this worktree's code, since another agent had it up in parallel).
+`apps/web/src/lib/canvas-layout.test.ts` was rewritten for the new dagre
+function (old grid/layered-specific assertions replaced with: zero overlaps
+for a long chain and for a wide layer, dependent stages ordered along the
+flow axis, orientation axis-swap, an isolated/no-edge node, malformed-edge
+resilience, persistence round-trip including the stale-`preset`-field
+tolerance) — **151 passed** (149 baseline + 2 net new), clean
+`tsc --noEmit`. `packages/core`/`apps/api` untouched (confirmed via `git
+status` — only `apps/web/`, `pnpm-lock.yaml`, and this doc/`docs/TESTING.md`
+changed).
+
+**What a user actually sees**: any pipeline's Canvas tab, including a large
+branchy one, now always lays out with real, non-overlapping spacing and
+fits entirely on screen after load — the preset picker is gone from the
+toolbar (one less decision, dagre's default is simply good), the
+orientation toggle still works exactly as before, and live migration
+coloring/animation is pixel-for-pixel the same as before this change, only
+the node positions underneath it differ.
+
+**Note (2026-07-17, later the same day): this "fits entirely on screen"
+claim did not hold for the product owner's real pipeline shape** — see
+"Canvas: legible zoom floor + spacing picker" below, which supersedes the
+claim (not the position math, which was and remains correct).
+
+## Canvas: legible zoom floor + spacing picker [DONE — 2026-07-17]
+
+Third round of canvas fixes this session. The product owner shared a real
+screenshot of `/pipelines/$id?tab=canvas` for an actual pipeline ("Renamed
+via curl test", 35 stages): every node rendered as a tiny, illegible
+sliver — no text readable anywhere — on a mostly-linear vertical column (a
+handful of 3-wide branch points, everything else one node per row), zoomed
+out so far the whole canvas read as a smudge. The previous two rounds this
+session ("Fix overlapping stage node text" and "Canvas: dagre-based auto
+layout", both above) each claimed success via screenshots that turned out
+not to match what the product owner actually sees — this round's
+verification was built specifically to not repeat that.
+
+**Root cause, confirmed not guessed**: the dagre entry above fixed real
+node-overlap/position computation (genuinely correct, kept as-is), but its
+own verification used a WIDE mock DAG (6 layers, two 12-nodes-wide) — a
+fundamentally different shape from the real pipeline, which is TALL and
+NARROW (~30-38 stages, almost all single-node layers). `fitView`'s job as
+configured was "shrink the whole graph until it fits the viewport," with
+`minZoom` lowered all the way to 0.05 specifically so a very wide graph
+could shrink enough to fit. That same "shrink until it fits" logic applied
+to a long vertical (or horizontal) chain shrinks every node long before the
+chain actually "fits" a normal-height viewport — confirmed by rendering the
+real shape in a real browser (Playwright) with the pre-fix code: node
+bounding boxes measured ~20x12px, transform `scale(0.075)`–`scale(0.1)`,
+no text legible in the resulting screenshot at all. "Everything visible, no
+scroll" and "legible" are different goals, and the canvas was optimizing
+for the wrong one.
+
+**The fix — a legible zoom floor, spacing as a real choice, and panning
+instead of over-shrinking**, all in `apps/web/src/`:
+
+1. **`components/pipeline-canvas.tsx`**: `CANVAS_MIN_ZOOM` raised from 0.05
+   to **0.5** (React Flow's own conventional default floor) — applied to
+   both the `<ReactFlow minZoom>` instance prop and `FIT_VIEW_OPTIONS`
+   (both still needed, same belt-and-suspenders reasoning as before: React
+   Flow's `fitViewport` reads the call-site option ahead of the instance
+   prop). This value was **found empirically, not guessed**: rendered the
+   real ~38-stage tall/narrow shape at 0.6, then 0.5, screenshotted both,
+   and visually confirmed 0.5 keeps a stage-node.tsx card's name, model
+   badge, and token/latency line fully readable (0.05's ~20px-wide boxes
+   were not). When the full graph doesn't fit the viewport at this zoom,
+   `fitView` now simply clamps to the floor and centers on the graph's
+   overall bounds — the excess is off-screen but reachable by panning
+   (React Flow's native drag-to-pan, no new code) or the corner zoom
+   controls, never by shrinking nodes further. Confirmed React Flow's own
+   "Zoom Out" control button disables itself once `minZoom` is reached
+   (Playwright-verified, not assumed) — a user genuinely cannot zoom a node
+   into illegibility via the UI anymore.
+2. **`lib/canvas-layout.ts`**: brought back real layout flexibility — not
+   the old fake grid/layered preset picker (removed by the dagre entry
+   above for good reason: it only existed to work around hand-rolled
+   math's own failure modes), but a genuinely different dagre
+   configuration choice. New `CanvasSpacing = "compact" | "spacious"`
+   field on `CanvasLayoutChoice`, mapped to a `SPACING` table of real
+   `nodesep`/`ranksep` pairs (`compact`: 48/96, unchanged from before this
+   field existed; `spacious`: 96/176, roughly double) fed into
+   `dagre.setGraph()`. `loadCanvasLayoutChoice`/`saveCanvasLayoutChoice`
+   extended to persist it per pipeline (localStorage) alongside the
+   existing orientation, defaulting a pre-existing saved value with no
+   `spacing` field to `"compact"` rather than treating it as corrupt (same
+   forward-compatible tolerance the function already had for the older
+   dagre migration's stale `preset` field).
+3. **`components/pipeline-canvas.tsx`**'s `CanvasLayoutToolbar`: a second
+   `SegmentedGroup` ("Compact"/"Spacious") added next to the existing
+   orientation toggle, same visual treatment (`role="group"`,
+   `aria-pressed`, existing `--beam`-accent selected state) — no new
+   component, no new tokens.
+
+**Verification — driven per the `webapp-testing`/`saas-product-design`
+skills' explicit "verify by driving the real app, not the diff" discipline,
+against the shape that actually matters**:
+
+- Built a mock DAG modeled directly on the product owner's screenshot: ~38
+  stages across ~30 layers, almost all single-node, with four 3-wide
+  branch-and-immediately-merge points — not the wide 12-nodes-per-layer
+  shape the previous round's own test used.
+- Rendered it pre-fix (Playwright, real Chromium) and confirmed the
+  reported bug first: node boxes ~17-22px wide, `scale(0.076)`-`(0.099)`,
+  screenshotted and visually inspected — genuinely illegible, matching the
+  product owner's report exactly.
+- Iterated the zoom-floor value empirically (0.6 → 0.5) by screenshotting
+  and reading the actual rendered text each time, not by picking a number
+  and asserting a bounding box passed some threshold.
+- New `apps/web/e2e/canvas-layout.spec.ts` (rewritten, not just extended)
+  — six tests: (1) the tall/narrow shape renders every node at a legible
+  size with zero overlap in both orientations, and the zoom actually sits
+  at the floor (proof the floor is enforced, not incidentally satisfied);
+  (2) the Compact/Spacious picker measurably widens the real DOM gap
+  between two connected nodes (not a synthetic dagre-output check — an
+  actual `boundingBox()` delta) in both orientations, staying legible and
+  overlap-free throughout; (3) orientation *and* spacing both survive a
+  real page reload; (4) the zoom controls can zoom in past the floor and
+  the Zoom Out button disables at the floor rather than continuing to
+  shrink; (5)-(6) the original wide 35-stage/12-node-wide-layer shape from
+  the previous round still lays out with zero overlaps and legible nodes,
+  including the running-migration live-coloring/beam-flow-edge checks —
+  its old "fits entirely inside the viewport" assertion was **deliberately
+  removed**, since asserting that was the bug this round fixes, not a
+  guarantee worth keeping.
+- `apps/web/src/lib/canvas-layout.test.ts`: added a test asserting
+  "spacious" produces a strictly larger real rank gap *and* sibling gap
+  than "compact" (exercising both `ranksep` and `nodesep`, not just one),
+  plus persistence coverage for the new `spacing` field including the
+  backward-compatible default for a pre-existing saved value. **153
+  passed** (151 baseline + 2 net new), clean `tsc --noEmit`.
+- `packages/core`/`apps/api` untouched (confirmed via `git status` — only
+  `apps/web/canvas-layout.ts`, `pipeline-canvas.tsx`,
+  `canvas-layout.test.ts`, `e2e/canvas-layout.spec.ts`, and this doc/
+  `docs/TESTING.md` changed).
+
+**Honest legibility assessment, not overclaimed**: at the default zoom
+(0.5) on a ~38-node mostly-linear pipeline, stage names, model badges, and
+the token/latency line are all clearly readable in a screenshot — verified
+by actually reading the rendered text, not just checking the bounding box
+stayed non-zero. Text is smaller than at zoom 1 (expected — it's a 30+ node
+diagram on one screen) but not blurred-past-reading the way the pre-fix
+~0.08 zoom was. A very large pipeline (50+ stages) will still require
+panning to see every node at this floor — that is the intended trade-off
+per this task's own framing (real diagram tools don't force-fit everything
+either), not a residual bug.
 
 ## Canvas tab live migration overlay [DONE — 2026-07-16]
 

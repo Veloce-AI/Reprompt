@@ -1,56 +1,66 @@
+import dagre from "@dagrejs/dagre";
 import type { StageRunState } from "@/lib/api";
 
 /**
  * Pure layout math for the pipeline DAG canvas (pipeline-canvas.tsx), kept
  * out of the component so it can be unit-tested without React Flow/jsdom
- * layout. Two presets, both orientation-aware, chosen to cover the two real
- * pipeline shapes we've seen:
+ * layout.
  *
- * - "layered": classic topological columns (the canvas's original layout).
- *   Reads dependency structure best, but a mostly-sequential pipeline (the
- *   owner's 35-stage trace is 31 layers, 29 of them single-node) becomes a
- *   ~9,000px strip that fitView can only show as unreadable dust.
- * - "grid" (default): topological order snake-wrapped into rows of
- *   MAX_PER_LINE, so a 35-stage pipeline fits a laptop viewport at a
- *   readable zoom. Snaking (odd lines reversed) keeps consecutive stages
- *   adjacent, so most edges stay short.
+ * Node positions are computed by `@dagrejs/dagre` (the actively-maintained
+ * fork, not the abandoned `dagre` package) — the standard pairing with React
+ * Flow for hierarchical DAG layout. Two hand-rolled presets ("grid" wrap and
+ * "layered" columns) used to live here instead; both were replaced because
+ * neither generalized to arbitrary DAG shapes — the owner's real 35-stage
+ * pipeline (31 layers, one of them wide) still overflowed the viewport or
+ * overlapped nodes under both. Dagre computes real rank/order assignments
+ * from the graph's actual edges (not just topological layer membership) and
+ * sizes gaps to the node's real dimensions, so it handles an arbitrary wide
+ * layer or a long chain the same way: correctly, with no preset to choose.
  */
 
-export type CanvasLayoutPreset = "grid" | "layered";
 export type CanvasOrientation = "horizontal" | "vertical";
 
+/**
+ * Spacing preset — a real, visually distinct dagre configuration choice, not
+ * a cosmetic label. "Compact" is dagre's tight default spacing (unchanged
+ * from before this option existed). "Spacious" roughly doubles the gap
+ * between ranks and within a rank, giving a long mostly-linear chain (the
+ * product owner's real 30+ stage pipeline shape) more breathing room between
+ * cards when the user wants it — purely a `nodesep`/`ranksep` change, dagre
+ * still computes the actual non-overlapping positions either way.
+ */
+export type CanvasSpacing = "compact" | "spacious";
+
 export interface CanvasLayoutChoice {
-  preset: CanvasLayoutPreset;
   orientation: CanvasOrientation;
+  spacing: CanvasSpacing;
 }
 
 export const DEFAULT_CANVAS_LAYOUT: CanvasLayoutChoice = {
-  preset: "grid",
   orientation: "horizontal",
+  spacing: "compact",
 };
 
-/** Spacing along the flow direction (node card is w-56 = 224px). */
-const MAIN_GAP = 280;
-/**
- * Spacing across the flow direction. This has to be orientation-aware: in
- * "horizontal" orientation the cross axis runs top-to-bottom, so it only
- * needs to clear the card's ~150-175px height. In "vertical" orientation
- * the cross axis runs left-to-right, so it needs to clear the card's full
- * 224px width (w-56) instead - reusing the height-tuned gap there packed
- * cards 224px wide only 190px apart, overlapping them directly and making
- * their text collide across node boundaries (see DEV_TRACKER.md "Fix
- * overlapping stage node text").
- */
-const CROSS_GAP_HORIZONTAL = 190;
-const CROSS_GAP_VERTICAL = 280;
-
-function crossGapFor(orientation: CanvasOrientation): number {
-  return orientation === "vertical" ? CROSS_GAP_VERTICAL : CROSS_GAP_HORIZONTAL;
-}
-/** Grid preset: how many nodes per row (horizontal) / column (vertical). */
-export const MAX_PER_LINE = 5;
-/** Layered preset: a single layer wider than this wraps into extra lines. */
-export const MAX_PER_LAYER_LINE = 6;
+/** Must match stage-node.tsx's Card: `w-56` = 224px, plus a little slack for
+ * the border. Dagre needs each node's real footprint to size gaps and avoid
+ * overlap — an approximate constant is fine since every stage card renders
+ * at the same width regardless of content. */
+const NODE_WIDTH = 232;
+/** Approximate rendered height of a stage-node.tsx Card (name row, optional
+ * substep line, model badge, stats line, ParityBeam) — content-dependent in
+ * the real DOM, but a fixed estimate gives dagre a stable box to lay out
+ * around; a little extra `ranksep`/`nodesep` (below) absorbs the slack so
+ * cards never actually touch even when a real one renders taller. */
+const NODE_HEIGHT = 150;
+/** Gap between adjacent ranks (the flow direction) and within a rank
+ * (across the flow direction) for each spacing preset — generous enough
+ * even at "compact" that two adjacent node cards' real DOM boxes (which can
+ * render a bit taller/wider than the NODE_WIDTH/NODE_HEIGHT estimate above)
+ * still never overlap. "Spacious" roughly doubles both gaps. */
+const SPACING: Record<CanvasSpacing, { rankSep: number; nodeSep: number }> = {
+  compact: { rankSep: 96, nodeSep: 48 },
+  spacious: { rankSep: 176, nodeSep: 96 },
+};
 
 export interface XY {
   x: number;
@@ -61,60 +71,61 @@ interface LayerLike {
   stage_ids: number[];
 }
 
-function oriented(main: number, cross: number, orientation: CanvasOrientation): XY {
-  return orientation === "horizontal" ? { x: main, y: cross } : { x: cross, y: main };
+interface EdgeLike {
+  from_stage_id: number;
+  to_stage_id: number;
 }
 
-/** Positions keyed by stage id (string, matching React Flow node ids). */
+/**
+ * Positions keyed by stage id (string, matching React Flow node ids).
+ * `layers` supplies the full set of stage ids to place (including any
+ * isolated node with no edges at all, which dagre would otherwise still
+ * place fine, but we iterate `layers` rather than `edges` to guarantee every
+ * node gets a position even in a degenerate all-isolated-nodes DAG).
+ */
 export function computeCanvasLayout(
   layers: LayerLike[],
+  edges: EdgeLike[],
   choice: CanvasLayoutChoice
 ): Record<string, XY> {
-  return choice.preset === "grid"
-    ? computeGridLayout(layers, choice.orientation)
-    : computeLayeredLayout(layers, choice.orientation);
-}
+  const stageIds = layers.flatMap((layer) => layer.stage_ids);
+  if (stageIds.length === 0) return {};
 
-function computeGridLayout(
-  layers: LayerLike[],
-  orientation: CanvasOrientation
-): Record<string, XY> {
-  const ordered = layers.flatMap((layer) => layer.stage_ids);
-  const positions: Record<string, XY> = {};
-  const crossGap = crossGapFor(orientation);
-  ordered.forEach((stageId, index) => {
-    const line = Math.floor(index / MAX_PER_LINE);
-    const rawSlot = index % MAX_PER_LINE;
-    // Snake: odd lines run backwards so stage n+1 sits next to (or right
-    // below) stage n instead of a full line-width away.
-    const slot = line % 2 === 1 ? MAX_PER_LINE - 1 - rawSlot : rawSlot;
-    positions[String(stageId)] = oriented(slot * MAIN_GAP, line * crossGap, orientation);
+  const { rankSep, nodeSep } = SPACING[choice.spacing];
+  const graph = new dagre.graphlib.Graph();
+  graph.setGraph({
+    rankdir: choice.orientation === "horizontal" ? "LR" : "TB",
+    nodesep: nodeSep,
+    ranksep: rankSep,
   });
-  return positions;
-}
+  graph.setDefaultEdgeLabel(() => ({}));
 
-function computeLayeredLayout(
-  layers: LayerLike[],
-  orientation: CanvasOrientation
-): Record<string, XY> {
+  for (const stageId of stageIds) {
+    graph.setNode(String(stageId), { width: NODE_WIDTH, height: NODE_HEIGHT });
+  }
+  for (const edge of edges) {
+    // Guard against an edge referencing a stage id outside `layers` (would
+    // otherwise throw inside dagre) - shouldn't happen for real DAG
+    // responses, but a defensive skip is cheap and keeps a malformed payload
+    // from blanking the whole canvas.
+    const from = String(edge.from_stage_id);
+    const to = String(edge.to_stage_id);
+    if (graph.hasNode(from) && graph.hasNode(to)) {
+      graph.setEdge(from, to);
+    }
+  }
+
+  dagre.layout(graph);
+
   const positions: Record<string, XY> = {};
-  const crossGap = crossGapFor(orientation);
-  // A very wide layer wraps into multiple main-axis lines instead of one
-  // endless cross-axis strip; later layers shift over by however many lines
-  // the wrapped layer occupied.
-  let mainLine = 0;
-  for (const layer of layers) {
-    const lines = Math.max(1, Math.ceil(layer.stage_ids.length / MAX_PER_LAYER_LINE));
-    layer.stage_ids.forEach((stageId, index) => {
-      const lineWithinLayer = Math.floor(index / MAX_PER_LAYER_LINE);
-      const crossSlot = index % MAX_PER_LAYER_LINE;
-      positions[String(stageId)] = oriented(
-        (mainLine + lineWithinLayer) * MAIN_GAP,
-        crossSlot * crossGap,
-        orientation
-      );
-    });
-    mainLine += lines;
+  for (const stageId of stageIds) {
+    const node = graph.node(String(stageId));
+    // Dagre positions are node *centers*; React Flow positions nodes by
+    // their top-left corner.
+    positions[String(stageId)] = {
+      x: node.x - NODE_WIDTH / 2,
+      y: node.y - NODE_HEIGHT / 2,
+    };
   }
   return positions;
 }
@@ -146,11 +157,16 @@ export function loadCanvasLayoutChoice(pipelineId: number): CanvasLayoutChoice {
   try {
     const raw = localStorage.getItem(storageKey(pipelineId));
     if (!raw) return DEFAULT_CANVAS_LAYOUT;
+    // `Partial` on purpose: an older saved value may predate the `spacing`
+    // field (or, from before the dagre migration, may carry a stale
+    // `preset` field instead) — both are simply ignored/defaulted rather
+    // than treated as corrupt, so an existing user's saved orientation isn't
+    // lost by either past or future layout-choice changes.
     const parsed = JSON.parse(raw) as Partial<CanvasLayoutChoice>;
-    const preset: CanvasLayoutPreset = parsed.preset === "layered" ? "layered" : "grid";
     const orientation: CanvasOrientation =
       parsed.orientation === "vertical" ? "vertical" : "horizontal";
-    return { preset, orientation };
+    const spacing: CanvasSpacing = parsed.spacing === "spacious" ? "spacious" : "compact";
+    return { orientation, spacing };
   } catch {
     return DEFAULT_CANVAS_LAYOUT;
   }

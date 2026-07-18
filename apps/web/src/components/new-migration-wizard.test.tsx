@@ -44,6 +44,8 @@ function baseDag(): DagResponse {
         avg_tokens_in: 100,
         avg_tokens_out: 50,
         avg_latency_ms: 500,
+        trace_count: 0,
+        total_cost_usd: null,
       },
       "11": {
         id: 11,
@@ -52,6 +54,8 @@ function baseDag(): DagResponse {
         avg_tokens_in: 200,
         avg_tokens_out: 80,
         avg_latency_ms: 700,
+        trace_count: 0,
+        total_cost_usd: null,
       },
     },
     edges: [{ from_stage_id: 10, to_stage_id: 11 }],

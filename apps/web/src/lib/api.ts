@@ -51,6 +51,8 @@ export interface StageInfo {
   avg_tokens_in: number | null;
   avg_tokens_out: number | null;
   avg_latency_ms: number | null;
+  trace_count: number;
+  total_cost_usd: number | null;
 }
 
 export interface DagEdge {

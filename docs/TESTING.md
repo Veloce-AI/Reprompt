@@ -642,6 +642,43 @@ with `MigrationSuccessScreen`'s own run view).
    stops entirely while it isn't the active tab — both polls are scoped to
    the Canvas tab actually being mounted, not global background polling.
 
+### 3.3d Graph tab — Obsidian-style pipeline visualization
+
+**What it is**: A new "Graph" tab in the pipeline workspace that renders all
+pipeline stages as interactive nodes using dagre layout, with a floating
+"Models in pipeline" panel showing which stages share each LLM, and a calls
+drawer that opens when you click a stage.
+
+**Walkthrough**:
+1. Open any pipeline with at least one stage → click the **Graph** tab.
+2. All stages render as nodes connected by dependency edges. Node shows:
+   - Stage name (truncated, full name on hover)
+   - Model badge
+   - Trace count + avg token/latency stats (shows "No traces yet" if none)
+   - Total accumulated cost (only when StageRecord.cost data exists)
+   - "View inference calls →" affordance
+3. **Model lens (top-right panel)**: Lists each unique model used in the
+   pipeline. Click a model to highlight all stage nodes that use it with a
+   blue border glow. Click again to deselect.
+4. **Calls drawer**: Click any stage node → a drawer slides in from the right
+   showing up to 20 individual inference calls for that stage. Each call shows:
+   tokens in/out, latency, cost, and truncated input/output. "Show full text"
+   expands to full content.
+5. **Orientation toggle (top-left)**: `→` = horizontal (left-to-right ranks),
+   `↓` = vertical (top-to-bottom). Choice persists in `localStorage` per
+   pipeline (separate key from Canvas tab's layout preference).
+6. If a pipeline has no stages, the graph renders empty (no error).
+7. Layout uses `spacious` dagre spacing — same underlying `computeCanvasLayout`
+   function as the Canvas tab, reusing the shared `["pipeline-dag", id]` query
+   cache, so switching Canvas→Graph doesn't trigger a second network request.
+
+**Potential regressions to watch for**:
+- Adding the "graph" tab to `WORKSPACE_TABS` extends the tab bar — verify the
+  other four tabs still render correctly and `?tab=canvas` still works.
+- `StageInfo` now has `trace_count` and `total_cost_usd` — if the backend is
+  not running the latest code, the graph still renders (fields default to 0 /
+  null via Pydantic defaults), but stats will be blank.
+
 ### 3.4 Auth + Settings (M5)
 
 1. Go to `/login`, enter any email, submit.

@@ -37,8 +37,8 @@ function baseDag(): DagResponse {
     pipeline_id: 1,
     layers: [{ stage_ids: [10, 20] }],
     stages: {
-      "10": { id: 10, name: "Extract", model: "gpt-4o", avg_tokens_in: 100, avg_tokens_out: 50, avg_latency_ms: 500 },
-      "20": { id: 20, name: "Summarize", model: "gpt-4o", avg_tokens_in: 80, avg_tokens_out: 40, avg_latency_ms: 400 },
+      "10": { id: 10, name: "Extract", model: "gpt-4o", avg_tokens_in: 100, avg_tokens_out: 50, avg_latency_ms: 500, trace_count: 0, total_cost_usd: null },
+      "20": { id: 20, name: "Summarize", model: "gpt-4o", avg_tokens_in: 80, avg_tokens_out: 40, avg_latency_ms: 400, trace_count: 0, total_cost_usd: null },
     },
     edges: [],
   };

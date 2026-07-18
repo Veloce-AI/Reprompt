@@ -14,6 +14,8 @@ function baseStage(overrides: Partial<StageInfo> = {}): StageInfo {
     avg_tokens_in: 120,
     avg_tokens_out: 45,
     avg_latency_ms: 812,
+    trace_count: 0,
+    total_cost_usd: null,
     ...overrides,
   };
 }

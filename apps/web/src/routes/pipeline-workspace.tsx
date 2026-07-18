@@ -24,6 +24,7 @@ import {
 import { AppShell } from "@/components/app-shell";
 import { Dropzone } from "@/components/dropzone";
 import { PipelineCanvas } from "@/components/pipeline-canvas";
+import { PipelineGraph } from "@/components/pipeline-graph";
 import { DataTable } from "@/components/data-table";
 import { RubricReviewPanel } from "@/components/rubric-review-panel";
 import { NewMigrationWizard } from "@/components/new-migration-wizard";
@@ -41,15 +42,16 @@ import {
 } from "@/components/ui/drawer";
 import { cn } from "@/lib/utils";
 
-export type WorkspaceTab = "canvas" | "data" | "rubrics" | "migrations";
+export type WorkspaceTab = "canvas" | "data" | "rubrics" | "migrations" | "graph";
 
-export const WORKSPACE_TABS: readonly WorkspaceTab[] = ["canvas", "data", "rubrics", "migrations"];
+export const WORKSPACE_TABS: readonly WorkspaceTab[] = ["canvas", "data", "rubrics", "migrations", "graph"];
 
 const TAB_LABELS: Record<WorkspaceTab, string> = {
   canvas: "Canvas",
   data: "Data",
   rubrics: "Rubrics",
   migrations: "Migrations",
+  graph: "Graph",
 };
 
 /**
@@ -226,6 +228,7 @@ export default function PipelineWorkspace() {
               <MigrationsTab pipelineId={pid} onBackToCanvas={() => goToTab("canvas")} />
             </div>
           )}
+          {tab === "graph" && <PipelineGraph pipelineId={pid} />}
         </div>
       </div>
 

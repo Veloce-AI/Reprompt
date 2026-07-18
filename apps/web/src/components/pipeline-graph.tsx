@@ -22,51 +22,77 @@ import {
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import {
-  DrawerRoot,
-  DrawerContent,
-  DrawerHeader,
-  DrawerTitle,
-  DrawerDescription,
-  DrawerBody,
-} from "@/components/ui/drawer";
-import {
   computeCanvasLayout,
   type CanvasOrientation,
 } from "@/lib/canvas-layout";
 import { cn } from "@/lib/utils";
 
-// ---- Node data / types ----
+// ---- Dimensions ----
+// Approximate rendered sizes. Dagre uses STAGE_NODE_H for stage-to-stage
+// vertical spacing (via canvas-layout.ts's hardcoded NODE_HEIGHT=150, which
+// underestimates our richer node — the 50px difference narrows the gap from
+// 96px to ~46px at spacious spacing, still non-overlapping).
+// Model and call nodes are positioned manually so their sizes only affect
+// visual overlap, not the dagre layout.
+const STAGE_NODE_W = 256;
+const STAGE_NODE_H = 200;
+const MODEL_NODE_H = 72;
+const MODEL_V_GAP = 20;
+const MODEL_COL_GAP = 100; // horizontal gap: rightmost stage right edge → model column left edge
+const CALL_NODE_W = 240;
+const CALL_NODE_H = 82;
+const CALL_V_GAP = 10;
+const CALL_FROM_STAGE = 28; // gap from stage bottom to first call node top
+
+// ---- Node data types ----
 
 type StageGraphNodeData = {
   stage: StageInfo;
+  isExpanded: boolean;
   isHighlighted: boolean;
-  orientation: CanvasOrientation;
 };
-
 type StageGraphFlowNode = Node<StageGraphNodeData, "stageGraph">;
 
+type ModelGraphNodeData = {
+  model: string;
+  stageCount: number;
+  isHighlighted: boolean;
+};
+type ModelGraphFlowNode = Node<ModelGraphNodeData, "modelGraph">;
+
+type CallGraphNodeData = {
+  record: StageRecordOut;
+  index: number;
+};
+type CallGraphFlowNode = Node<CallGraphNodeData, "callGraph">;
+
+function modelNodeId(model: string) {
+  // Replace non-word chars so the id is safe as a CSS selector / React key
+  return `model-${model.replace(/\W/g, "_")}`;
+}
+
 // ---- StageGraphNode ----
-// Richer than the Canvas tab's StageNode: shows trace_count + total_cost_usd
-// from the extended /dag response, and a "View inference calls →" affordance
-// that triggers the calls drawer via the ReactFlow onNodeClick handler.
+// Richer than the canvas StageNode: trace_count, total_cost_usd, and an
+// expand-calls toggle. Clicking the node is handled by ReactFlow's
+// onNodeClick in the parent — the node itself is fully passive.
 
 function StageGraphNode({ data }: NodeProps<StageGraphFlowNode>) {
-  const { stage, isHighlighted, orientation } = data;
-  const vertical = orientation === "vertical";
+  const { stage, isExpanded, isHighlighted } = data;
+  const canExpand = (stage.trace_count ?? 0) > 0;
+
   return (
     <Card
       className={cn(
         "w-64 cursor-pointer border-2 select-none transition-colors duration-base ease-out",
         isHighlighted
           ? "border-beam shadow-[0_0_0_3px_var(--beam-soft)]"
-          : "border-line hover:border-beam/50",
+          : isExpanded
+            ? "border-beam/60"
+            : "border-line hover:border-beam/40",
       )}
     >
-      <Handle
-        type="target"
-        position={vertical ? Position.Top : Position.Left}
-        className="!bg-beam"
-      />
+      {/* target: left — incoming dep edges */}
+      <Handle type="target" position={Position.Left} id="left" className="!bg-beam" />
       <CardContent className="space-y-2 p-4">
         <p className="truncate text-14 font-medium text-ink" title={stage.name}>
           {stage.name}
@@ -76,7 +102,7 @@ function StageGraphNode({ data }: NodeProps<StageGraphFlowNode>) {
         </Badge>
         <div className="space-y-1 font-mono text-12 tabular-nums text-ink-soft">
           <p>
-            {(stage.trace_count ?? 0) > 0
+            {canExpand
               ? `${stage.trace_count} trace${stage.trace_count === 1 ? "" : "s"}`
               : "No traces yet"}
           </p>
@@ -90,158 +116,78 @@ function StageGraphNode({ data }: NodeProps<StageGraphFlowNode>) {
             <p>${stage.total_cost_usd.toFixed(4)} total</p>
           )}
         </div>
-        <p className="text-12 text-beam">View inference calls →</p>
+        {canExpand && (
+          <p className={cn("text-12", isExpanded ? "text-beam" : "text-ink-soft")}>
+            {isExpanded ? "▼ collapse calls" : "▶ expand calls"}
+          </p>
+        )}
       </CardContent>
+      {/* source right — outgoing dep edges + model edges */}
+      <Handle type="source" position={Position.Right} id="right" className="!bg-beam" />
+      {/* source bottom — call edges (always rendered, hidden when no calls) */}
       <Handle
         type="source"
-        position={vertical ? Position.Bottom : Position.Right}
-        className="!bg-beam"
+        position={Position.Bottom}
+        id="bottom"
+        className="!h-2 !w-2 !bg-ink-soft"
+        style={{ opacity: canExpand && isExpanded ? 0.4 : 0 }}
       />
     </Card>
   );
 }
 
-const nodeTypes = { stageGraph: StageGraphNode };
+// ---- ModelGraphNode ----
+// Fixed-column node to the right of all stages. Clicking highlights the
+// stages that use this model (sets highlightedModel via onNodeClick in
+// PipelineGraph, not an internal handler). No source handles — only
+// incoming edges from stages.
 
-// ---- ModelPanel ----
-// Floating panel (React Flow <Panel>) that lists each unique model used in
-// the pipeline. Clicking a model highlights the stage nodes that use it,
-// giving the Obsidian-style "see which nodes share a resource" insight
-// without requiring model nodes in the React Flow graph itself (which would
-// complicate the dagre layout when stages are expanded).
-
-function ModelPanel({
-  stages,
-  highlightedModel,
-  onHighlight,
-}: {
-  stages: StageInfo[];
-  highlightedModel: string | null;
-  onHighlight: (model: string | null) => void;
-}) {
-  const byModel = useMemo(() => {
-    const map = new Map<string, string[]>();
-    for (const s of stages) {
-      const names = map.get(s.model) ?? [];
-      names.push(s.name);
-      map.set(s.model, names);
-    }
-    return [...map.entries()].sort((a, b) => b[1].length - a[1].length);
-  }, [stages]);
-
+function ModelGraphNode({ data }: NodeProps<ModelGraphFlowNode>) {
+  const { model, stageCount, isHighlighted } = data;
   return (
-    <div className="w-56 rounded-card border border-line bg-paper p-3 shadow-sm">
-      <p className="mb-2 text-12 font-medium text-ink">Models in pipeline</p>
-      <div className="space-y-1">
-        {byModel.map(([model, stageNames]) => {
-          const active = highlightedModel === model;
-          return (
-            <button
-              key={model}
-              type="button"
-              onClick={() => onHighlight(active ? null : model)}
-              className={cn(
-                "w-full rounded-control px-2 py-1.5 text-left transition-colors duration-fast ease-out",
-                active ? "bg-beam-soft" : "hover:bg-beam-soft/50",
-              )}
-            >
-              <p
-                className={cn(
-                  "truncate text-12 font-medium",
-                  active ? "text-beam" : "text-ink",
-                )}
-              >
-                {model}
-              </p>
-              <p className="truncate text-11 text-ink-soft">
-                {stageNames.length} stage{stageNames.length !== 1 ? "s" : ""} —{" "}
-                {stageNames.join(", ")}
-              </p>
-            </button>
-          );
-        })}
-      </div>
+    <div
+      className={cn(
+        "w-48 cursor-pointer select-none rounded-card border-2 px-3 py-2.5 shadow-sm transition-colors duration-base ease-out",
+        isHighlighted
+          ? "border-beam bg-beam-soft shadow-[0_0_0_3px_var(--beam-soft)]"
+          : "border-line bg-paper hover:border-beam/50",
+      )}
+    >
+      <Handle type="target" position={Position.Left} id="left" className="!bg-beam/60" />
+      <p
+        className={cn(
+          "truncate text-12 font-medium",
+          isHighlighted ? "text-beam" : "text-ink",
+        )}
+        title={model}
+      >
+        {model}
+      </p>
+      <p className="text-11 text-ink-soft">
+        {stageCount} stage{stageCount !== 1 ? "s" : ""}
+      </p>
     </div>
   );
 }
 
-// ---- CallsDrawer ----
-// Slides in when a stage node is clicked — shows that stage's individual
-// StageRecord rows (one per benchmark trace) as expandable call cards.
+// ---- CallGraphNode ----
+// Appears below its parent stage when expanded. Compact — just the key
+// stats. Full input/output is in the Data tab's record browser.
 
-function CallsDrawer({
-  pipelineId,
-  stageId,
-  stageName,
-  model,
-  onClose,
-}: {
-  pipelineId: number;
-  stageId: number | null;
-  stageName: string;
-  model: string;
-  onClose: () => void;
-}) {
-  const recordsQuery = useQuery({
-    queryKey: ["stage-graph-calls", pipelineId, stageId],
-    queryFn: () => listStageRecords(pipelineId, { stageId: stageId!, limit: 20 }),
-    enabled: stageId !== null,
-  });
-
+function CallGraphNode({ data }: NodeProps<CallGraphFlowNode>) {
+  const { record, index } = data;
   return (
-    <DrawerRoot open={stageId !== null} onOpenChange={(open) => !open && onClose()}>
-      <DrawerContent>
-        <DrawerHeader>
-          <DrawerTitle>{stageName || "Inference calls"}</DrawerTitle>
-          <DrawerDescription>
-            {model} · individual benchmark calls for this stage
-          </DrawerDescription>
-        </DrawerHeader>
-        <DrawerBody>
-          {recordsQuery.isLoading && (
-            <p className="text-13 text-ink-soft" role="status">
-              Loading calls…
-            </p>
-          )}
-          {recordsQuery.isError && (
-            <p className="text-13 text-parity-fail" role="alert">
-              Couldn't load calls.
-            </p>
-          )}
-          {recordsQuery.data?.records.length === 0 && (
-            <p className="text-13 text-ink-soft">
-              No inference records for this stage yet.
-            </p>
-          )}
-          {recordsQuery.data && recordsQuery.data.records.length > 0 && (
-            <div className="space-y-3">
-              {recordsQuery.data.records.map((record, i) => (
-                <CallCard key={record.id} record={record} index={i + 1} />
-              ))}
-            </div>
-          )}
-        </DrawerBody>
-      </DrawerContent>
-    </DrawerRoot>
-  );
-}
-
-function CallCard({ record, index }: { record: StageRecordOut; index: number }) {
-  const [expanded, setExpanded] = useState(false);
-  const inputStr = (() => {
-    try {
-      return JSON.stringify(record.input, null, 2);
-    } catch {
-      return String(record.input);
-    }
-  })();
-  const isLong = inputStr.length > 160 || record.output.length > 160;
-
-  return (
-    <div className="rounded-control border border-line p-3">
-      <div className="mb-2 flex items-center justify-between gap-2">
-        <span className="text-13 font-medium text-ink">Call #{index}</span>
-        <div className="flex items-center gap-3 font-mono text-12 tabular-nums text-ink-soft">
+    <div className="w-56 select-none rounded-control border border-line bg-paper px-3 py-2 shadow-sm">
+      <Handle
+        type="target"
+        position={Position.Top}
+        id="top"
+        className="!h-1.5 !w-1.5 !bg-ink-soft"
+        style={{ opacity: 0.4 }}
+      />
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-12 font-medium text-ink">Call #{index}</span>
+        <div className="flex items-center gap-2 font-mono text-11 tabular-nums text-ink-soft">
           {record.tokens_in != null && (
             <span>
               {record.tokens_in}→{record.tokens_out ?? "?"} tok
@@ -250,45 +196,27 @@ function CallCard({ record, index }: { record: StageRecordOut; index: number }) 
           {record.latency_ms != null && (
             <span>{Math.round(record.latency_ms)}ms</span>
           )}
-          {record.cost != null && <span>${record.cost.toFixed(4)}</span>}
         </div>
       </div>
-      <div className="space-y-2">
-        <div>
-          <p className="mb-1 text-12 font-medium text-ink-soft">Input</p>
-          <pre className="whitespace-pre-wrap rounded-control bg-beam-soft/30 p-2 font-mono text-11 leading-normal text-ink">
-            {expanded ? inputStr : truncateStr(inputStr, 160)}
-          </pre>
-        </div>
-        <div>
-          <p className="mb-1 text-12 font-medium text-ink-soft">Output</p>
-          <pre className="whitespace-pre-wrap rounded-control bg-beam-soft/30 p-2 font-mono text-11 leading-normal text-ink">
-            {expanded ? record.output : truncateStr(record.output, 160)}
-          </pre>
-        </div>
-      </div>
-      {isLong && (
-        <button
-          type="button"
-          className="mt-2 text-12 text-beam hover:underline"
-          onClick={() => setExpanded(!expanded)}
-        >
-          {expanded ? "Show less" : "Show full text"}
-        </button>
+      {record.cost != null && (
+        <p className="mt-0.5 font-mono text-11 tabular-nums text-ink-soft">
+          ${record.cost.toFixed(4)}
+        </p>
       )}
     </div>
   );
 }
 
-function truncateStr(s: string, max: number): string {
-  return s.length > max ? `${s.slice(0, max - 1)}…` : s;
-}
+const nodeTypes = {
+  stageGraph: StageGraphNode,
+  modelGraph: ModelGraphNode,
+  callGraph: CallGraphNode,
+};
 
 // ---- RefitOnChange ----
-// Same double-requestAnimationFrame pattern as pipeline-canvas.tsx: we need
-// React Flow to measure the new node positions before calling fitView, and a
-// single rAF fires before layout/paint; two rAFs guarantee one layout pass
-// has already completed.
+// Same double-rAF pattern as pipeline-canvas.tsx: one rAF fires before the
+// browser's layout pass, a second one fires after it, so fitView sees the
+// real rendered positions of any newly-added call nodes.
 
 function RefitOnChange({
   nodeCount,
@@ -303,7 +231,7 @@ function RefitOnChange({
     let inner = () => {};
     const frame = requestAnimationFrame(() => {
       const frame2 = requestAnimationFrame(() =>
-        fitView({ padding: 0.12, minZoom: 0.3 }),
+        fitView({ padding: 0.1, minZoom: 0.25 }),
       );
       inner = () => cancelAnimationFrame(frame2);
     });
@@ -315,7 +243,7 @@ function RefitOnChange({
   return null;
 }
 
-// ---- Orientation persistence (separate key from canvas) ----
+// ---- Orientation persistence (separate key from Canvas tab) ----
 
 function loadGraphOrientation(pipelineId: number): CanvasOrientation {
   try {
@@ -340,8 +268,13 @@ export function PipelineGraph({ pipelineId }: { pipelineId: number }) {
     queryFn: () => getPipelineDag(pipelineId),
   });
 
+  const [expandedStageIds, setExpandedStageIds] = useState(new Set<number>());
+  // Map<stageId, records[]> — populated lazily on first expand, never evicted
+  // (re-expanding uses the cached records without a second network request).
+  const [stageRecordsMap, setStageRecordsMap] = useState(
+    new Map<number, StageRecordOut[]>(),
+  );
   const [highlightedModel, setHighlightedModel] = useState<string | null>(null);
-  const [openStageId, setOpenStageId] = useState<number | null>(null);
   const [orientation, setOrientation] = useState<CanvasOrientation>(() =>
     loadGraphOrientation(pipelineId),
   );
@@ -350,6 +283,19 @@ export function PipelineGraph({ pipelineId }: { pipelineId: number }) {
     saveGraphOrientation(pipelineId, orientation);
   }, [pipelineId, orientation]);
 
+  // Fetch records for any stage that's been expanded but not yet loaded.
+  // Using an effect (not a query per stage) because we can't call hooks
+  // conditionally — we don't know stage IDs until the dag loads.
+  useEffect(() => {
+    for (const stageId of expandedStageIds) {
+      if (!stageRecordsMap.has(stageId)) {
+        listStageRecords(pipelineId, { stageId, limit: 8 }).then((page) => {
+          setStageRecordsMap((prev) => new Map(prev).set(stageId, page.records));
+        });
+      }
+    }
+  }, [expandedStageIds, stageRecordsMap, pipelineId]);
+
   const layout = useMemo(
     () => ({ orientation, spacing: "spacious" as const }),
     [orientation],
@@ -357,34 +303,126 @@ export function PipelineGraph({ pipelineId }: { pipelineId: number }) {
 
   const { nodes, edges } = useMemo(() => {
     const dag = dagQuery.data;
-    if (!dag) return { nodes: [] as StageGraphFlowNode[], edges: [] as Edge[] };
+    if (!dag)
+      return {
+        nodes: [] as (StageGraphFlowNode | ModelGraphFlowNode | CallGraphFlowNode)[],
+        edges: [] as Edge[],
+      };
 
-    const positions = computeCanvasLayout(dag.layers, dag.edges, layout);
+    const stagePositions = computeCanvasLayout(dag.layers, dag.edges, layout);
     const stageList = Object.values(dag.stages);
 
-    const nodes: StageGraphFlowNode[] = stageList.map((stage) => ({
-      id: String(stage.id),
+    // ---- Stage nodes ----
+    const stageNodes: StageGraphFlowNode[] = stageList.map((stage) => ({
+      id: `stage-${stage.id}`,
       type: "stageGraph" as const,
-      position: positions[String(stage.id)] ?? { x: 0, y: 0 },
+      position: stagePositions[String(stage.id)] ?? { x: 0, y: 0 },
       data: {
         stage,
+        isExpanded: expandedStageIds.has(stage.id),
         isHighlighted: highlightedModel === stage.model,
-        orientation,
       },
     }));
 
-    const edges: Edge[] = dag.edges.map((e) => ({
-      id: `${e.from_stage_id}-${e.to_stage_id}`,
-      source: String(e.from_stage_id),
-      target: String(e.to_stage_id),
+    // ---- Model nodes (fixed column right of all stages) ----
+    const stageRightEdges = stageList.map(
+      (s) => (stagePositions[String(s.id)]?.x ?? 0) + STAGE_NODE_W,
+    );
+    const maxStageRight = stageRightEdges.length ? Math.max(...stageRightEdges) : 0;
+    const modelColX = maxStageRight + MODEL_COL_GAP;
+
+    const uniqueModels = [...new Set(stageList.map((s) => s.model))];
+    const stageYValues = stageList.map((s) => stagePositions[String(s.id)]?.y ?? 0);
+    const minStageY = stageYValues.length ? Math.min(...stageYValues) : 0;
+    const maxStageY = stageYValues.length ? Math.max(...stageYValues) : 0;
+    const totalModelH =
+      uniqueModels.length * MODEL_NODE_H + (uniqueModels.length - 1) * MODEL_V_GAP;
+    const modelStartY = (minStageY + maxStageY) / 2 - totalModelH / 2;
+
+    const modelNodes: ModelGraphFlowNode[] = uniqueModels.map((model, i) => ({
+      id: modelNodeId(model),
+      type: "modelGraph" as const,
+      position: {
+        x: modelColX,
+        y: modelStartY + i * (MODEL_NODE_H + MODEL_V_GAP),
+      },
+      data: {
+        model,
+        stageCount: stageList.filter((s) => s.model === model).length,
+        isHighlighted: highlightedModel === model,
+      },
+    }));
+
+    // ---- Call nodes (fan below their parent stage when expanded) ----
+    const callNodes: CallGraphFlowNode[] = [];
+    for (const stageId of expandedStageIds) {
+      const records = stageRecordsMap.get(stageId) ?? [];
+      const pos = stagePositions[String(stageId)];
+      if (!pos) continue;
+      records.forEach((record, i) => {
+        callNodes.push({
+          id: `call-${record.id}`,
+          type: "callGraph" as const,
+          position: {
+            x: pos.x + (STAGE_NODE_W - CALL_NODE_W) / 2,
+            y: pos.y + STAGE_NODE_H + CALL_FROM_STAGE + i * (CALL_NODE_H + CALL_V_GAP),
+          },
+          data: { record, index: i + 1 },
+        });
+      });
+    }
+
+    // ---- Dependency edges (solid) ----
+    const depEdges: Edge[] = dag.edges.map((e) => ({
+      id: `dep-${e.from_stage_id}-${e.to_stage_id}`,
+      source: `stage-${e.from_stage_id}`,
+      sourceHandle: "right",
+      target: `stage-${e.to_stage_id}`,
+      targetHandle: "left",
       style: { stroke: "var(--line)", strokeWidth: 2 },
     }));
 
-    return { nodes, edges };
-  }, [dagQuery.data, layout, highlightedModel, orientation]);
+    // ---- Model edges (dashed, stage → model node) ----
+    const modelEdges: Edge[] = stageList.map((stage) => ({
+      id: `model-edge-${stage.id}`,
+      source: `stage-${stage.id}`,
+      sourceHandle: "right",
+      target: modelNodeId(stage.model),
+      targetHandle: "left",
+      style: {
+        stroke: "var(--beam)",
+        strokeWidth: 1.5,
+        strokeDasharray: "5 3",
+        opacity: highlightedModel === stage.model ? 0.9 : 0.3,
+      },
+    }));
 
-  const openStage = dagQuery.data?.stages[String(openStageId)] ?? null;
-  const stages = Object.values(dagQuery.data?.stages ?? {});
+    // ---- Call edges (straight, stage bottom → call top) ----
+    const callEdges: Edge[] = [];
+    for (const stageId of expandedStageIds) {
+      const records = stageRecordsMap.get(stageId) ?? [];
+      records.forEach((record) => {
+        callEdges.push({
+          id: `call-edge-${record.id}`,
+          source: `stage-${stageId}`,
+          sourceHandle: "bottom",
+          target: `call-${record.id}`,
+          targetHandle: "top",
+          type: "straight",
+          style: {
+            stroke: "var(--ink-soft)",
+            strokeWidth: 1,
+            opacity: 0.4,
+          },
+        });
+      });
+    }
+
+    return {
+      nodes: [...stageNodes, ...modelNodes, ...callNodes],
+      edges: [...depEdges, ...modelEdges, ...callEdges],
+    };
+  }, [dagQuery.data, layout, expandedStageIds, stageRecordsMap, highlightedModel]);
 
   if (dagQuery.isLoading) {
     return (
@@ -410,10 +448,24 @@ export function PipelineGraph({ pipelineId }: { pipelineId: number }) {
         edges={edges}
         nodeTypes={nodeTypes}
         fitView
-        fitViewOptions={{ padding: 0.12, minZoom: 0.3 }}
-        minZoom={0.3}
+        fitViewOptions={{ padding: 0.1, minZoom: 0.25 }}
+        minZoom={0.25}
         proOptions={{ hideAttribution: true }}
-        onNodeClick={(_event, node) => setOpenStageId(Number(node.id))}
+        onNodeClick={(_event, node) => {
+          if (node.id.startsWith("stage-")) {
+            const stageId = Number(node.id.slice(6));
+            const stage = dagQuery.data?.stages[String(stageId)];
+            if (!stage || (stage.trace_count ?? 0) === 0) return;
+            setExpandedStageIds((prev) => {
+              const next = new Set(prev);
+              next.has(stageId) ? next.delete(stageId) : next.add(stageId);
+              return next;
+            });
+          } else if (node.id.startsWith("model-")) {
+            const model = (node.data as ModelGraphNodeData).model;
+            setHighlightedModel((prev) => (prev === model ? null : model));
+          }
+        }}
       >
         <Background />
         <Controls />
@@ -446,25 +498,8 @@ export function PipelineGraph({ pipelineId }: { pipelineId: number }) {
             ))}
           </div>
         </Panel>
-        {stages.length > 0 && (
-          <Panel position="top-right">
-            <ModelPanel
-              stages={stages}
-              highlightedModel={highlightedModel}
-              onHighlight={setHighlightedModel}
-            />
-          </Panel>
-        )}
         <RefitOnChange nodeCount={nodes.length} orientation={orientation} />
       </ReactFlow>
-
-      <CallsDrawer
-        pipelineId={pipelineId}
-        stageId={openStageId}
-        stageName={openStage?.name ?? ""}
-        model={openStage?.model ?? ""}
-        onClose={() => setOpenStageId(null)}
-      />
     </div>
   );
 }

@@ -19,27 +19,6 @@ import { AddApiKeyDrawer } from "@/components/add-api-key-drawer";
 
 type WizardStep = "target-model" | "budget" | "confirm";
 
-type ModelFamily = "anthropic" | "gemini" | "openai" | "llama" | "generic";
-
-const _OPEN_WEIGHT_MARKERS = ["llama", "mistral", "mixtral", "gemma", "qwen", "deepseek", "phi", "vicuna", "falcon", "starcoder"];
-
-function resolveFamily(model: string): ModelFamily {
-  const lower = model.toLowerCase();
-  if (_OPEN_WEIGHT_MARKERS.some((m) => lower.includes(m))) return "llama";
-  if (lower.includes("claude")) return "anthropic";
-  if (lower.includes("gemini")) return "gemini";
-  if (lower.includes("gpt")) return "openai";
-  return "generic";
-}
-
-const FAMILY_TRANSFORM_LABELS: Record<ModelFamily, string> = {
-  anthropic: "XML-tagged sections (Anthropic convention)",
-  gemini: "Markdown headers (Gemini convention)",
-  openai: "Compression on mini/small variants only",
-  llama: "Compression on small variants only",
-  generic: "Compression on small variants only",
-};
-
 const STEPS: { id: WizardStep; label: string }[] = [
   { id: "target-model", label: "Target model" },
   { id: "budget", label: "Budget & parity threshold" },
@@ -304,7 +283,6 @@ export function NewMigrationWizard({
                   {(modelsQuery.data ?? []).map((option) => {
                     const locked = isLocked(option);
                     const checked = !locked && selectedModels.has(option.model);
-                    const family = resolveFamily(option.model);
                     const modelCard = modelCards[option.model];
                     return (
                       <label
@@ -365,7 +343,9 @@ export function NewMigrationWizard({
                             {!option.requires_api_key && (
                               <Badge variant="neutral">No API key</Badge>
                             )}
-                            <Badge variant="neutral">{FAMILY_TRANSFORM_LABELS[family]}</Badge>
+                            {option.transform_descriptions.map((desc) => (
+                              <Badge key={desc} variant="neutral">{desc}</Badge>
+                            ))}
                           </div>
                           {modelCard && (
                             <div className="mt-3 space-y-1 rounded bg-ink-soft/5 p-3">

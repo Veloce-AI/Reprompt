@@ -181,6 +181,9 @@ class Stage(Base):
     candidates: Mapped[list["Candidate"]] = relationship(
         back_populates="stage", cascade="all, delete-orphan"
     )
+    assertions: Mapped[list["Assertion"]] = relationship(
+        back_populates="stage", cascade="all, delete-orphan"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -354,6 +357,9 @@ class Migration(Base):
     candidates: Mapped[list["Candidate"]] = relationship(
         back_populates="migration", cascade="all, delete-orphan"
     )
+    seam_check_results: Mapped[list["SeamCheckResult"]] = relationship(
+        back_populates="migration", cascade="all, delete-orphan"
+    )
 
 
 class Candidate(Base):
@@ -379,9 +385,76 @@ class Candidate(Base):
     scores: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     cost: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     latency: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    # M4 holdout: composite score (det + embedding, no judge) of the winning
+    # prompt on examples withheld from optimization. None when no holdout
+    # examples were available or this candidate was not selected as the winner.
+    holdout_score: Mapped[float | None] = mapped_column(Float, nullable=True, default=None)
 
     migration: Mapped["Migration"] = relationship(back_populates="candidates")
     stage: Mapped["Stage"] = relationship(back_populates="candidates")
+
+
+class Assertion(Base):
+    """Phase 5 assertion registry: mined or manual invariants per stage.
+
+    Mining writes ``status="candidate"`` rows; a human approves them (HITL
+    gate mirroring the Rubric approval flow). Phase 8 will run approved
+    assertions as executable predicates inside the optimizer loop.
+    """
+
+    __tablename__ = "assertions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    stage_id: Mapped[int] = mapped_column(
+        ForeignKey("stages.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    kind: Mapped[str] = mapped_column(String(50), nullable=False)
+    spec: Mapped[dict] = mapped_column(JSON, nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    # candidate → approved → retired
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="candidate")
+    # mined / manual / counterexample
+    source: Mapped[str] = mapped_column(String(20), nullable=False, default="mined")
+    counterexamples: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    noise_floor: Mapped[float | None] = mapped_column(Float, nullable=True)
+    entropy: Mapped[float | None] = mapped_column(Float, nullable=True)
+    description: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    stage: Mapped["Stage"] = relationship(back_populates="assertions")
+
+
+class SeamCheckResult(Base):
+    """Phase 4 seam regression: one (upstream, downstream) stage pair result per migration.
+
+    Stores whether the downstream stage still produces correct output when fed
+    the migrated upstream stage's new output — see packages/core/optimizer/seam.py.
+    """
+
+    __tablename__ = "seam_check_results"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    migration_id: Mapped[int] = mapped_column(
+        ForeignKey("migrations.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    upstream_stage_id: Mapped[int] = mapped_column(
+        ForeignKey("stages.id", ondelete="CASCADE"), nullable=False
+    )
+    downstream_stage_id: Mapped[int] = mapped_column(
+        ForeignKey("stages.id", ondelete="CASCADE"), nullable=False
+    )
+    parity_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    passed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    substitution_applied: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    migration: Mapped["Migration"] = relationship(back_populates="seam_check_results")
 
 
 # ---------------------------------------------------------------------------

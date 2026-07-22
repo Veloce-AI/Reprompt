@@ -194,6 +194,8 @@ describe("RubricReviewPanel", () => {
           avg_tokens_in: null,
           avg_tokens_out: null,
           avg_latency_ms: null,
+          trace_count: 0,
+          total_cost_usd: null,
         },
       },
       edges: [],

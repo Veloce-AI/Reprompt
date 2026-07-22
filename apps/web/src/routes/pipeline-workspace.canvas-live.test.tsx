@@ -76,6 +76,8 @@ function baseDag(): DagResponse {
         avg_tokens_in: 100,
         avg_tokens_out: 50,
         avg_latency_ms: 500,
+        trace_count: 0,
+        total_cost_usd: null,
       },
     },
     edges: [],

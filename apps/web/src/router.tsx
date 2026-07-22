@@ -4,6 +4,7 @@ import Home from "./routes/home";
 import DevKit from "./routes/dev-kit";
 import PipelinesImport from "./routes/pipelines-import";
 import PipelineWorkspace, { WORKSPACE_TABS, type WorkspaceTab } from "./routes/pipeline-workspace";
+import MigrationDetail from "./routes/migration-detail";
 import Login from "./routes/login";
 import AuthVerify from "./routes/auth-verify";
 import Settings from "./routes/settings";
@@ -88,6 +89,12 @@ const newMigrationRedirectRoute = createRoute({
   },
 });
 
+const migrationDetailRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/pipelines/$pipelineId/migrations/$migrationId",
+  component: MigrationDetail,
+});
+
 const loginRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/login",
@@ -125,6 +132,7 @@ const routeTree = rootRoute.addChildren([
   pipelineWorkspaceRoute,
   rubricReviewRedirectRoute,
   newMigrationRedirectRoute,
+  migrationDetailRoute,
   loginRoute,
   authVerifyRoute,
   settingsRoute,

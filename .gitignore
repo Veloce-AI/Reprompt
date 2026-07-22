@@ -15,3 +15,7 @@ test-results
 # persists across sessions unlike a temp scratchpad. See PR_REVIEW.md's
 # own "keep this local" instruction for why.
 /.local/
+
+# Mac-only dev scripts (Windows originals start.sh/stop.sh are committed)
+/start-mac.sh
+/stop-mac.sh

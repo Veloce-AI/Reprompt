@@ -787,8 +787,6 @@ def test_candidate_rows_populated_with_target_model(
     This test mocks the optimizer to run and create a single candidate,
     then verifies the target_model field is correctly populated.
     """
-    from unittest.mock import MagicMock, patch
-
     pipeline_id = _upload(client, _diamond_trace_file())
 
     response = client.post(
@@ -1040,4 +1038,359 @@ def test_results_unknown_migration_returns_404(client: TestClient) -> None:
 
 def test_results_unknown_pipeline_returns_404(client: TestClient) -> None:
     response = client.get("/pipelines/999999/migrations/1/results")
+    assert response.status_code == 404
+
+
+def test_candidate_target_model_is_persisted(
+    client: TestClient, session_factory: sessionmaker
+) -> None:
+    """Candidate rows written by on_attempt must record target_model so the
+    scorecard can tell which model produced each attempt (critical once a
+    migration runs multiple target models)."""
+    pipeline_id = _upload(client, _diamond_trace_file())
+    migration_id = _create_migration(client, pipeline_id)
+    stage_ids = _stage_ids(session_factory, pipeline_id)
+    any_stage_id = next(iter(stage_ids.values()))
+
+    with session_factory() as db:
+        db.add(
+            models.Candidate(
+                migration_id=migration_id,
+                stage_id=any_stage_id,
+                target_model="gpt-4o-mini",
+                prompt_variant="test prompt",
+                params={"temperature": 0.2},
+                format="plain",
+                scores={"final": 0.85},
+                cost=0.001,
+                latency=120.0,
+            )
+        )
+        db.commit()
+
+    with session_factory() as db:
+        candidate = db.query(models.Candidate).filter(
+            models.Candidate.migration_id == migration_id
+        ).first()
+        assert candidate is not None
+        assert candidate.target_model == "gpt-4o-mini"
+
+
+# ---------------------------------------------------------------------------
+# M4 holdout_score in GET /results
+# ---------------------------------------------------------------------------
+
+
+def _add_candidate_with_holdout(
+    session_factory: sessionmaker,
+    *,
+    migration_id: int,
+    stage_id: int,
+    target_model: str,
+    prompt_variant: str,
+    final_score: float,
+    holdout_score: float | None,
+) -> None:
+    with session_factory() as db:
+        db.add(
+            models.Candidate(
+                migration_id=migration_id,
+                stage_id=stage_id,
+                target_model=target_model,
+                prompt_variant=prompt_variant,
+                params={},
+                format="text",
+                scores={"final": final_score},
+                cost=0.01,
+                latency=100.0,
+                holdout_score=holdout_score,
+            )
+        )
+        db.commit()
+
+
+def test_results_exposes_holdout_score_when_set(
+    client: TestClient, session_factory: sessionmaker
+) -> None:
+    """holdout_score from the winning Candidate row must appear in the results response."""
+    pipeline_id = _upload(client, _diamond_trace_file())
+    migration_id = _create_migration(client, pipeline_id)
+    stage_ids = _stage_ids(session_factory, pipeline_id)
+    root_id = stage_ids["root"]
+
+    _add_candidate_with_holdout(
+        session_factory,
+        migration_id=migration_id,
+        stage_id=root_id,
+        target_model="gpt-4o-mini",
+        prompt_variant="winner",
+        final_score=0.88,
+        holdout_score=0.72,
+    )
+
+    response = client.get(f"/pipelines/{pipeline_id}/migrations/{migration_id}/results")
+    assert response.status_code == 200, response.text
+    body = response.json()
+    root_result = next(r for r in body if r["stage_id"] == root_id)
+    assert abs(root_result["holdout_score"] - 0.72) < 1e-9
+
+
+def test_results_holdout_score_is_null_when_not_set(
+    client: TestClient, session_factory: sessionmaker
+) -> None:
+    """holdout_score is None when the Candidate row has no holdout measurement."""
+    pipeline_id = _upload(client, _diamond_trace_file())
+    migration_id = _create_migration(client, pipeline_id)
+    stage_ids = _stage_ids(session_factory, pipeline_id)
+    root_id = stage_ids["root"]
+
+    _add_candidate_with_holdout(
+        session_factory,
+        migration_id=migration_id,
+        stage_id=root_id,
+        target_model="gpt-4o-mini",
+        prompt_variant="winner no holdout",
+        final_score=0.80,
+        holdout_score=None,
+    )
+
+    response = client.get(f"/pipelines/{pipeline_id}/migrations/{migration_id}/results")
+    assert response.status_code == 200, response.text
+    body = response.json()
+    root_result = next(r for r in body if r["stage_id"] == root_id)
+    assert root_result["holdout_score"] is None
+
+
+# ---------------------------------------------------------------------------
+# GET /pipelines/{id}/migrations/{id}/export (config download)
+# ---------------------------------------------------------------------------
+
+
+def test_export_returns_json_attachment_header(
+    client: TestClient, session_factory: sessionmaker
+) -> None:
+    pipeline_id = _upload(client, _diamond_trace_file())
+    migration_id = _create_migration(client, pipeline_id)
+    stage_ids = _stage_ids(session_factory, pipeline_id)
+    root_id = stage_ids["root"]
+
+    _add_candidate(
+        session_factory,
+        migration_id=migration_id,
+        stage_id=root_id,
+        target_model="gpt-4o-mini",
+        prompt_variant="exported prompt",
+        final_score=0.85,
+    )
+
+    response = client.get(f"/pipelines/{pipeline_id}/migrations/{migration_id}/export")
+    assert response.status_code == 200, response.text
+    assert "attachment" in response.headers.get("content-disposition", "")
+    assert f"reprompt-config-{migration_id}.json" in response.headers.get("content-disposition", "")
+
+
+def test_export_shape_and_keyed_by_source_id(
+    client: TestClient, session_factory: sessionmaker
+) -> None:
+    pipeline_id = _upload(client, _diamond_trace_file())
+    migration_id = _create_migration(client, pipeline_id)
+    stage_ids = _stage_ids(session_factory, pipeline_id)
+    root_id = stage_ids["root"]
+
+    _add_candidate(
+        session_factory,
+        migration_id=migration_id,
+        stage_id=root_id,
+        target_model="gpt-4o-mini",
+        prompt_variant="best prompt",
+        final_score=0.9,
+    )
+
+    response = client.get(f"/pipelines/{pipeline_id}/migrations/{migration_id}/export")
+    assert response.status_code == 200, response.text
+    body = response.json()
+
+    assert body["migration_id"] == migration_id
+    assert body["pipeline_id"] == pipeline_id
+    assert "generated_at" in body
+    assert len(body["stages"]) == 1
+
+    stage = body["stages"][0]
+    assert "stage_source_id" in stage
+    assert stage["stage_name"] == "Root"
+    assert stage["winning_model"] == "gpt-4o-mini"
+    assert stage["winning_prompt"] == "best prompt"
+    assert abs(stage["training_score"] - 0.9) < 1e-9
+    assert "params" in stage
+    assert "holdout_score" in stage
+
+
+def test_export_winner_matches_results_endpoint(
+    client: TestClient, session_factory: sessionmaker
+) -> None:
+    """Export picks the same winner as /results."""
+    pipeline_id = _upload(client, _diamond_trace_file())
+    migration_id = _create_migration(client, pipeline_id)
+    stage_ids = _stage_ids(session_factory, pipeline_id)
+    root_id = stage_ids["root"]
+
+    _add_candidate(
+        session_factory,
+        migration_id=migration_id,
+        stage_id=root_id,
+        target_model="gpt-4o-mini",
+        prompt_variant="weaker",
+        final_score=0.6,
+    )
+    _add_candidate(
+        session_factory,
+        migration_id=migration_id,
+        stage_id=root_id,
+        target_model="claude-haiku-4-5",
+        prompt_variant="stronger",
+        final_score=0.92,
+    )
+
+    export = client.get(f"/pipelines/{pipeline_id}/migrations/{migration_id}/export").json()
+    results = client.get(f"/pipelines/{pipeline_id}/migrations/{migration_id}/results").json()
+
+    export_stage = export["stages"][0]
+    result_stage = next(r for r in results if r["stage_name"] == "Root")
+    assert export_stage["winning_prompt"] == result_stage["winning_prompt"]
+    assert export_stage["winning_model"] == result_stage["winning_model"]
+
+
+def test_export_empty_stages_when_no_candidates(client: TestClient) -> None:
+    pipeline_id = _upload(client, _diamond_trace_file())
+    migration_id = _create_migration(client, pipeline_id)
+
+    response = client.get(f"/pipelines/{pipeline_id}/migrations/{migration_id}/export")
+    assert response.status_code == 200, response.text
+    assert response.json()["stages"] == []
+
+
+def test_export_unknown_migration_returns_404(client: TestClient) -> None:
+    pipeline_id = _upload(client, _diamond_trace_file())
+    response = client.get(f"/pipelines/{pipeline_id}/migrations/999999/export")
+    assert response.status_code == 404
+
+
+def test_export_unknown_pipeline_returns_404(client: TestClient) -> None:
+    response = client.get("/pipelines/999999/migrations/1/export")
+    assert response.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# GET /pipelines/{id}/migrations/{id}/seam-results (Phase 4)
+# ---------------------------------------------------------------------------
+
+
+def _add_seam_result(
+    session_factory: sessionmaker,
+    *,
+    migration_id: int,
+    upstream_stage_id: int,
+    downstream_stage_id: int,
+    parity_score: float | None,
+    passed: bool,
+    substitution_applied: bool = True,
+    reason: str = "",
+) -> None:
+    with session_factory() as db:
+        db.add(
+            models.SeamCheckResult(
+                migration_id=migration_id,
+                upstream_stage_id=upstream_stage_id,
+                downstream_stage_id=downstream_stage_id,
+                parity_score=parity_score,
+                passed=passed,
+                substitution_applied=substitution_applied,
+                reason=reason,
+            )
+        )
+        db.commit()
+
+
+def test_seam_results_empty_when_no_seam_rows(client: TestClient) -> None:
+    """GET /seam-results returns [] when no SeamCheckResult rows exist."""
+    pipeline_id = _upload(client, _diamond_trace_file())
+    migration_id = _create_migration(client, pipeline_id)
+
+    response = client.get(f"/pipelines/{pipeline_id}/migrations/{migration_id}/seam-results")
+    assert response.status_code == 200, response.text
+    assert response.json() == []
+
+
+def test_seam_results_returns_seeded_rows(
+    client: TestClient, session_factory: sessionmaker
+) -> None:
+    """Seeded SeamCheckResult rows appear in the response with correct shape."""
+    pipeline_id = _upload(client, _diamond_trace_file())
+    migration_id = _create_migration(client, pipeline_id)
+    stage_ids = _stage_ids(session_factory, pipeline_id)
+    root_id = stage_ids["root"]
+    a_id = stage_ids["a"]
+
+    _add_seam_result(
+        session_factory,
+        migration_id=migration_id,
+        upstream_stage_id=root_id,
+        downstream_stage_id=a_id,
+        parity_score=0.87,
+        passed=True,
+        substitution_applied=True,
+        reason="PASS",
+    )
+
+    response = client.get(f"/pipelines/{pipeline_id}/migrations/{migration_id}/seam-results")
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert len(body) == 1
+    row = body[0]
+    assert row["upstream_stage_id"] == root_id
+    assert row["downstream_stage_id"] == a_id
+    assert abs(row["parity_score"] - 0.87) < 1e-9
+    assert row["passed"] is True
+    assert row["substitution_applied"] is True
+    assert row["upstream_stage_name"] == "Root"
+    assert row["downstream_stage_name"] == "Branch A"
+
+
+def test_seam_results_null_parity_score_when_not_set(
+    client: TestClient, session_factory: sessionmaker
+) -> None:
+    """parity_score=None is serialised as null (budget-exhausted / all-failed seam)."""
+    pipeline_id = _upload(client, _diamond_trace_file())
+    migration_id = _create_migration(client, pipeline_id)
+    stage_ids = _stage_ids(session_factory, pipeline_id)
+    root_id = stage_ids["root"]
+    b_id = stage_ids["b"]
+
+    _add_seam_result(
+        session_factory,
+        migration_id=migration_id,
+        upstream_stage_id=root_id,
+        downstream_stage_id=b_id,
+        parity_score=None,
+        passed=False,
+        substitution_applied=False,
+        reason="budget exhausted",
+    )
+
+    response = client.get(f"/pipelines/{pipeline_id}/migrations/{migration_id}/seam-results")
+    assert response.status_code == 200, response.text
+    row = response.json()[0]
+    assert row["parity_score"] is None
+    assert row["passed"] is False
+    assert row["substitution_applied"] is False
+
+
+def test_seam_results_unknown_migration_returns_404(client: TestClient) -> None:
+    pipeline_id = _upload(client, _diamond_trace_file())
+    response = client.get(f"/pipelines/{pipeline_id}/migrations/999999/seam-results")
+    assert response.status_code == 404
+
+
+def test_seam_results_unknown_pipeline_returns_404(client: TestClient) -> None:
+    response = client.get("/pipelines/999999/migrations/1/seam-results")
     assert response.status_code == 404

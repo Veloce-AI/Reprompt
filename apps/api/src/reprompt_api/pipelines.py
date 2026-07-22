@@ -63,6 +63,8 @@ class StageInfo(BaseModel):
     avg_tokens_in: float
     avg_tokens_out: float
     avg_latency_ms: float
+    trace_count: int = 0
+    total_cost_usd: float | None = None
 
 
 class DagEdge(BaseModel):
@@ -319,12 +321,16 @@ def get_pipeline_dag(pipeline_id: int, db: Session = Depends(get_db)) -> DagResp
             func.avg(models.StageRecord.tokens_in),
             func.avg(models.StageRecord.tokens_out),
             func.avg(models.StageRecord.latency_ms),
+            func.count(models.StageRecord.id).label("trace_count"),
+            func.sum(models.StageRecord.cost).label("total_cost"),
         )
         .where(models.StageRecord.stage_id.in_(stage_ids))
         .group_by(models.StageRecord.stage_id)
     ).all()
-    averages = {
-        row[0]: (row[1] or 0.0, row[2] or 0.0, row[3] or 0.0) for row in avg_rows
+    _default = (0.0, 0.0, 0.0, 0, None)
+    averages: dict[int, tuple[float, float, float, int, float | None]] = {
+        row[0]: (row[1] or 0.0, row[2] or 0.0, row[3] or 0.0, int(row[4] or 0), row[5])
+        for row in avg_rows
     }
 
     stage_info = {
@@ -332,9 +338,11 @@ def get_pipeline_dag(pipeline_id: int, db: Session = Depends(get_db)) -> DagResp
             id=stage.id,
             name=stage.name,
             model=stage.model,
-            avg_tokens_in=averages.get(stage.id, (0.0, 0.0, 0.0))[0],
-            avg_tokens_out=averages.get(stage.id, (0.0, 0.0, 0.0))[1],
-            avg_latency_ms=averages.get(stage.id, (0.0, 0.0, 0.0))[2],
+            avg_tokens_in=averages.get(stage.id, _default)[0],
+            avg_tokens_out=averages.get(stage.id, _default)[1],
+            avg_latency_ms=averages.get(stage.id, _default)[2],
+            trace_count=averages.get(stage.id, _default)[3],
+            total_cost_usd=averages.get(stage.id, _default)[4],
         )
         for stage in pipeline.stages
     }

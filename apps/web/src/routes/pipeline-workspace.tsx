@@ -24,8 +24,10 @@ import {
 import { AppShell } from "@/components/app-shell";
 import { Dropzone } from "@/components/dropzone";
 import { PipelineCanvas } from "@/components/pipeline-canvas";
+import { PipelineGraph } from "@/components/pipeline-graph";
 import { DataTable } from "@/components/data-table";
 import { RubricReviewPanel } from "@/components/rubric-review-panel";
+import { ContractReviewPanel } from "@/components/contract-review-panel";
 import { NewMigrationWizard } from "@/components/new-migration-wizard";
 import { MigrationSuccessScreen } from "@/components/migration-success-screen";
 import { Button } from "@/components/ui/button";
@@ -41,15 +43,17 @@ import {
 } from "@/components/ui/drawer";
 import { cn } from "@/lib/utils";
 
-export type WorkspaceTab = "canvas" | "data" | "rubrics" | "migrations";
+export type WorkspaceTab = "canvas" | "data" | "rubrics" | "contracts" | "migrations" | "graph";
 
-export const WORKSPACE_TABS: readonly WorkspaceTab[] = ["canvas", "data", "rubrics", "migrations"];
+export const WORKSPACE_TABS: readonly WorkspaceTab[] = ["canvas", "data", "rubrics", "contracts", "migrations", "graph"];
 
 const TAB_LABELS: Record<WorkspaceTab, string> = {
   canvas: "Canvas",
   data: "Data",
   rubrics: "Rubrics",
+  contracts: "Contracts",
   migrations: "Migrations",
+  graph: "Graph",
 };
 
 /**
@@ -221,11 +225,18 @@ export default function PipelineWorkspace() {
               <RubricReviewPanel pipelineId={pid} />
             </div>
           )}
+          {tab === "contracts" && (
+            <div className="p-8">
+              <h2 className="mb-2 font-display text-22 font-semibold text-ink">Contract Mining</h2>
+              <ContractReviewPanel pipelineId={pid} />
+            </div>
+          )}
           {tab === "migrations" && (
             <div className="p-8">
               <MigrationsTab pipelineId={pid} onBackToCanvas={() => goToTab("canvas")} />
             </div>
           )}
+          {tab === "graph" && <PipelineGraph pipelineId={pid} />}
         </div>
       </div>
 

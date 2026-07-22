@@ -1,3 +1,4 @@
+import React from "react";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import { fireEvent } from "@testing-library/react";
@@ -30,6 +31,13 @@ vi.mock("@/components/pipeline-canvas", () => ({
   ),
 }));
 
+// Link needs a RouterProvider context that these unit tests don't provide —
+// stub it as a passthrough so terminal-state tests don't crash on it.
+vi.mock("@tanstack/react-router", async () => {
+  const actual = await vi.importActual<typeof import("@tanstack/react-router")>("@tanstack/react-router");
+  return { ...actual, Link: ({ children }: { children: React.ReactNode }) => <>{children}</> };
+});
+
 import { getMigrationResults, getMigrationStatus, getPipelineDag } from "@/lib/api";
 
 function baseDag(): DagResponse {
@@ -37,8 +45,8 @@ function baseDag(): DagResponse {
     pipeline_id: 1,
     layers: [{ stage_ids: [10, 20] }],
     stages: {
-      "10": { id: 10, name: "Extract", model: "gpt-4o", avg_tokens_in: 100, avg_tokens_out: 50, avg_latency_ms: 500 },
-      "20": { id: 20, name: "Summarize", model: "gpt-4o", avg_tokens_in: 80, avg_tokens_out: 40, avg_latency_ms: 400 },
+      "10": { id: 10, name: "Extract", model: "gpt-4o", avg_tokens_in: 100, avg_tokens_out: 50, avg_latency_ms: 500, trace_count: 0, total_cost_usd: null },
+      "20": { id: 20, name: "Summarize", model: "gpt-4o", avg_tokens_in: 80, avg_tokens_out: 40, avg_latency_ms: 400, trace_count: 0, total_cost_usd: null },
     },
     edges: [],
   };
@@ -150,6 +158,7 @@ function baseResults(): StageResultOut[] {
       winning_prompt: "Extract the total figure",
       winning_model: "claude-haiku-4-5",
       score: 0.92,
+      holdout_score: null,
     },
   ];
 }

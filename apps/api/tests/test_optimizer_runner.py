@@ -208,6 +208,7 @@ def _recording_fake_run_optimizer(calls: list[dict]):
                 on_attempt(
                     StageAttempt(
                         stage_id=s.stage_id,
+                        target_model=s.target_model,
                         prompt_variant=f"variant for stage {s.stage_id}",
                         params={},
                         format_mode="text",

@@ -50,6 +50,8 @@ function baseDag(): DagResponse {
         avg_tokens_in: 1,
         avg_tokens_out: 1,
         avg_latency_ms: 1,
+        trace_count: 0,
+        total_cost_usd: null,
       },
       "20": {
         id: 20,
@@ -58,6 +60,8 @@ function baseDag(): DagResponse {
         avg_tokens_in: 1,
         avg_tokens_out: 1,
         avg_latency_ms: 1,
+        trace_count: 0,
+        total_cost_usd: null,
       },
     },
     edges: [],

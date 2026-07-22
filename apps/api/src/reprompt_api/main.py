@@ -5,6 +5,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from reprompt_api.auth import router as auth_router
+from reprompt_api.contracts import router as contracts_router
 from reprompt_api.db import engine
 from reprompt_api.migrations import router as migrations_router
 from reprompt_api.model_cards import router as model_cards_router
@@ -44,6 +45,7 @@ app.include_router(auth_router)
 app.include_router(settings_router)
 app.include_router(stage_records_router)
 app.include_router(trace_format_router)
+app.include_router(contracts_router)
 
 
 @app.get("/health")

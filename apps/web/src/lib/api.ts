@@ -51,6 +51,8 @@ export interface StageInfo {
   avg_tokens_in: number | null;
   avg_tokens_out: number | null;
   avg_latency_ms: number | null;
+  trace_count: number;
+  total_cost_usd: number | null;
 }
 
 export interface DagEdge {
@@ -168,6 +170,8 @@ export interface ModelOption {
   supports_json_mode: boolean;
   supports_function_calling: boolean;
   requires_api_key: boolean;
+  family: string;
+  transform_descriptions: string[];
 }
 
 export interface TargetModelConfig {
@@ -279,6 +283,7 @@ export interface StageResultOut {
   winning_prompt: string;
   winning_model: string;
   score: number;
+  holdout_score: number | null;
 }
 
 export function getMigrationResults(
@@ -286,6 +291,43 @@ export function getMigrationResults(
   migrationId: number
 ): Promise<StageResultOut[]> {
   return request<StageResultOut[]>(`/pipelines/${pipelineId}/migrations/${migrationId}/results`);
+}
+
+export interface SeamCheckResultOut {
+  upstream_stage_id: number;
+  upstream_stage_name: string;
+  downstream_stage_id: number;
+  downstream_stage_name: string;
+  parity_score: number | null;
+  passed: boolean;
+  substitution_applied: boolean;
+  reason: string;
+}
+
+export function getSeamResults(
+  pipelineId: number,
+  migrationId: number
+): Promise<SeamCheckResultOut[]> {
+  return request<SeamCheckResultOut[]>(
+    `/pipelines/${pipelineId}/migrations/${migrationId}/seam-results`
+  );
+}
+
+export async function downloadMigrationExport(
+  pipelineId: number,
+  migrationId: number
+): Promise<void> {
+  const response = await fetch(
+    `${API_BASE_URL}/pipelines/${pipelineId}/migrations/${migrationId}/export`
+  );
+  if (!response.ok) throw new ApiError(response.statusText, response.status);
+  const blob = await response.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `reprompt-config-${migrationId}.json`;
+  a.click();
+  URL.revokeObjectURL(url);
 }
 
 // ---------------------------------------------------------------------------
@@ -564,6 +606,70 @@ export interface SystemModel {
 
 export function listSystemModels(): Promise<SystemModel[]> {
   return request<SystemModel[]>("/settings/system-models", { headers: authHeaders() });
+}
+
+// ---------------------------------------------------------------------------
+// Phase 5 — Contract Mining (assertions)
+// ---------------------------------------------------------------------------
+
+export interface AssertionOut {
+  id: number;
+  stage_id: number;
+  kind: string;
+  spec: Record<string, unknown>;
+  description: string;
+  confidence: number | null;
+  status: "candidate" | "approved" | "retired";
+  source: "mined" | "manual" | "counterexample";
+  noise_floor: number | null;
+  entropy: number | null;
+  counterexamples: unknown[];
+  version: number;
+  created_at: string;
+}
+
+export function listAssertions(pipelineId: number, stageId: number): Promise<AssertionOut[]> {
+  return request<AssertionOut[]>(
+    `/pipelines/${pipelineId}/stages/${stageId}/assertions`,
+    { headers: authHeaders() }
+  );
+}
+
+export function mineContract(
+  pipelineId: number,
+  stageId: number,
+  opts: { axis_b_repeats?: number; budget?: number } = {}
+): Promise<AssertionOut[]> {
+  return request<AssertionOut[]>(
+    `/pipelines/${pipelineId}/stages/${stageId}/mine-contract`,
+    {
+      method: "POST",
+      headers: { ...authHeaders(), "Content-Type": "application/json" },
+      body: JSON.stringify({ axis_b_repeats: opts.axis_b_repeats ?? 3, budget: opts.budget ?? 1.0 }),
+    }
+  );
+}
+
+export function approveAssertion(
+  pipelineId: number,
+  stageId: number,
+  assertionId: number
+): Promise<AssertionOut> {
+  return request<AssertionOut>(
+    `/pipelines/${pipelineId}/stages/${stageId}/assertions/${assertionId}/approve`,
+    { method: "POST", headers: authHeaders() }
+  );
+}
+
+export function retireAssertion(
+  pipelineId: number,
+  stageId: number,
+  assertionId: number
+): Promise<AssertionOut> {
+  return request<AssertionOut>(
+    `/pipelines/${pipelineId}/stages/${stageId}/assertions/${assertionId}/retire`,
+    { method: "POST", headers: authHeaders() }
+  );
 }
 
 export function addApiKey(provider: string, apiKey: string): Promise<ApiKeyOut> {

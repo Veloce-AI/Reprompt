@@ -38,7 +38,7 @@ class _StageRecord:
     def to_dict(self) -> dict[str, Any]:
         record: dict[str, Any] = {
             "stage_id": self.stage_id,
-            "input": self.input,
+            "input": self.input,    
             "rendered_prompt": self.rendered_prompt,
             "output": self.output,
             "documents": self.documents,

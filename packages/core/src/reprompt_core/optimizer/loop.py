@@ -193,6 +193,12 @@ class StageOptimizationInput(BaseModel):
         description="Real benchmark input/output pairs for this stage. The first is used as the "
         "representative example this stage's attempts are scored against — see module docstring.",
     )
+    holdout_examples: list[MutationExample | dict[str, Any]] = Field(
+        default_factory=list,
+        description="Examples withheld from optimization, used only for final unbiased evaluation "
+        "of the winning prompt after selection. Empty means no holdout pass. Scored with "
+        "deterministic + embedding only (no judge) to keep holdout evaluation cheap.",
+    )
 
 
 class StageAttempt(BaseModel):
@@ -270,6 +276,12 @@ class StageResult(BaseModel):
     met_threshold: bool
     selection_reason: str
     error: str | None = Field(default=None, description="Set if this stage failed unexpectedly (caught, not propagated).")
+    holdout_score: float | None = Field(
+        default=None,
+        description="Mean composite score (deterministic + embedding, no judge) of the winning "
+        "prompt across holdout_examples. None when no holdout examples were provided or all "
+        "holdout calls failed. Lower than the training score by design (judge weight excluded).",
+    )
 
 
 class OptimizationResult(BaseModel):
@@ -877,6 +889,61 @@ def _optimize_stage_prism(
 
 
 # ---------------------------------------------------------------------------
+# Holdout evaluation — M4
+# ---------------------------------------------------------------------------
+
+
+def _evaluate_holdout(
+    best: StageAttempt,
+    stage_input: StageOptimizationInput,
+    call: Callable[..., LLMResponse],
+    budget: BudgetTracker,
+) -> float | None:
+    """Score the winning prompt against held-out examples it was never optimized on.
+
+    Runs deterministic + embedding scoring only — no judge calls — to keep the
+    holdout pass cheap. Returns the mean final_score across all holdout examples
+    that completed, or None if every call failed or the budget was exhausted
+    before any ran. The resulting score is inherently lower than the training
+    score (judge weight is absent), so compare holdout vs holdout, not
+    holdout vs training.
+    """
+    deterministic_checks = parse_deterministic_checks(
+        stage_input.rubric.get("deterministic_checks") or []
+    )
+    transformed_prompt = apply_model_card_transform(best.prompt_variant, stage_input.target_model)
+    scores: list[float] = []
+
+    for raw_example in stage_input.holdout_examples:
+        if budget.is_exhausted:
+            break
+        example = _example_dict(raw_example)
+        example_input = example.get("input", {})
+        benchmark_output = example["output"]
+        rendered = _render_template(transformed_prompt, example_input)
+        try:
+            response = call(
+                stage_input.target_model,
+                [{"role": "user", "content": rendered}],
+                temperature=best.params.get("temperature", 0.0),
+            )
+        except Exception as exc:  # noqa: BLE001 - one holdout failure must not abort the whole pass
+            logger.warning("Holdout call failed for stage %s: %s", stage_input.stage_id, exc)
+            continue
+        budget.record_spend(response.cost_usd or 0.0, candidate_id=f"holdout-{stage_input.stage_id}")
+        composite = score_candidate(
+            benchmark_output=benchmark_output,
+            candidate_output=response.content,
+            deterministic_checks=deterministic_checks,
+            input=example_input,
+            judge_score=None,  # holdout is cheap — no judge, only det + embedding
+        )
+        scores.append(composite.final_score)
+
+    return sum(scores) / len(scores) if scores else None
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
@@ -997,6 +1064,14 @@ def run_optimizer(
                 selection_reason="",
                 error=str(exc),
             )
+        # M4 holdout: score the winner on examples it was never optimized on.
+        # Skipped silently if no holdout examples were provided or the budget
+        # is already exhausted — never fails the stage.
+        if result.best is not None and stage_input.holdout_examples and not budget.is_exhausted:
+            try:
+                result.holdout_score = _evaluate_holdout(result.best, stage_input, call, budget)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Holdout evaluation failed for stage %s: %s", stage_input.stage_id, exc)
         stage_results.append(result)
 
     stopped_early = stop_reason is not None or budget.is_exhausted

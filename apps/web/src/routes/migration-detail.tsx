@@ -1,9 +1,10 @@
 import { Link, useParams } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
-import { getMigrationResults, getMigrationStatus, type StageResultOut } from "@/lib/api";
+import { downloadMigrationExport, getMigrationResults, getMigrationStatus, getSeamResults, type SeamCheckResultOut, type StageResultOut } from "@/lib/api";
 import { AppShell } from "@/components/app-shell";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { ParityBeam, parityStatus } from "@/components/parity-beam";
 import { diffWords } from "@/lib/text-diff";
 import {
@@ -71,6 +72,13 @@ function StageResultRow({
           <Badge variant={status}>{pct}%</Badge>
         </div>
       </TableCell>
+      <TableCell className="align-top w-28">
+        {result.holdout_score != null ? (
+          <Badge variant="outline">{Math.round(result.holdout_score * 100)}%</Badge>
+        ) : (
+          <span className="text-12 text-ink-muted">—</span>
+        )}
+      </TableCell>
     </TableRow>
   );
 }
@@ -92,8 +100,14 @@ export default function MigrationDetail() {
     queryFn: () => getMigrationResults(pid, mid),
   });
 
+  const seamQuery = useQuery({
+    queryKey: ["seam-results", pid, mid],
+    queryFn: () => getSeamResults(pid, mid),
+  });
+
   const migration = statusQuery.data;
   const results: StageResultOut[] = resultsQuery.data ?? [];
+  const seamResults: SeamCheckResultOut[] = seamQuery.data ?? [];
 
   return (
     <AppShell>
@@ -178,9 +192,18 @@ export default function MigrationDetail() {
           </p>
         )}
 
-        <h2 className="mt-8 mb-3 font-display text-18 font-semibold text-ink">
-          Stage results
-        </h2>
+        <div className="mt-8 mb-3 flex items-center justify-between">
+          <h2 className="font-display text-18 font-semibold text-ink">Stage results</h2>
+          {results.length > 0 && migration && ["completed", "stopped_early", "failed"].includes(migration.status) && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => downloadMigrationExport(pid, mid)}
+            >
+              Download winning config
+            </Button>
+          )}
+        </div>
         <p className="mb-4 text-13 text-ink-soft">
           Winning prompt per stage — the best-scoring variant found across all target models.
         </p>
@@ -200,6 +223,7 @@ export default function MigrationDetail() {
                   <TableHead>Prompt diff (original → winning)</TableHead>
                   <TableHead>Model</TableHead>
                   <TableHead>Score</TableHead>
+                  <TableHead>Holdout</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -213,6 +237,47 @@ export default function MigrationDetail() {
               </TableBody>
             </Table>
           </Card>
+        )}
+        {seamResults.length > 0 && (
+          <>
+            <h2 className="mt-8 mb-3 font-display text-18 font-semibold text-ink">Seam checks</h2>
+            <p className="mb-4 text-13 text-ink-soft">
+              Downstream stages re-validated against the migrated upstream output.
+            </p>
+            <Card>
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Upstream → Downstream</TableHead>
+                    <TableHead>Score</TableHead>
+                    <TableHead>Result</TableHead>
+                    <TableHead>Note</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {seamResults.map((r) => (
+                    <TableRow key={`${r.upstream_stage_id}-${r.downstream_stage_id}`}>
+                      <TableCell className="align-top font-medium text-ink">
+                        {r.upstream_stage_name} → {r.downstream_stage_name}
+                      </TableCell>
+                      <TableCell className="align-top font-mono text-12">
+                        {r.parity_score != null ? `${Math.round(r.parity_score * 100)}%` : "—"}
+                      </TableCell>
+                      <TableCell className="align-top">
+                        <Badge variant={r.passed ? "pass" : "fail"}>
+                          {r.passed ? "Pass" : "Fail"}
+                        </Badge>
+                      </TableCell>
+                      <TableCell className="align-top text-12 text-ink-soft max-w-xs">
+                        {!r.substitution_applied && "Stability check only — upstream key not found in downstream input. "}
+                        {r.reason}
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </Card>
+          </>
         )}
       </div>
     </AppShell>

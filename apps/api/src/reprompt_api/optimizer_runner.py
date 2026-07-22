@@ -21,7 +21,7 @@ import os
 from datetime import datetime, timezone
 
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from reprompt_core.budget import BudgetTracker
 from reprompt_core.llm.model_select import select_model
@@ -30,8 +30,10 @@ from reprompt_core.optimizer.loop import (
     StageAttempt,
     StageOptimizationInput,
     StagePhaseEvent,
+    StageResult,
     run_optimizer,
 )
+from reprompt_core.optimizer.seam import SeamExample, SeamInput, evaluate_seam
 
 from reprompt_api import models
 from reprompt_api.db import SessionLocal
@@ -259,6 +261,7 @@ def _run(db: Session, migration_id: int) -> None:  # noqa: C901
                     on_attempt=on_attempt,
                     on_phase=on_phase,
                 )
+                _persist_holdout_scores(db, migration.id, result.stage_results, target_model)
 
                 total_cost += result.total_cost_usd
                 if result.stopped_early:
@@ -307,11 +310,16 @@ def _run(db: Session, migration_id: int) -> None:  # noqa: C901
                     on_attempt=on_attempt,
                     on_phase=on_phase,
                 )
+                _persist_holdout_scores(db, migration.id, result.stage_results, override_model)
 
                 total_cost += result.total_cost_usd
                 if result.stopped_early:
                     any_stopped_early = True
                     final_stop_reason = result.stop_reason
+
+        # Phase 4 seam regression — runs after all stages have been optimized.
+        if not budget.is_exhausted:
+            _run_seam_regression(db, pipeline.id, migration.id, budget, complete_with_workspace_credentials, workspace)
 
         migration.status = "completed" if not any_stopped_early else "stopped_early"
         migration.total_cost_usd = total_cost
@@ -331,6 +339,171 @@ def _run(db: Session, migration_id: int) -> None:  # noqa: C901
             db.commit()
         except Exception:  # noqa: BLE001
             logger.error("Could not write failed status for migration %d — DB may be in a bad state", migration_id)
+
+
+def _run_seam_regression(
+    db: Session,
+    pipeline_id: int,
+    migration_id: int,
+    budget: BudgetTracker,
+    complete_fn: object,
+    workspace: models.Workspace,
+) -> None:
+    """Phase 4: run seam checks for every (upstream_winner, downstream_stage) pair.
+
+    For each stage that has a winning Candidate, find its downstream dependents,
+    build SeamInput from the benchmark records, call evaluate_seam, and persist
+    the result as a SeamCheckResult row. Failures are caught per-pair so one bad
+    seam doesn't abort the rest.
+    """
+    db_stages = db.scalars(
+        select(models.Stage)
+        .where(models.Stage.pipeline_id == pipeline_id)
+        .options(joinedload(models.Stage.dependents))
+        .order_by(models.Stage.id)
+    ).all()
+
+    # Build stage map and winner map.
+    stage_by_id: dict[int, models.Stage] = {s.id: s for s in db_stages}
+    # Winner per stage_id: the Candidate with the highest final score.
+    winner_by_stage: dict[int, models.Candidate] = {}
+    for stage in db_stages:
+        candidates = db.scalars(
+            select(models.Candidate)
+            .where(
+                models.Candidate.migration_id == migration_id,
+                models.Candidate.stage_id == stage.id,
+            )
+            .order_by(models.Candidate.id)
+        ).all()
+        if candidates:
+            winner_by_stage[stage.id] = max(candidates, key=lambda c: c.scores.get("final") or 0.0)
+
+    def call(model: str, messages: list, **kw: object) -> object:
+        return complete_with_workspace_credentials(db, workspace, model, messages, **kw)  # type: ignore[arg-type]
+
+    for stage in db_stages:
+        if stage.id not in winner_by_stage:
+            continue  # no winner — nothing to propagate downstream
+        winner = winner_by_stage[stage.id]
+
+        for downstream in stage.dependents:
+            if budget.is_exhausted:
+                return
+            try:
+                # Gather benchmark records for both stages on the same traces.
+                up_records = db.scalars(
+                    select(models.StageRecord)
+                    .join(models.Trace, models.StageRecord.trace_id == models.Trace.id)
+                    .join(models.BenchmarkSet, models.Trace.benchmark_set_id == models.BenchmarkSet.id)
+                    .where(
+                        models.BenchmarkSet.pipeline_id == pipeline_id,
+                        models.StageRecord.stage_id == stage.id,
+                    )
+                    .options(joinedload(models.StageRecord.trace))
+                    .order_by(models.StageRecord.id)
+                    .limit(4)
+                ).all()
+
+                down_records_by_trace = {
+                    r.trace_id: r
+                    for r in db.scalars(
+                        select(models.StageRecord)
+                        .where(
+                            models.StageRecord.stage_id == downstream.id,
+                            models.StageRecord.trace_id.in_([r.trace_id for r in up_records]),
+                        )
+                    ).all()
+                }
+
+                examples = [
+                    SeamExample(
+                        upstream_input=ur.input,
+                        upstream_baseline_output=ur.output,
+                        downstream_input=down_records_by_trace[ur.trace_id].input,
+                        downstream_baseline_output=down_records_by_trace[ur.trace_id].output,
+                    )
+                    for ur in up_records
+                    if ur.trace_id in down_records_by_trace
+                ]
+
+                if not examples:
+                    db.add(models.SeamCheckResult(
+                        migration_id=migration_id,
+                        upstream_stage_id=stage.id,
+                        downstream_stage_id=downstream.id,
+                        parity_score=None,
+                        passed=False,
+                        substitution_applied=False,
+                        reason="No shared benchmark traces found for this seam pair.",
+                    ))
+                    db.commit()
+                    continue
+
+                rubric = db.scalar(select(models.Rubric).where(models.Rubric.stage_id == downstream.id))
+                seam_in = SeamInput(
+                    upstream_stage_id=stage.id,
+                    upstream_source_id=stage.source_id,
+                    upstream_winning_prompt=winner.prompt_variant,
+                    upstream_target_model=winner.target_model,
+                    upstream_params=winner.params,
+                    downstream_stage_id=downstream.id,
+                    downstream_original_prompt=downstream.prompt_template,
+                    downstream_original_model=downstream.model,
+                    downstream_rubric={
+                        "deterministic_checks": rubric.deterministic_checks if rubric else [],
+                        "judge_criteria": rubric.judge_criteria if rubric else [],
+                    },
+                    examples=examples,
+                    parity_threshold=0.95,
+                )
+                result = evaluate_seam(seam_in, call=call, budget=budget)
+                db.add(models.SeamCheckResult(
+                    migration_id=migration_id,
+                    upstream_stage_id=result.upstream_stage_id,
+                    downstream_stage_id=result.downstream_stage_id,
+                    parity_score=result.parity_score,
+                    passed=result.passed,
+                    substitution_applied=result.substitution_applied,
+                    reason=result.reason,
+                ))
+                db.commit()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "Seam check failed for stages %d→%d in migration %d: %s",
+                    stage.id, downstream.id, migration_id, exc,
+                )
+
+
+def _persist_holdout_scores(
+    db: Session,
+    migration_id: int,
+    stage_results: list[StageResult],
+    target_model: str,
+) -> None:
+    """Write holdout_score onto the winning Candidate row for each stage.
+
+    Matches the winner by (migration_id, stage_id, target_model, prompt_variant)
+    — the same combination the results endpoint uses to identify the winner.
+    Called once per run_optimizer invocation (one per target model / override).
+    """
+    for sr in stage_results:
+        if sr.best is None or sr.holdout_score is None:
+            continue
+        candidate = db.scalar(
+            select(models.Candidate)
+            .where(
+                models.Candidate.migration_id == migration_id,
+                models.Candidate.stage_id == sr.stage_id,
+                models.Candidate.target_model == target_model,
+                models.Candidate.prompt_variant == sr.best.prompt_variant,
+            )
+            .order_by(models.Candidate.id.desc())
+            .limit(1)
+        )
+        if candidate is not None:
+            candidate.holdout_score = sr.holdout_score
+    db.commit()
 
 
 def _build_stage_inputs(
@@ -355,6 +528,7 @@ def _build_stage_inputs(
                 models.BenchmarkSet.pipeline_id == pipeline_id,
                 models.StageRecord.stage_id == stage.id,
             )
+            .options(joinedload(models.StageRecord.trace))
             .order_by(models.StageRecord.id)
             .limit(8)
         ).all()
@@ -367,6 +541,15 @@ def _build_stage_inputs(
             )
             continue
 
+        # M4 holdout split: prefer explicitly-flagged holdout traces; fall back
+        # to keeping the last record as holdout when none are flagged and there
+        # are at least 2 records. With only 1 record there is nothing to hold out.
+        explicit_holdout = [r for r in records if r.trace.is_holdout]
+        train_records = [r for r in records if not r.trace.is_holdout]
+        if not explicit_holdout and len(records) >= 2:
+            # Automatic split: last record withheld, rest used for training.
+            train_records, explicit_holdout = list(records[:-1]), [records[-1]]
+
         result.append(
             StageOptimizationInput(
                 stage_id=stage.id,
@@ -377,7 +560,8 @@ def _build_stage_inputs(
                     "deterministic_checks": rubric.deterministic_checks if rubric else [],
                     "judge_criteria": rubric.judge_criteria if rubric else [],
                 },
-                examples=[{"input": r.input, "output": r.output} for r in records],
+                examples=[{"input": r.input, "output": r.output} for r in train_records],
+                holdout_examples=[{"input": r.input, "output": r.output} for r in explicit_holdout],
             )
         )
 

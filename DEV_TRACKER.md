@@ -8,7 +8,77 @@ accurate so anyone (human or AI) can pick this up cold without
 re-deriving context. Read `START_HERE.md` first if you haven't — it
 points here plus the rest of the docs in reading order.
 
-Last updated: 2026-07-17.
+Last updated: 2026-07-22.
+
+**Fix 2 failing web tests [DONE — 2026-07-22]**: `migration-success-screen.test.tsx`'s
+two "Results section" tests (`fetches and renders results once the migration is
+terminal` / `does not fetch results while the migration is still running`) were
+crashing with `TypeError: Cannot read properties of null (reading 'isServer')`
+because `<MigrationSuccessScreen>` renders a `<Link>` from `@tanstack/react-router`
+when `isTerminal` is true, and these tests never provided a `RouterProvider` context.
+Root cause confirmed — `isTerminal` is true for both `"completed"` and `"failed"`
+status fixtures; the `Link` calls `useRouter()` internally, which reads a context
+that doesn't exist in plain `render(...)`. Fix: added a `vi.mock("@tanstack/react-router")`
+at the top of the test file that spreads `vi.importActual` (so everything else — types,
+hooks — is unchanged) and replaces `Link` with a passthrough fragment. App code is
+correct and untouched. `apps/web`: **153 passed** (151 → 153, 0 failing) + clean
+`tsc --noEmit`.
+
+**Graph tab — Upgrade: model nodes + expandable call nodes [DONE — 2026-07-18]**
+(commit `8edaa6e`): Upgraded the Graph tab (see entry directly below) with two
+major additions: (1) **Model nodes** in a fixed right column with dashed edges
+from each stage that uses that model — clicking a model node highlights/unhighlights
+all connected stage nodes (blue border glow); (2) **Inline call nodes** — clicking
+a stage node now expands its individual inference records as child nodes inline below
+it (`CallGraphNode` shows tokens in/out, latency, cost, truncated I/O with "Show full
+text" toggle). Records fetched lazily on first expand via `listStageRecords`,
+cached for re-expand so a second click is instant. `apps/web/src/components/pipeline-graph.tsx`
+only (261 lines changed, 226 replaced). No backend changes, no new test count update
+in commit (fixtures-only changes in sibling test files from the Graph tab commit below
+still apply).
+
+**Graph tab — Obsidian-style pipeline visualization [DONE — 2026-07-18]**
+(commit `dccf39b`): New fifth workspace tab (`"graph"`) added to `WORKSPACE_TABS`
+in `pipeline-workspace.tsx`. New `PipelineGraph` component
+(`apps/web/src/components/pipeline-graph.tsx`, 470 lines): richer stage nodes than
+the Canvas tab (name, model badge, `trace_count`, avg tokens/latency, `total_cost_usd`,
+"View inference calls" affordance), dagre layout reusing the same
+`computeCanvasLayout` function and `["pipeline-dag", id]` React Query cache as the
+Canvas tab (no second fetch when switching between tabs), orientation toggle (→/↓)
+persisted per pipeline in localStorage under a separate key from Canvas tab's layout.
+**ModelPanel** floating card (top-right): lists each unique model in the pipeline;
+click one to highlight all stage nodes using that model with a blue border glow —
+click again to deselect. **Backend**: `StageInfo` extended with `trace_count: int`
+and `total_cost_usd: float | None` — both added to the `/dag` aggregation query
+(`apps/api/src/reprompt_api/pipelines.py`) via `func.count`/`func.sum`; all
+test fixtures updated with the two new fields. `docs/TESTING.md §3.3d` added for the
+Graph tab walkthrough. `apps/web` test file fixture updates only (no new test count
+change — pipeline-graph.tsx itself has no dedicated test file yet).
+
+**Scorecard link + word-diff refinement [DONE — 2026-07-17]** (commit `a2f57cb`):
+Added a "View full results →" `<Link>` button on `MigrationSuccessScreen` (the
+Migrations tab's live run view) that navigates to `/pipelines/$pipelineId/migrations/$migrationId`
+once a migration reaches a terminal state — previously the scorecard route existed
+but nothing linked to it from the run screen. Also refined the word-diff display in
+`migration-detail.tsx`: unchanged text rendered as plain `<span>`, deletions as
+`line-through` in `text-parity-fail`, insertions in `text-parity-pass`. Frontend
+only, no backend changes.
+
+**Not started**: Phase 6 (final end-to-end manual verification).
+
+**Phase 4 — Seam-level regression [DONE — 2026-07-22]**: After an upstream stage is migrated, every downstream stage (per `Stage.dependents` DAG) is re-validated: run the winning upstream prompt → substitute output into the downstream input under the upstream `source_id` key → run the original downstream prompt → score with det+embedding (no judge, same rationale as holdout). New `packages/core/src/reprompt_core/optimizer/seam.py` (`SeamExample`, `SeamInput`, `SeamResult`, `evaluate_seam`). New `SeamCheckResult` DB model + Alembic migration `f1c2d3e4a5b6`. `_run_seam_regression` wired into `optimizer_runner.py` after all stage loops. `GET /pipelines/{pid}/migrations/{mid}/seam-results` endpoint. "Seam checks" table in `migration-detail.tsx`. 7 core unit tests, 5 API tests. `apps/api`: **191 passed** (186 → 191). `packages/core`: **297 passed, 21 skipped** (290 → 297). `apps/web`: **153 passed** (unchanged).
+
+**Phase 3 — Config export [DONE — 2026-07-22]**: `GET /pipelines/{pid}/migrations/{mid}/export` returns the winning migrated config as a JSON attachment keyed by `Stage.source_id`. "Download winning config" button on `migration-detail.tsx` — visible only in terminal state with ≥1 result, uses fetch+blob so cross-origin download works without auth complexity. 6 new API tests. `apps/api`: **186 passed** (180 → 186). `apps/web`: **153 passed** (unchanged).
+
+**Phase 2 — M4 Holdout pass [DONE — 2026-07-22]**: Train/test split in `_build_stage_inputs` (optimizer_runner.py): prefers `Trace.is_holdout`-flagged records; auto-splits last record when none are explicit. `_evaluate_holdout` in core runs the winning prompt on withheld examples scoring with det+embedding only (no judge). `holdout_score` persisted on `Candidate` (new nullable Float column, migration `e4a1b8c7f203`). `StageResultOut.holdout_score` exposed in `GET .../results`. `migration-detail.tsx` shows a "Holdout" column (badge when set, dash when null). `apps/api`: **180 passed** (178 → 180). `apps/web`: **153 passed** (unchanged). `packages/core`: **290 passed, 21 skipped** (unchanged).
+
+**Next phases planned (2026-07-22)**:
+See `docs/PRISM_PHASES_PLAN.md` for the full per-phase spec (data model, API surface, core logic, tests, dependencies) — written by Opus against the PDF + live codebase. Build order: 5 → 8 → 6 → GEPA → 7.
+- **Phase 5 — Automated contract mining**: NLI cross-encoder (DeBERTa-class) + semantic entropy clustering + two-axis sampling → auto-generated executable assertions.
+- **Phase 8 — Executable assertions**: consuming Phase 5's assertion specs, backtracking, counterexample capture.
+- **Phase 6 — Lessons file**: cross-migration model-family memory for the mutator.
+- **GEPA backend**: third optimizer strategy branch.
+- **Phase 7 — Governance plane**: end-to-end regression, promotion gate (staged→live), feature flags, rollback, drift daemon.
 
 **Edit button for inline pipeline rename [DONE — 2026-07-16]**: Added an
 explicit pencil/edit icon button next to the delete icon in the Pipelines
@@ -46,7 +116,16 @@ fixes [DONE — 2026-07-15]"** section (below) — a separate audit's 6
 findings against the already-shipped Prism engine (most notably: the
 critique loop was judge-blind, and `max_refine_rounds=1` made the plateau
 early-stopping logic dead code), `packages/core` only, `264 passed,
-21 skipped` after. **Phase D(a) — Model-card info in wizard [DONE —
+21 skipped` after. **Graph tab [DONE — 2026-07-18]**: new fifth workspace
+tab (Obsidian-style interactive node graph), `PipelineGraph` component in
+`apps/web/src/components/pipeline-graph.tsx` — richer stage nodes with
+trace_count/cost/token stats, ModelPanel (click-to-highlight by model
+family), model nodes in a right column with dashed edges, inline expandable
+call nodes (individual inference records fetched lazily). Backend:
+`StageInfo` now carries `trace_count` + `total_cost_usd`. **Fix 2 failing
+tests [DONE — 2026-07-22]**: mocked `@tanstack/react-router`'s `Link` in
+`migration-success-screen.test.tsx` so terminal-state tests no longer crash
+on missing `RouterProvider` context — `apps/web` **153 passed, 0 failing**. **Phase D(a) — Model-card info in wizard [DONE —
 2026-07-15]**: new read-only endpoint `GET /model-cards/{model}` returns
 family classification and applicable transform rules as JSON; migration
 wizard model picker now fetches and displays these rules human-readable

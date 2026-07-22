@@ -53,6 +53,7 @@ from __future__ import annotations
 import datetime
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -336,6 +337,17 @@ def _to_out(db: Session, migration: models.Migration) -> MigrationOut:
     )
 
 
+class SeamCheckResultOut(BaseModel):
+    upstream_stage_id: int
+    upstream_stage_name: str
+    downstream_stage_id: int
+    downstream_stage_name: str
+    parity_score: float | None = None
+    passed: bool
+    substitution_applied: bool
+    reason: str
+
+
 class StageResultOut(BaseModel):
     """One stage's before/after prompt for the results (diff) view.
 
@@ -358,6 +370,7 @@ class StageResultOut(BaseModel):
     winning_prompt: str
     winning_model: str
     score: float
+    holdout_score: float | None = None
 
 
 def _get_migration_or_404(db: Session, pipeline_id: int, migration_id: int) -> models.Migration:
@@ -561,7 +574,113 @@ def get_migration_results(
                 winning_prompt=best.prompt_variant,
                 winning_model=best.target_model,
                 score=best.scores.get("final") or 0.0,
+                holdout_score=best.holdout_score,
             )
         )
 
     return results
+
+
+@router.get("/{pipeline_id}/migrations/{migration_id}/export")
+def export_migration_config(
+    pipeline_id: int,
+    migration_id: int,
+    db: Session = Depends(get_db),
+) -> JSONResponse:
+    """Download the winning migrated config as a JSON file.
+
+    Keyed by ``Stage.source_id`` (the user's own stage identifiers from their
+    trace file) so the output maps cleanly back to their pipeline without
+    requiring knowledge of Reprompt's internal DB ids.
+    """
+    _get_pipeline_or_404(db, pipeline_id)
+    migration = _get_migration_or_404(db, pipeline_id, migration_id)
+
+    db_stages = db.scalars(
+        select(models.Stage)
+        .where(models.Stage.pipeline_id == pipeline_id)
+        .order_by(models.Stage.id)
+    ).all()
+
+    stages = []
+    for stage in db_stages:
+        candidates = db.scalars(
+            select(models.Candidate)
+            .where(
+                models.Candidate.migration_id == migration_id,
+                models.Candidate.stage_id == stage.id,
+            )
+            .order_by(models.Candidate.id)
+        ).all()
+        if not candidates:
+            continue
+        best = max(candidates, key=lambda c: c.scores.get("final") or 0.0)
+        stages.append({
+            "stage_source_id": stage.source_id,
+            "stage_name": stage.name,
+            "winning_model": best.target_model,
+            "winning_prompt": best.prompt_variant,
+            "params": {
+                "temperature": best.params.get("temperature"),
+                "format_mode": best.format,
+            },
+            "training_score": best.scores.get("final") or 0.0,
+            "holdout_score": best.holdout_score,
+        })
+
+    payload = {
+        "migration_id": migration.id,
+        "pipeline_id": pipeline_id,
+        "generated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "stages": stages,
+    }
+    return JSONResponse(
+        content=payload,
+        headers={"Content-Disposition": f'attachment; filename="reprompt-config-{migration_id}.json"'},
+    )
+
+
+@router.get(
+    "/{pipeline_id}/migrations/{migration_id}/seam-results",
+    response_model=list[SeamCheckResultOut],
+)
+def get_seam_results(
+    pipeline_id: int,
+    migration_id: int,
+    db: Session = Depends(get_db),
+) -> list[SeamCheckResultOut]:
+    """Phase 4 seam regression results for a migration.
+
+    Returns one row per (upstream, downstream) stage pair evaluated after
+    optimization completed. Empty list when no DAG edges exist or the
+    migration hasn't run yet.
+    """
+    _get_pipeline_or_404(db, pipeline_id)
+    _get_migration_or_404(db, pipeline_id, migration_id)
+
+    rows = db.scalars(
+        select(models.SeamCheckResult)
+        .where(models.SeamCheckResult.migration_id == migration_id)
+        .order_by(models.SeamCheckResult.id)
+    ).all()
+
+    stage_names: dict[int, str] = {}
+    for row in rows:
+        for sid in (row.upstream_stage_id, row.downstream_stage_id):
+            if sid not in stage_names:
+                stage = db.get(models.Stage, sid)
+                stage_names[sid] = stage.name if stage else str(sid)
+
+    return [
+        SeamCheckResultOut(
+            upstream_stage_id=row.upstream_stage_id,
+            upstream_stage_name=stage_names[row.upstream_stage_id],
+            downstream_stage_id=row.downstream_stage_id,
+            downstream_stage_name=stage_names[row.downstream_stage_id],
+            parity_score=row.parity_score,
+            passed=row.passed,
+            substitution_applied=row.substitution_applied,
+            reason=row.reason,
+        )
+        for row in rows
+    ]

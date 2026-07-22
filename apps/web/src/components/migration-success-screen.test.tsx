@@ -1,3 +1,4 @@
+import React from "react";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import { fireEvent } from "@testing-library/react";
@@ -29,6 +30,13 @@ vi.mock("@/components/pipeline-canvas", () => ({
     </div>
   ),
 }));
+
+// Link needs a RouterProvider context that these unit tests don't provide —
+// stub it as a passthrough so terminal-state tests don't crash on it.
+vi.mock("@tanstack/react-router", async () => {
+  const actual = await vi.importActual<typeof import("@tanstack/react-router")>("@tanstack/react-router");
+  return { ...actual, Link: ({ children }: { children: React.ReactNode }) => <>{children}</> };
+});
 
 import { getMigrationResults, getMigrationStatus, getPipelineDag } from "@/lib/api";
 

@@ -283,6 +283,7 @@ export interface StageResultOut {
   winning_prompt: string;
   winning_model: string;
   score: number;
+  holdout_score: number | null;
 }
 
 export function getMigrationResults(
@@ -290,6 +291,43 @@ export function getMigrationResults(
   migrationId: number
 ): Promise<StageResultOut[]> {
   return request<StageResultOut[]>(`/pipelines/${pipelineId}/migrations/${migrationId}/results`);
+}
+
+export interface SeamCheckResultOut {
+  upstream_stage_id: number;
+  upstream_stage_name: string;
+  downstream_stage_id: number;
+  downstream_stage_name: string;
+  parity_score: number | null;
+  passed: boolean;
+  substitution_applied: boolean;
+  reason: string;
+}
+
+export function getSeamResults(
+  pipelineId: number,
+  migrationId: number
+): Promise<SeamCheckResultOut[]> {
+  return request<SeamCheckResultOut[]>(
+    `/pipelines/${pipelineId}/migrations/${migrationId}/seam-results`
+  );
+}
+
+export async function downloadMigrationExport(
+  pipelineId: number,
+  migrationId: number
+): Promise<void> {
+  const response = await fetch(
+    `${API_BASE_URL}/pipelines/${pipelineId}/migrations/${migrationId}/export`
+  );
+  if (!response.ok) throw new ApiError(response.statusText, response.status);
+  const blob = await response.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `reprompt-config-${migrationId}.json`;
+  a.click();
+  URL.revokeObjectURL(url);
 }
 
 // ---------------------------------------------------------------------------

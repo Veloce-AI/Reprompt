@@ -546,3 +546,74 @@ def test_on_phase_is_optional_and_defaults_to_no_op() -> None:
     )
 
     assert result.stage_results[0].error is None
+
+
+# ---------------------------------------------------------------------------
+# M4 — Holdout evaluation
+# ---------------------------------------------------------------------------
+
+
+def test_holdout_score_is_set_when_holdout_examples_are_provided() -> None:
+    """After optimization, the winner is scored on holdout examples it
+    was never trained on. holdout_score must be a float in [0, 1]."""
+    call, _ = _make_call(mutation_variants=["variant A"])
+    holdout = [{"input": {"document": "Q2 revenue was $2.1M EUR."}, "output": '{"currency": "EUR", "revenue": 2100000}'}]
+    stage = StageOptimizationInput(
+        stage_id=1,
+        stage_name="Extract",
+        original_prompt_template="Extract data from: {{document}}",
+        target_model=TARGET_MODEL,
+        rubric=EMPTY_RUBRIC,
+        examples=EXAMPLES,
+        holdout_examples=holdout,
+    )
+    budget = BudgetTracker(budget_usd=10.0)
+    result = run_optimizer(
+        [stage], call=call, budget=budget, judge_model=JUDGE_MODEL,
+        strategy="simple", max_sweep_candidates_per_prompt=1, parity_threshold=0.0,
+        num_prompt_variants=1,
+    )
+
+    sr = result.stage_results[0]
+    assert sr.error is None
+    assert sr.best is not None
+    assert sr.holdout_score is not None
+    assert 0.0 <= sr.holdout_score <= 1.0
+
+
+def test_holdout_score_is_none_when_no_holdout_examples_given() -> None:
+    """No holdout_examples → holdout_score stays None."""
+    call, _ = _make_call(mutation_variants=["variant A"])
+    budget = BudgetTracker(budget_usd=10.0)
+    result = run_optimizer(
+        [_stage()], call=call, budget=budget, judge_model=JUDGE_MODEL,
+        strategy="simple", max_sweep_candidates_per_prompt=1, parity_threshold=0.0,
+        num_prompt_variants=1,
+    )
+    assert result.stage_results[0].holdout_score is None
+
+
+def test_holdout_score_is_none_when_stage_produces_no_winner() -> None:
+    """If optimization fails (no winner), holdout evaluation is skipped."""
+    def always_fail(model, messages, **kwargs):
+        raise RuntimeError("network down")
+
+    holdout = [{"input": {"document": "Q3 data."}, "output": '{"currency": "USD", "revenue": 0}'}]
+    stage = StageOptimizationInput(
+        stage_id=1,
+        stage_name="Extract",
+        original_prompt_template="Extract: {{document}}",
+        target_model=TARGET_MODEL,
+        rubric=EMPTY_RUBRIC,
+        examples=EXAMPLES,
+        holdout_examples=holdout,
+    )
+    budget = BudgetTracker(budget_usd=10.0)
+    result = run_optimizer(
+        [stage], call=always_fail, budget=budget, judge_model=JUDGE_MODEL,
+        strategy="simple", max_sweep_candidates_per_prompt=1, parity_threshold=0.0,
+        num_prompt_variants=1,
+    )
+    sr = result.stage_results[0]
+    assert sr.best is None
+    assert sr.holdout_score is None

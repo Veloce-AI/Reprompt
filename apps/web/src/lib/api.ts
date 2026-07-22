@@ -608,6 +608,70 @@ export function listSystemModels(): Promise<SystemModel[]> {
   return request<SystemModel[]>("/settings/system-models", { headers: authHeaders() });
 }
 
+// ---------------------------------------------------------------------------
+// Phase 5 — Contract Mining (assertions)
+// ---------------------------------------------------------------------------
+
+export interface AssertionOut {
+  id: number;
+  stage_id: number;
+  kind: string;
+  spec: Record<string, unknown>;
+  description: string;
+  confidence: number | null;
+  status: "candidate" | "approved" | "retired";
+  source: "mined" | "manual" | "counterexample";
+  noise_floor: number | null;
+  entropy: number | null;
+  counterexamples: unknown[];
+  version: number;
+  created_at: string;
+}
+
+export function listAssertions(pipelineId: number, stageId: number): Promise<AssertionOut[]> {
+  return request<AssertionOut[]>(
+    `/pipelines/${pipelineId}/stages/${stageId}/assertions`,
+    { headers: authHeaders() }
+  );
+}
+
+export function mineContract(
+  pipelineId: number,
+  stageId: number,
+  opts: { axis_b_repeats?: number; budget?: number } = {}
+): Promise<AssertionOut[]> {
+  return request<AssertionOut[]>(
+    `/pipelines/${pipelineId}/stages/${stageId}/mine-contract`,
+    {
+      method: "POST",
+      headers: { ...authHeaders(), "Content-Type": "application/json" },
+      body: JSON.stringify({ axis_b_repeats: opts.axis_b_repeats ?? 3, budget: opts.budget ?? 1.0 }),
+    }
+  );
+}
+
+export function approveAssertion(
+  pipelineId: number,
+  stageId: number,
+  assertionId: number
+): Promise<AssertionOut> {
+  return request<AssertionOut>(
+    `/pipelines/${pipelineId}/stages/${stageId}/assertions/${assertionId}/approve`,
+    { method: "POST", headers: authHeaders() }
+  );
+}
+
+export function retireAssertion(
+  pipelineId: number,
+  stageId: number,
+  assertionId: number
+): Promise<AssertionOut> {
+  return request<AssertionOut>(
+    `/pipelines/${pipelineId}/stages/${stageId}/assertions/${assertionId}/retire`,
+    { method: "POST", headers: authHeaders() }
+  );
+}
+
 export function addApiKey(provider: string, apiKey: string): Promise<ApiKeyOut> {
   return request<ApiKeyOut>("/settings/api-keys", {
     method: "POST",

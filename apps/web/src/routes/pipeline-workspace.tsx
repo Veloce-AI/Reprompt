@@ -27,6 +27,7 @@ import { PipelineCanvas } from "@/components/pipeline-canvas";
 import { PipelineGraph } from "@/components/pipeline-graph";
 import { DataTable } from "@/components/data-table";
 import { RubricReviewPanel } from "@/components/rubric-review-panel";
+import { ContractReviewPanel } from "@/components/contract-review-panel";
 import { NewMigrationWizard } from "@/components/new-migration-wizard";
 import { MigrationSuccessScreen } from "@/components/migration-success-screen";
 import { Button } from "@/components/ui/button";
@@ -42,14 +43,15 @@ import {
 } from "@/components/ui/drawer";
 import { cn } from "@/lib/utils";
 
-export type WorkspaceTab = "canvas" | "data" | "rubrics" | "migrations" | "graph";
+export type WorkspaceTab = "canvas" | "data" | "rubrics" | "contracts" | "migrations" | "graph";
 
-export const WORKSPACE_TABS: readonly WorkspaceTab[] = ["canvas", "data", "rubrics", "migrations", "graph"];
+export const WORKSPACE_TABS: readonly WorkspaceTab[] = ["canvas", "data", "rubrics", "contracts", "migrations", "graph"];
 
 const TAB_LABELS: Record<WorkspaceTab, string> = {
   canvas: "Canvas",
   data: "Data",
   rubrics: "Rubrics",
+  contracts: "Contracts",
   migrations: "Migrations",
   graph: "Graph",
 };
@@ -221,6 +223,12 @@ export default function PipelineWorkspace() {
           {tab === "rubrics" && (
             <div className="p-8">
               <RubricReviewPanel pipelineId={pid} />
+            </div>
+          )}
+          {tab === "contracts" && (
+            <div className="p-8">
+              <h2 className="mb-2 font-display text-22 font-semibold text-ink">Contract Mining</h2>
+              <ContractReviewPanel pipelineId={pid} />
             </div>
           )}
           {tab === "migrations" && (

@@ -10,6 +10,8 @@ points here plus the rest of the docs in reading order.
 
 Last updated: 2026-07-22.
 
+**Phase 5 — Contract Mining [DONE — 2026-07-22]**: NLI cross-encoder module (`packages/core/src/reprompt_core/nli.py`, lazy-load `cross-encoder/nli-deberta-v3-base` via `@lru_cache`, exact-match fallback when `sentence_transformers` absent). Bidirectional entailment clustering + Shannon entropy (`contract/cluster.py`). Two-axis contract mining (`contract/mine.py`): Axis A = existing trace outputs (no LLM calls), Axis B = K repeats at temperature 0.7 to measure noise floor. Structural invariant extraction: `required_keys` (key intersection), `enum_values` (cardinality ≤5), `regex` (common prefix ≥3 chars). `assertions` DB table + Alembic migration `b2c3d4e5f6a7`. Four API endpoints (list/mine/approve/retire) in `contracts.py` + router wired into `main.py`. `AssertionOut` + 4 client functions in `apps/web/src/lib/api.ts`. `ContractReviewPanel` component + "Contracts" workspace tab. Tests: `test_nli.py` (7), `test_contract_cluster.py` (14), `test_contract_mine.py` (10), `test_contracts.py` (10). `apps/api`: **201 passed** (191 → 201). `packages/core`: **326 passed, 21 skipped** (297 → 326). `apps/web`: **153 passed** unchanged.
+
 **Fix 2 failing web tests [DONE — 2026-07-22]**: `migration-success-screen.test.tsx`'s
 two "Results section" tests (`fetches and renders results once the migration is
 terminal` / `does not fetch results while the migration is still running`) were

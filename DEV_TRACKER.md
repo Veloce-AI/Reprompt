@@ -10,6 +10,42 @@ points here plus the rest of the docs in reading order.
 
 Last updated: 2026-07-22.
 
+**Fix: Data tab table cell text overlap [DONE — 2026-07-22]**: Product owner
+reported the Data tab's `DataTable` (`apps/web/src/components/data-table.tsx`,
+"Phase 3 — Data dashboard tab" below) rendering stage names, input JSON
+previews, and rendered-prompt text visually smashed together in cells,
+illegible with real (long, dense) data. Root cause: the "Stage" column's
+`<Badge variant="outline">` had no width constraint, truncation, or
+`overflow-hidden` of its own, nor did its wrapping grid-cell `<div>`. CSS
+Grid items default to `min-width: auto`, so a long, space-free stage name
+(e.g. `extract_entities_and_classify_intent` — underscores aren't wrap
+points) rendered at its full intrinsic width, overflowing the Stage
+column's grid track directly into the Input column; since the `outline`
+badge variant has no background fill, the overflow text painted right on
+top of the Input cell's text instead of being clipped. The other cells
+(Input/Rendered prompt/Output) already had Tailwind's `truncate` applied
+directly and were unaffected — confirmed by reproducing with a real
+Playwright render before touching any code (dense mock data modeled on the
+screenshot: 30 rows, underscore-joined stage names, long prompts/JSON
+input) and measuring the badge's bounding box extending ~140px past the
+Input column's start. Fix (`data-table.tsx`): wrapping `<div>` gets
+`min-w-0 overflow-hidden`; `Badge` gets `max-w-full truncate` — single-line
+ellipsis within its own cell, row height (fixed 56px) unaffected since
+everything now genuinely single-lines. Click-to-expand into the drawer for
+full untruncated content (existing Phase 3 design) still works, re-verified
+in the same spec. New permanent regression test:
+`apps/web/e2e/data-table-density.spec.ts` (4 cases: no cell-to-cell overlap
+with dense long-content data, consistent row height, drawer still shows
+full content on click, no overlap at a narrow 900px viewport) — a real
+Playwright/Chromium render, deliberately not a jsdom unit test, since jsdom
+has no real layout engine and cannot reproduce CSS Grid track overflow (see
+`saas-product-design` skill's precedent: a passing jsdom suite missed a
+CSS flex-height bug the same way). Confirmed the new spec actually catches
+the regression by reverting the fix and re-running (2 of 4 cases fail
+without it, all 4 pass with it). `apps/web`: `tsc --noEmit` clean, `pnpm
+test` **153 passed** (unchanged — no vitest-level behavior change), new
+Playwright spec **4 passed**. No changes to `packages/core` or `apps/api`.
+
 **Phase 5 — Contract Mining [DONE — 2026-07-22]**: NLI cross-encoder module (`packages/core/src/reprompt_core/nli.py`, lazy-load `cross-encoder/nli-deberta-v3-base` via `@lru_cache`, exact-match fallback when `sentence_transformers` absent). Bidirectional entailment clustering + Shannon entropy (`contract/cluster.py`). Two-axis contract mining (`contract/mine.py`): Axis A = existing trace outputs (no LLM calls), Axis B = K repeats at temperature 0.7 to measure noise floor. Structural invariant extraction: `required_keys` (key intersection), `enum_values` (cardinality ≤5), `regex` (common prefix ≥3 chars). `assertions` DB table + Alembic migration `b2c3d4e5f6a7`. Four API endpoints (list/mine/approve/retire) in `contracts.py` + router wired into `main.py`. `AssertionOut` + 4 client functions in `apps/web/src/lib/api.ts`. `ContractReviewPanel` component + "Contracts" workspace tab. Tests: `test_nli.py` (7), `test_contract_cluster.py` (14), `test_contract_mine.py` (10), `test_contracts.py` (10). `apps/api`: **201 passed** (191 → 201). `packages/core`: **326 passed, 21 skipped** (297 → 326). `apps/web`: **153 passed** unchanged.
 
 **Fix 2 failing web tests [DONE — 2026-07-22]**: `migration-success-screen.test.tsx`'s

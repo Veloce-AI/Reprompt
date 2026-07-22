@@ -328,6 +328,25 @@ exclusive to the Rubrics tab.
    fast follow-on once Phase 2's `GET /pipelines/{id}/runs` multi-run
    endpoint lands — see `DEV_TRACKER.md`'s Phase 3 entry) and no text
    search box (out of scope, would need real indexing).
+6. With real/long stage names (e.g. underscore-joined, no spaces) and long
+   rendered prompts/input JSON, confirm every cell truncates to a single
+   line with an ellipsis and stays fully inside its own column — the Stage
+   badge in particular must never visually spill into the Input column next
+   to it (see `DEV_TRACKER.md`'s "Fix: Data tab table cell text overlap"
+   entry, 2026-07-22, for the CSS Grid `min-width: auto` root cause).
+
+Automated coverage: `apps/web/src/components/data-table.test.tsx` (jsdom,
+stage filter population, empty state, row truncation + drawer shows full
+content on click, stage-filter re-fetch) and
+`apps/web/e2e/data-table-density.spec.ts` (real Playwright/Chromium render
+with dense mock data modeled on the product owner's screenshot — 30 rows,
+long underscore-joined stage names, long prompts/input JSON — asserting no
+cell's rendered content bleeds into its neighboring cell, consistent row
+height across all visible rows, the drawer still shows full untruncated
+content on row click, and no overlap at a narrow 900px viewport). The jsdom
+unit test alone cannot catch this class of bug — jsdom has no real layout
+engine, so CSS Grid track overflow (the actual root cause) never happens
+there; the Playwright spec is what actually reproduces and guards it.
 
 ### 3.1e Delete a pipeline (Pipelines home)
 

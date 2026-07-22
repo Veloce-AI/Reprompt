@@ -199,8 +199,10 @@ export function DataTable({ pipelineId }: DataTableProps) {
                     <div className="truncate px-2 font-mono text-12 text-ink-soft">
                       {record.trace_id}
                     </div>
-                    <div className="px-2">
-                      <Badge variant="outline">{record.stage_name}</Badge>
+                    <div className="min-w-0 overflow-hidden px-2">
+                      <Badge variant="outline" className="max-w-full truncate">
+                        {record.stage_name}
+                      </Badge>
                     </div>
                     <div className="truncate px-2 text-ink-soft">
                       {truncate(stringifyInput(record.input))}

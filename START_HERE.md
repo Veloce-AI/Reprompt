@@ -71,21 +71,34 @@ proves the outputs still match. Full plain-language explanation: `README.md`.
 embedding + AI judge), rubric generation (works, needs manual trigger),
 BYOK key storage + live model calls, screens 1–5, auth, settings.
 
+**Built since this list was last accurate — do not re-plan these, they're
+done**: rubric-generation trigger + auto model selection, model-card info
+in both the wizard and Settings, the full M3 optimizer loop (both
+strategies, judge-aware critique, plateau early-stopping, near-dup
+filtering), M4 migration runs with a live status view (per-stage
+running/done/failed, sub-step labels, live reasoning feed, activity log),
+the unified pipeline workspace (Canvas/Data/Rubrics/Migrations/Graph tabs),
+project/multi-run ingestion, Pipeline CRUD, per-stage target-model
+overrides, before/after prompt diff, config export, and M4's holdout +
+seam-regression validation passes. See `DEV_TRACKER.md`'s "Current state"
+for the authoritative, actively-updated status — this file's job is to be
+the map, not to re-derive what's already built.
+
 **Not built yet, in order:**
-1. Rubric generation trigger in the UI (endpoint exists, no button calls it yet)
-2. Model-card info (preferred prompt format per model family) surfaced in
-   the migration wizard's model picker — logic exists (`llm/model_card.py`),
-   not connected to that screen
-3. Budget should become optional (currently required) in the migration wizard
-4. **The actual optimizer loop (M3)** — in active development, see
-   `DEV_TRACKER.md` for the exact phase-by-phase status and where to pick
-   up. Two strategies: "simple" (one-shot mutation + sweep) and "Prism"
-   (multi-round mutate → critique → refine, plus optional few-shot
-   selection), both in-house, both provider-agnostic. Each attempt is
-   saved as a `Candidate` row (prompt tried, score, cost) so past attempts
-   are always reviewable.
-5. M4 — full migration run using the M3 loop, progress screen
-6. M5 remainder — scorecard screen, config export (need real M3/M4 output first)
+1. Budget should become optional (currently required) in the migration wizard
+2. **LLM call telemetry + multi-model scorecard** (per-target-model
+   comparison with a decisive "which is actually best" recommendation, not
+   just the single-winner-per-stage view `migration-detail.tsx` currently
+   has) — designed, not built; see `DEV_TRACKER.md`'s "Planned, not yet
+   built — LLM call telemetry + scorecard" section for the full spec.
+3. Phase 6 final end-to-end manual verification (all automated suites are
+   green; a full human click-through of the golden path hasn't been done
+   in one sitting since the M4 holdout/seam work landed)
+4. Further M5/M6-class work is speculatively scoped in
+   `docs/PRISM_PHASES_PLAN.md` (automated contract mining, a GEPA optimizer
+   strategy, a governance/promotion-gate plane) — treat that file as an
+   unverified proposal to reconcile into this list and `DEV_TRACKER.md`
+   before starting, not as an already-agreed roadmap.
 
 ## How to test what exists right now
 

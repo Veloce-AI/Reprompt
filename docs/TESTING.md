@@ -642,12 +642,14 @@ with `MigrationSuccessScreen`'s own run view).
    stops entirely while it isn't the active tab — both polls are scoped to
    the Canvas tab actually being mounted, not global background polling.
 
-### 3.3d Graph tab — Obsidian-style pipeline visualization
+### 3.3d Graph tab — model/call drill-down visualization
 
-**What it is**: A new "Graph" tab in the pipeline workspace that renders all
-pipeline stages as interactive nodes using dagre layout, with a floating
-"Models in pipeline" panel showing which stages share each LLM, and a calls
-drawer that opens when you click a stage.
+**What it is**: A new "Graph" tab in the pipeline workspace, complementary to
+the live-run-focused Canvas tab — this one is a static analytics/drill-down
+view. All UI is rendered as React Flow nodes directly inside the graph
+canvas itself (no floating panels, no slide-in drawers — everything you see
+below is an inline node type: `StageGraphNode`, `ModelGraphNode`,
+`CallGraphNode` in `pipeline-graph.tsx`).
 
 **Walkthrough**:
 1. Open any pipeline with at least one stage → click the **Graph** tab.
@@ -657,13 +659,16 @@ drawer that opens when you click a stage.
    - Trace count + avg token/latency stats (shows "No traces yet" if none)
    - Total accumulated cost (only when StageRecord.cost data exists)
    - "View inference calls →" affordance
-3. **Model lens (top-right panel)**: Lists each unique model used in the
-   pipeline. Click a model to highlight all stage nodes that use it with a
-   blue border glow. Click again to deselect.
-4. **Calls drawer**: Click any stage node → a drawer slides in from the right
-   showing up to 20 individual inference calls for that stage. Each call shows:
-   tokens in/out, latency, cost, and truncated input/output. "Show full text"
-   expands to full content.
+3. **Model nodes**: a fixed column of nodes to the right of the stages, one
+   per unique model used in the pipeline, connected by dashed edges from
+   every stage that uses it. Click a model node → its edges and every
+   connected stage node highlight (beam-accent border/glow). Click again to
+   clear the highlight.
+4. **Call nodes**: click a stage node's "View inference calls" affordance →
+   up to 20 compact `CallGraphNode`s appear inline in the graph, positioned
+   below their parent stage (not a drawer/panel) — each shows tokens in/out,
+   latency, and cost for that individual call. Full input/output text isn't
+   shown here; use the Data tab's record browser for that.
 5. **Orientation toggle (top-left)**: `→` = horizontal (left-to-right ranks),
    `↓` = vertical (top-to-bottom). Choice persists in `localStorage` per
    pipeline (separate key from Canvas tab's layout preference).

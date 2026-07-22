@@ -319,7 +319,10 @@ def _run(db: Session, migration_id: int) -> None:  # noqa: C901
 
         # Phase 4 seam regression — runs after all stages have been optimized.
         if not budget.is_exhausted:
-            _run_seam_regression(db, pipeline.id, migration.id, budget, complete_with_workspace_credentials, workspace)
+            _run_seam_regression(
+                db, pipeline.id, migration.id, budget, complete_with_workspace_credentials, workspace,
+                parity_threshold=migration.parity_threshold,
+            )
 
         migration.status = "completed" if not any_stopped_early else "stopped_early"
         migration.total_cost_usd = total_cost
@@ -348,6 +351,8 @@ def _run_seam_regression(
     budget: BudgetTracker,
     complete_fn: object,
     workspace: models.Workspace,
+    *,
+    parity_threshold: float,
 ) -> None:
     """Phase 4: run seam checks for every (upstream_winner, downstream_stage) pair.
 
@@ -455,7 +460,7 @@ def _run_seam_regression(
                         "judge_criteria": rubric.judge_criteria if rubric else [],
                     },
                     examples=examples,
-                    parity_threshold=0.95,
+                    parity_threshold=parity_threshold,
                 )
                 result = evaluate_seam(seam_in, call=call, budget=budget)
                 db.add(models.SeamCheckResult(

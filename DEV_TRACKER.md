@@ -3415,3 +3415,44 @@ yet — see `docs/TESTING.md`'s new §3.3b for the current API-level manual
 check and the explicit note that a UI surface (e.g. showing the judge model
 next to a migration's results) is a real, not-yet-built follow-up, out of
 scope for this backend plumbing fix.
+
+## Pre-merge review fixes for PR #8 (Phase 2/3/4 — holdout/config-export/seam) [DONE — 2026-07-22]
+
+A code review pass (evidence-based, `code-reviewer-persona`/`spec-driven-
+planning` skills applied) before merging this branch found two real issues,
+both fixed here:
+
+1. **`_run_seam_regression` hardcoded `parity_threshold=0.95`** instead of
+   using the migration's actual configured value — while the main
+   optimization loop correctly threads `migration.parity_threshold` through
+   twice already (`optimizer_runner.py`, the two `run_optimizer(...)` call
+   sites), the seam-check call site was missed. A migration with a
+   non-default threshold would have every seam check evaluated against the
+   wrong bar. Fixed: `_run_seam_regression` gained a required keyword-only
+   `parity_threshold: float` parameter, threaded from `migration
+   .parity_threshold` at its one call site — same pattern the rest of the
+   file already uses.
+2. **`docs/TESTING.md`'s §3.3d described UI that doesn't exist** — it said
+   the Graph tab has a "floating Models in pipeline panel" and a "calls
+   drawer that slides in from the right." The actual implementation
+   (`pipeline-graph.tsx`) renders everything as inline React Flow nodes
+   (`ModelGraphNode`, `CallGraphNode`) positioned directly in the graph —
+   no panel, no drawer. Rewrote §3.3d to describe the real inline-node UI.
+
+Both fixes verified: `cd apps/api && uv run pytest -q` → **191 passed**
+(unchanged count — the `parity_threshold` fix doesn't add new test
+coverage, it corrects existing runtime behavior; see the review's own
+noted gap below). No `packages/core`/`apps/web` files touched by either
+fix.
+
+**Known gap, not closed by this pass** (flagged by the same review, left
+for a follow-up): the new `apps/api` orchestration glue
+(`_run_seam_regression`, `_persist_holdout_scores`) has zero integration
+test coverage — all of PR #8's own new `test_migrations.py` cases exercise
+only the read endpoints (`/export`, `/seam-results`, `/results`) against
+directly-seeded DB rows, never `_run()`/`_run_seam_regression` itself
+end-to-end. This is exactly why the `parity_threshold` bug above went
+uncaught by the existing suite. Worth a dedicated follow-up: seed a real
+migration fixture, run the actual orchestration function, assert the
+persisted `SeamCheckResult`/`holdout_score` rows are correct — not done
+here to keep this fix pass narrow and mergeable quickly.

@@ -126,6 +126,21 @@ class ModelCapabilities:
     cloud provider, regardless of whether the key is currently set — this
     describes the *model*, not the current environment (use
     :func:`missing_credential_env_vars` to check the environment)."""
+    supports_reasoning: bool
+    """Whether the model has a genuine extended-thinking/reasoning mode
+    invocable via LiteLLM's ``thinking=``/``reasoning_effort=`` params
+    (e.g. Claude's ``thinking`` param, an o-series/gpt-5-class model's
+    ``reasoning_effort``) — sourced from LiteLLM's own
+    ``get_model_info()["supports_reasoning"]``, same pattern as every
+    other field here. Hand-overridden to ``False`` for local providers in
+    :data:`_NO_KEY_PROVIDERS` regardless of what LiteLLM reports: LiteLLM
+    permissively forwards the ``reasoning_effort`` OpenAI-compat param to
+    Ollama's chat API even though Ollama has no first-class reasoning-mode
+    concept the way OpenAI/Anthropic/Gemini do, and this flag was observed
+    to disagree with :attr:`supports_function_calling` between two Ollama
+    models with otherwise-identical capability profiles — a sign it's
+    param-passthrough leniency, not a genuine capability signal, for this
+    provider family specifically."""
 
 
 def get_model_capabilities(model: str) -> ModelCapabilities:
@@ -147,14 +162,22 @@ def get_model_capabilities(model: str) -> ModelCapabilities:
     max_output_tokens: int | None = None
     input_cost_per_token: float | None = None
     output_cost_per_token: float | None = None
+    reasoning: bool = False
     try:
         info = litellm.get_model_info(model)
         max_input_tokens = info.get("max_input_tokens")
         max_output_tokens = info.get("max_output_tokens")
         input_cost_per_token = info.get("input_cost_per_token")
         output_cost_per_token = info.get("output_cost_per_token")
+        reasoning = bool(info.get("supports_reasoning"))
     except Exception:
-        pass  # unrecognized model: leave the cost/context fields as None
+        pass  # unrecognized model: leave the cost/context/reasoning fields at defaults
+
+    # See ModelCapabilities.supports_reasoning's docstring: LiteLLM's raw
+    # flag for local providers is param-passthrough leniency, not a real
+    # capability signal, so it's overridden regardless of what was found.
+    if provider in _NO_KEY_PROVIDERS:
+        reasoning = False
 
     return ModelCapabilities(
         model=model,
@@ -166,4 +189,5 @@ def get_model_capabilities(model: str) -> ModelCapabilities:
         input_cost_per_token=input_cost_per_token,
         output_cost_per_token=output_cost_per_token,
         requires_api_key=provider not in _NO_KEY_PROVIDERS,
+        supports_reasoning=reasoning,
     )

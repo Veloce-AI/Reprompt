@@ -10,12 +10,14 @@ of the model_card module's data structures.
 
 from fastapi import APIRouter
 from pydantic import BaseModel
+from reprompt_core.llm.code_sample import generate_code_sample
 from reprompt_core.llm.model_card import (
     applicable_rules,
     resolve_family,
     is_small_variant,
     get_transform_rules,
 )
+from reprompt_core.llm.registry import get_model_capabilities
 
 router = APIRouter(prefix="/model-cards", tags=["model-cards"])
 
@@ -35,6 +37,14 @@ class FamilyCardOut(BaseModel):
     description: str
     is_small_variant: bool
     rules: list[TransformRuleOut]
+    supports_reasoning: bool
+    """Whether this model has a genuine extended-thinking/reasoning mode —
+    see reprompt_core.llm.registry.ModelCapabilities.supports_reasoning
+    for the full derivation (including the Ollama override)."""
+    code_sample: str
+    """A working reprompt_core.llm.client.complete() call for this exact
+    model, reflecting whether tools=/thinking= are meaningful for it — see
+    reprompt_core.llm.code_sample.generate_code_sample."""
 
 
 def build_family_card(model: str) -> FamilyCardOut:
@@ -77,12 +87,16 @@ def build_family_card(model: str) -> FamilyCardOut:
         for rule in card.rules
     ]
 
+    caps = get_model_capabilities(model)
+
     return FamilyCardOut(
         family=family,
         version=card.version,
         description=card.description,
         is_small_variant=small,
         rules=rules_out,
+        supports_reasoning=caps.supports_reasoning,
+        code_sample=generate_code_sample(caps),
     )
 
 

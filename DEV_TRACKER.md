@@ -3493,50 +3493,71 @@ migration fixture, run the actual orchestration function, assert the
 persisted `SeamCheckResult`/`holdout_score` rows are correct — not done
 here to keep this fix pass narrow and mergeable quickly.
 
-## Planned — comprehensive per-model cards ("plug and play" settings + code) [RESEARCH INTERRUPTED, NOT RESUMED]
+## Per-model cards: thinking-mode + tool-calling + code samples [Phases 1-3 DONE — 2026-07-22, Phase 4 not started]
 
-Agent died mid-research (session-limit termination, not a task-scope
-failure — it was still in early data-gathering, checking the existing
-`ConfiguredModelsCard` UI pattern before starting the LiteLLM-first web
-research). No findings produced yet, nothing to salvage — this needs a
-fresh dispatch of the same brief (already corrected for the
-LiteLLM-first research order below) when picked back up.
+Research pass completed (re-dispatched after a first attempt died in
+early data-gathering with nothing to salvage). Full findings, condensed:
 
-Product owner wants, for every model Reprompt supports: preferred prompt
-style (partially built — `model_card.py`), cost (built — `registry.py`),
-**working invocation code**, **tool/function-calling shape**, and
-**thinking/extended-reasoning mode support** — surfaced so Reprompt can
-hand a user exact settings + copy-pasteable code for any model. Scoped
-first to the 8 models in `CURATED_MODELS`
-(`apps/api/src/reprompt_api/migrations.py`) as the proving ground, not
-literally every model in existence.
+**Audit confirmed via grep**: cost/context/JSON-mode/function-calling-
+boolean already existed (`registry.py`), preferred prompt style already
+existed (`model_card.py`), but working invocation code, tool-calling
+*shape*, and thinking-mode support were genuinely absent anywhere in the
+codebase — not something a prior pass missed, a real gap.
 
-**Key correction made mid-research, worth keeping**: the product owner
-asked "couldn't we get this from LiteLLM?" — correctly. `registry.py`
-already sources cost/context/JSON-mode/tool-use from LiteLLM's bundled
-metadata; since every model call in this codebase goes through LiteLLM
-(`llm/client.py`), the right research order is **LiteLLM's own
-docs/source first** for thinking-mode and tool-calling invocation
-mechanics (that's the actual call path, not the raw per-provider API
-shape), and raw provider docs (Anthropic/OpenAI/Gemini) only for
-confirming "preferred prompt style," which is genuinely editorial and not
-something LiteLLM tracks. A code sample sourced from raw provider docs
-instead of LiteLLM's own interface would be actively wrong for this
-codebase — it's not how anything here actually calls a model.
+**LiteLLM-first research (per the owner's own correction — "couldn't we
+get this from LiteLLM?" — confirmed correct)**: queried this repo's own
+installed LiteLLM against all 8 `CURATED_MODELS` directly. Only
+`claude-sonnet-4-5`/`claude-haiku-4-5` are genuine reasoning-tier models
+among the 8 (GPT-4o/Gemini-2.0-Flash are not — that's o-series/gpt-5 and
+Gemini's `-thinking-exp`/3.x lines respectively, none curated here).
+Tool-calling is one fixed LiteLLM-normalized shape across every provider
+(`tools=[{"type":"function","function":{...}}]`), not per-model data.
+Ollama's raw `reasoning_effort`/`tools` flags were found internally
+inconsistent (permissive param-passthrough, not real capability) — hand-
+overridden to `False` rather than trusted.
 
-**Sequencing**: research/architecture pass first (in progress) — decides
-where this data lives (extend `model_card.py`'s `FamilyCard`? a new
-adjacent module?) and how a user actually gets "settings + code" in the
-UI, using the 8 already-supported models as the concrete cases. THEN, as
-a separate follow-up task once that structure exists: expand
-`CURATED_MODELS` itself with new provider families explicitly requested —
-Gemini (latest), Llama, DeepSeek, GLM, MiniMax, Qwen, and whatever else is
-genuinely best-in-class at the time — each needing its own real
-provider-family research (these are all-new API conventions, not more
-instances of an already-researched family). Deliberately not started
-alongside the architecture pass — that would be the same oversized-task
-mistake already made twice this session (agents dying mid-flight from too
-much combined scope).
+**Architecture decided and built** (not a hand-curated table — both new
+facts are already live LiteLLM data, so live-derivation was simpler than
+maintaining a table, per this project's own `ponytail` discipline):
+
+- **Phase 1** [DONE]: `packages/core/src/reprompt_core/llm/registry.py` —
+  `ModelCapabilities` gained `supports_reasoning: bool`, sourced from
+  `litellm.get_model_info()["supports_reasoning"]` the same way
+  `max_input_tokens`/cost already are, with the Ollama override applied
+  in `get_model_capabilities()`. 3 new tests
+  (`test_llm_registry.py`).
+- **Phase 2** [DONE]: new `packages/core/src/reprompt_core/llm/code_sample.py`
+  — pure function `generate_code_sample(caps: ModelCapabilities) -> str`,
+  renders a real `reprompt_core.llm.client.complete()` call including
+  `tools=`/`thinking=` only when the model actually supports them. Same
+  "never imports/calls `complete`" purity discipline and test pattern as
+  `model_card.py`. 8 new tests (`test_code_sample.py`).
+- **Phase 3** [DONE]: `apps/api/src/reprompt_api/model_cards.py` —
+  `FamilyCardOut` gained `supports_reasoning`/`code_sample` fields,
+  `build_family_card()` populates both. `settings.py`'s
+  `ConfiguredModelOut.model_card` already embeds `FamilyCardOut` directly
+  (confirmed: zero changes needed there, the new fields propagate for
+  free). 3 new tests (`test_model_cards.py`) — one initial test assertion
+  bug found and fixed during verification (checked for the substring
+  `"thinking="` which false-matched its own "omitted" comment line; fixed
+  to check the real invocation vs. the comment specifically).
+
+**Verified**: `packages/core` 361 passed (350 + 11 new), 2 skipped.
+`apps/api` 204 passed (201 + 3 new). Both suites confirmed fully green,
+not just the new test files in isolation.
+
+**Phase 4 — NOT STARTED, deliberately deferred**: a "copy code" affordance
+in `ConfiguredModelsCard` (`apps/web/src/routes/settings.tsx`) surfacing
+`code_sample` — frontend-only, depends on Phase 3's response shape (now
+live), kept separate per this project's standing small-task discipline.
+
+**Separate follow-up, still queued, not started**: expand `CURATED_MODELS`
+(`apps/api/src/reprompt_api/migrations.py`) with the new provider families
+explicitly requested — Gemini (latest), Llama, DeepSeek, GLM, MiniMax,
+Qwen, whatever else is genuinely best-in-class at the time. Each needs its
+own real provider-family research (new API conventions, not more
+instances of an already-researched family) — deliberately not started
+alongside Phases 1-3.
 
 ## Canvas/Graph tab merge [DONE — 2026-07-22]
 

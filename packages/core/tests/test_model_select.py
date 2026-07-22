@@ -146,3 +146,56 @@ def test_empty_available_error_message_names_the_purpose() -> None:
 def test_every_declared_purpose_selects_successfully(purpose: str) -> None:
     result = select_model(purpose, ["claude-sonnet-4-5", "gpt-4o-mini"])  # type: ignore[arg-type]
     assert result == "claude-sonnet-4-5"
+
+
+# ---------------------------------------------------------------------------
+# target_models: never self-grade, prefer cross-family for judge
+# ---------------------------------------------------------------------------
+
+
+def test_target_model_is_excluded_from_candidates() -> None:
+    # gpt-4o-mini is normally the tier-2 pick, but it's the target here.
+    result = select_model(
+        "judge",
+        ["claude-haiku-4-5", "gpt-4o-mini"],
+        target_models=["gpt-4o-mini"],
+    )
+    assert result == "claude-haiku-4-5"
+
+
+def test_only_target_models_available_raises() -> None:
+    with pytest.raises(NoAvailableModelError):
+        select_model("judge", ["gpt-4o-mini"], target_models=["gpt-4o-mini"])
+
+
+def test_judge_prefers_cross_family_over_cheaper_same_family() -> None:
+    # gpt-4o-mini is cheaper than claude-haiku-4-5, but shares a family
+    # with the target (gpt-4o) - cross-family must win anyway.
+    result = select_model(
+        "judge",
+        ["gpt-4o-mini", "claude-haiku-4-5"],
+        target_models=["gpt-4o"],
+    )
+    assert result == "claude-haiku-4-5"
+
+
+def test_judge_degrades_to_same_family_when_nothing_else_available() -> None:
+    # Only openai-family candidates exist anywhere - must still return one
+    # rather than raising, per the module's "some pick beats none" stance.
+    result = select_model(
+        "judge",
+        ["gpt-4o-mini"],
+        target_models=["gpt-4o"],
+    )
+    assert result == "gpt-4o-mini"
+
+
+def test_mutator_does_not_apply_cross_family_preference() -> None:
+    # Cross-family preference is judge-only per the doc; mutator only
+    # excludes exact target_models matches, cost still breaks all ties.
+    result = select_model(
+        "mutator",
+        ["gpt-4o-mini", "claude-haiku-4-5"],
+        target_models=["gpt-4o"],
+    )
+    assert result == "gpt-4o-mini"

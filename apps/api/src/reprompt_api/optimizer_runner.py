@@ -136,10 +136,10 @@ def _run(db: Session, migration_id: int) -> None:  # noqa: C901
 
         available_models = [option.model for option in get_available_models(db, workspace)]
         judge_model = migration.target_model_config.get("judge_model") or select_model(
-            "judge", available_models
+            "judge", available_models, target_models=target_models
         )
         mutator_model = migration.target_model_config.get("mutator_model") or select_model(
-            "mutator", available_models
+            "mutator", available_models, target_models=target_models
         )
 
         db_stages = db.scalars(

@@ -24,7 +24,6 @@ import {
 import { AppShell } from "@/components/app-shell";
 import { Dropzone } from "@/components/dropzone";
 import { PipelineCanvas } from "@/components/pipeline-canvas";
-import { PipelineGraph } from "@/components/pipeline-graph";
 import { DataTable } from "@/components/data-table";
 import { RubricReviewPanel } from "@/components/rubric-review-panel";
 import { ContractReviewPanel } from "@/components/contract-review-panel";
@@ -43,9 +42,9 @@ import {
 } from "@/components/ui/drawer";
 import { cn } from "@/lib/utils";
 
-export type WorkspaceTab = "canvas" | "data" | "rubrics" | "contracts" | "migrations" | "graph";
+export type WorkspaceTab = "canvas" | "data" | "rubrics" | "contracts" | "migrations";
 
-export const WORKSPACE_TABS: readonly WorkspaceTab[] = ["canvas", "data", "rubrics", "contracts", "migrations", "graph"];
+export const WORKSPACE_TABS: readonly WorkspaceTab[] = ["canvas", "data", "rubrics", "contracts", "migrations"];
 
 const TAB_LABELS: Record<WorkspaceTab, string> = {
   canvas: "Canvas",
@@ -53,7 +52,6 @@ const TAB_LABELS: Record<WorkspaceTab, string> = {
   rubrics: "Rubrics",
   contracts: "Contracts",
   migrations: "Migrations",
-  graph: "Graph",
 };
 
 /**
@@ -236,7 +234,6 @@ export default function PipelineWorkspace() {
               <MigrationsTab pipelineId={pid} onBackToCanvas={() => goToTab("canvas")} />
             </div>
           )}
-          {tab === "graph" && <PipelineGraph pipelineId={pid} />}
         </div>
       </div>
 
@@ -291,11 +288,15 @@ const MIGRATION_LIST_POLL_INTERVAL_MS = 5000;
  *   live-coloring poll — same queryKey/refetchInterval convention, so the
  *   two "poll a migration's stage_states" call sites can't drift apart.
  *
- * When nothing is running, this renders exactly what the Canvas tab always
- * rendered before this change — no `stageStates`/`runningSubstep` props, no
- * badge, and (since `useMigrationStatusPoll` is disabled whenever
- * `runningMigration` is `null`) no status poll at all. Static, no polling
- * overhead beyond the lightweight 5s list check.
+ * When nothing is running, this renders no `stageStates`/`runningSubstep`
+ * props and no badge (and, since `useMigrationStatusPoll` is disabled
+ * whenever `runningMigration` is `null`, no status poll at all — no polling
+ * overhead beyond the lightweight 5s list check). `migrationRunning` below
+ * is also handed straight to `<PipelineCanvas>`, which uses it to
+ * auto-select its own Live/Analytics mode (Live while running, Analytics
+ * otherwise — see DEV_TRACKER.md's Canvas/Graph merge entry, which folded
+ * the former separate Graph tab's model/call drilldown view into this same
+ * canvas as that Analytics mode).
  */
 function CanvasTabContent({
   pipelineId,
@@ -318,6 +319,23 @@ function CanvasTabContent({
     enabled: runningMigration !== null,
     initialData: runningMigration ?? undefined,
   });
+
+  // Defaults to `true` (not `false`) while this query's own first fetch
+  // hasn't resolved yet - deliberately, and not a hypothetical: forcing
+  // `false` here before the list ever resolved meant a pipeline whose
+  // migration actually *is* running still spent its first render(s) in
+  // Analytics mode before flipping to Live once the list settled, and that
+  // forced mode flip immediately after mount intermittently broke React
+  // Flow's edge rendering on PipelineCanvas's fully-controlled canvas
+  // (edges' data stayed correct in React state, but 0 rendered in the DOM -
+  // not a timing fluke fixable with a longer wait, the render simply never
+  // recovered), found via a repeatedly-flaky e2e run. `true` is the safe
+  // default to guess during this brief, real-API-backed window: it's
+  // *usually* wrong to guess a migration isn't running before you've even
+  // checked, and being briefly, incorrectly "Live" for a pipeline with no
+  // migration is a much smaller visual hiccup (no coloring/pulsing to show
+  // regardless) than the alternative's actual failure mode.
+  const migrationRunning = migrationsQuery.isLoading ? true : runningMigration !== null;
 
   // Guard against a stale poll result outliving its migration (e.g. the
   // list's next 5s tick already dropped this id from "running") — only
@@ -343,6 +361,7 @@ function CanvasTabContent({
         pipelineId={pipelineId}
         stageStates={liveStatus?.stage_states}
         runningSubstep={liveStatus?.progress_substep}
+        migrationRunning={migrationRunning}
         onNodeClick={onNodeClick}
       />
     </>

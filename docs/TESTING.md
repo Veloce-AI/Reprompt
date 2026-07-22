@@ -175,9 +175,10 @@ After any restart, hard-refresh the browser (`Ctrl+Shift+R`).
 ```
 /                                      Pipelines home
 /pipelines/import                      Import wizard (3 steps)
-/pipelines/$pipelineId?tab=canvas      Pipeline workspace — Canvas tab (default, React Flow DAG)
+/pipelines/$pipelineId?tab=canvas      Pipeline workspace — Canvas tab (default; Live/Analytics mode toggle, §3.3d)
 /pipelines/$pipelineId?tab=data        Pipeline workspace — Data tab (StageRecord browser, Phase 3)
 /pipelines/$pipelineId?tab=rubrics     Pipeline workspace — Rubrics tab (screen 4)
+/pipelines/$pipelineId?tab=contracts   Pipeline workspace — Contracts tab (contract mining, Phase 5)
 /pipelines/$pipelineId?tab=migrations  Pipeline workspace — Migrations tab (screen 5)
 /login                                 Request a magic link
 /auth/verify?token=...                 Exchange a magic link for a session
@@ -661,40 +662,43 @@ with `MigrationSuccessScreen`'s own run view).
    stops entirely while it isn't the active tab — both polls are scoped to
    the Canvas tab actually being mounted, not global background polling.
 
-### 3.3d Graph tab — model/call drill-down visualization
+### 3.3d Canvas tab — Live / Analytics mode (formerly a separate Graph tab)
 
-**What it is**: A new "Graph" tab in the pipeline workspace, complementary to
-the live-run-focused Canvas tab — this one is a static analytics/drill-down
-view. All UI is rendered as React Flow nodes directly inside the graph
-canvas itself (no floating panels, no slide-in drawers — everything you see
-below is an inline node type: `StageGraphNode`, `ModelGraphNode`,
-`CallGraphNode` in `pipeline-graph.tsx`).
+**What changed**: the standalone "Graph" tab has been removed
+(`pipeline-graph.tsx` deleted, `"graph"` dropped from `WORKSPACE_TABS`) and
+its capabilities folded into the Canvas tab as a second mode — see
+`docs/architecture/adr-001-merge-canvas-and-graph-tabs.md` for the full
+decision record. Both modes share one dagre layout engine, one zoom floor,
+one toolbar (Spacing/Orientation/Minimap), one `["pipeline-dag", id]` query
+cache — there is no longer a second, independently-drifting DAG renderer.
 
 **Walkthrough**:
-1. Open any pipeline with at least one stage → click the **Graph** tab.
-2. All stages render as nodes connected by dependency edges. Node shows:
-   - Stage name (truncated, full name on hover)
-   - Model badge
-   - Trace count + avg token/latency stats (shows "No traces yet" if none)
-   - Total accumulated cost (only when StageRecord.cost data exists)
-   - "View inference calls →" affordance
-3. **Model nodes**: a fixed column of nodes to the right of the stages, one
-   per unique model used in the pipeline, connected by dashed edges from
-   every stage that uses it. Click a model node → its edges and every
-   connected stage node highlight (beam-accent border/glow). Click again to
-   clear the highlight.
-4. **Call nodes**: click a stage node's "View inference calls" affordance →
-   up to 20 compact `CallGraphNode`s appear inline in the graph, positioned
-   below their parent stage (not a drawer/panel) — each shows tokens in/out,
-   latency, and cost for that individual call. Full input/output text isn't
-   shown here; use the Data tab's record browser for that.
-5. **Orientation toggle (top-left)**: `→` = horizontal (left-to-right ranks),
-   `↓` = vertical (top-to-bottom). Choice persists in `localStorage` per
-   pipeline (separate key from Canvas tab's layout preference).
-6. If a pipeline has no stages, the graph renders empty (no error).
-7. Layout uses `spacious` dagre spacing — same underlying `computeCanvasLayout`
-   function as the Canvas tab, reusing the shared `["pipeline-dag", id]` query
-   cache, so switching Canvas→Graph doesn't trigger a second network request.
+1. Open any pipeline with at least one stage → the Canvas tab. A **Live /
+   Analytics** segmented toggle sits in the top-right toolbar alongside
+   Spacing/Orientation.
+2. **Auto-select**: the toggle defaults to **Live** whenever a migration is
+   running for this pipeline, **Analytics** otherwise. Manually overriding
+   it holds for the rest of the session (not persisted to `localStorage`,
+   unlike Spacing/Orientation — a stale saved preference must never
+   suppress auto-switching to Live when a run starts).
+3. **Live mode** (unchanged from before the merge): per-stage
+   running/done/failed coloring, sub-step label, beam-pulse animation on
+   the active stage, click a node → rubric drawer.
+4. **Analytics mode** (folded in from the old Graph tab): stage nodes gain
+   richer stats (trace count, avg token/latency, total accumulated cost).
+   A fixed column of **model nodes** to the right, one per unique model
+   used in the pipeline, connected by dashed edges from every stage that
+   uses it — click a model node to highlight it and its connected stages
+   (click again to clear). Click a stage's "View inference calls →" →
+   up to 20 compact call nodes appear inline below it (not a drawer/panel),
+   each showing tokens in/out, latency, cost for that individual call. Full
+   input/output text isn't shown here — use the Data tab for that.
+5. **On mode switch**, any expanded call-drill-down collapses — it does not
+   persist across a Live↔Analytics toggle.
+6. Orientation (`→`/`↓`) and Spacing (Compact/Spacious) toggles apply to
+   both modes identically, one shared `localStorage` key per pipeline (the
+   old Graph tab's separate orientation key no longer exists).
+7. If a pipeline has no stages, both modes render empty (no error).
 
 **Potential regressions to watch for**:
 - Adding the "graph" tab to `WORKSPACE_TABS` extends the tab bar — verify the

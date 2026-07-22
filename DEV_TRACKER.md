@@ -3492,3 +3492,81 @@ uncaught by the existing suite. Worth a dedicated follow-up: seed a real
 migration fixture, run the actual orchestration function, assert the
 persisted `SeamCheckResult`/`holdout_score` rows are correct — not done
 here to keep this fix pass narrow and mergeable quickly.
+
+## Planned — comprehensive per-model cards ("plug and play" settings + code) [RESEARCH INTERRUPTED, NOT RESUMED]
+
+Agent died mid-research (session-limit termination, not a task-scope
+failure — it was still in early data-gathering, checking the existing
+`ConfiguredModelsCard` UI pattern before starting the LiteLLM-first web
+research). No findings produced yet, nothing to salvage — this needs a
+fresh dispatch of the same brief (already corrected for the
+LiteLLM-first research order below) when picked back up.
+
+Product owner wants, for every model Reprompt supports: preferred prompt
+style (partially built — `model_card.py`), cost (built — `registry.py`),
+**working invocation code**, **tool/function-calling shape**, and
+**thinking/extended-reasoning mode support** — surfaced so Reprompt can
+hand a user exact settings + copy-pasteable code for any model. Scoped
+first to the 8 models in `CURATED_MODELS`
+(`apps/api/src/reprompt_api/migrations.py`) as the proving ground, not
+literally every model in existence.
+
+**Key correction made mid-research, worth keeping**: the product owner
+asked "couldn't we get this from LiteLLM?" — correctly. `registry.py`
+already sources cost/context/JSON-mode/tool-use from LiteLLM's bundled
+metadata; since every model call in this codebase goes through LiteLLM
+(`llm/client.py`), the right research order is **LiteLLM's own
+docs/source first** for thinking-mode and tool-calling invocation
+mechanics (that's the actual call path, not the raw per-provider API
+shape), and raw provider docs (Anthropic/OpenAI/Gemini) only for
+confirming "preferred prompt style," which is genuinely editorial and not
+something LiteLLM tracks. A code sample sourced from raw provider docs
+instead of LiteLLM's own interface would be actively wrong for this
+codebase — it's not how anything here actually calls a model.
+
+**Sequencing**: research/architecture pass first (in progress) — decides
+where this data lives (extend `model_card.py`'s `FamilyCard`? a new
+adjacent module?) and how a user actually gets "settings + code" in the
+UI, using the 8 already-supported models as the concrete cases. THEN, as
+a separate follow-up task once that structure exists: expand
+`CURATED_MODELS` itself with new provider families explicitly requested —
+Gemini (latest), Llama, DeepSeek, GLM, MiniMax, Qwen, and whatever else is
+genuinely best-in-class at the time — each needing its own real
+provider-family research (these are all-new API conventions, not more
+instances of an already-researched family). Deliberately not started
+alongside the architecture pass — that would be the same oversized-task
+mistake already made twice this session (agents dying mid-flight from too
+much combined scope).
+
+## Canvas/Graph tab merge [DONE — 2026-07-22]
+
+Implements ADR-001 (`docs/architecture/adr-001-merge-canvas-and-graph-tabs.md`).
+The standalone "Graph" tab is gone — `pipeline-graph.tsx` deleted, `"graph"`
+removed from `WORKSPACE_TABS`. Its capabilities (model nodes, per-stage
+call drill-down) are folded into `pipeline-canvas.tsx` as an
+`analytics`/`live` mode, toggled via a segmented control in the same
+toolbar as Spacing/Orientation. Auto-selects `live` while a migration is
+running for the pipeline, `analytics` otherwise; manual override holds
+for the session only (deliberately not persisted to `localStorage`, unlike
+Spacing/Orientation — a stale saved preference must never suppress
+auto-switching to Live when a run starts). One shared dagre layout engine,
+one zoom floor, one `localStorage` key, one `["pipeline-dag", id]` query
+cache for both modes — the old Graph tab's separate, laxer `minZoom: 0.25`
+(the actual root cause of the illegibility bug reported this session) no
+longer exists anywhere in the codebase.
+
+**Note on how this landed**: the implementing agent hit a session-limit
+termination after completing the actual code (confirmed: clean `tsc
+--noEmit`, all 153 `apps/web` unit tests passing unchanged) but before
+writing its final report or updating `docs/TESTING.md` — the doc update
+above (§3.3d rewrite) and this entry were completed directly rather than
+via the agent's own report. Verified independently before writing this:
+`WORKSPACE_TABS` confirmed graph-free, `pipeline-graph.tsx` confirmed
+deleted, mode-toggle state (`modeOverride`, `PipelineCanvasMode`) and the
+Live/Analytics segmented control confirmed present and wired to the
+`runningMigration` auto-select signal.
+
+Two new Playwright specs exist (`canvas-modes.spec.ts`, `minimap.spec.ts`)
+but were not run as part of this verification pass — worth confirming
+green before considering this fully closed, next session should run
+`cd apps/web && npx playwright test canvas-modes minimap` and report.

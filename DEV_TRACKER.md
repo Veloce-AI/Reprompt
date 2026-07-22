@@ -3566,7 +3566,8 @@ deleted, mode-toggle state (`modeOverride`, `PipelineCanvasMode`) and the
 Live/Analytics segmented control confirmed present and wired to the
 `runningMigration` auto-select signal.
 
-Two new Playwright specs exist (`canvas-modes.spec.ts`, `minimap.spec.ts`)
-but were not run as part of this verification pass — worth confirming
-green before considering this fully closed, next session should run
-`cd apps/web && npx playwright test canvas-modes minimap` and report.
+**Update**: `cd apps/web && npx playwright test canvas-modes minimap` run
+directly — **6/6 passed** (Analytics model nodes + call drill-down, Live
+mode coloring/substep/beam/minimap unchanged, mode auto-select/manual
+override/reload-refresh, minimap markers on a 50-stage pipeline, Map
+toggle). Fully verified, closed.

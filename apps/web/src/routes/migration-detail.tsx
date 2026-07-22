@@ -196,7 +196,7 @@ export default function MigrationDetail() {
           <h2 className="font-display text-18 font-semibold text-ink">Stage results</h2>
           {results.length > 0 && migration && ["completed", "stopped_early", "failed"].includes(migration.status) && (
             <Button
-              variant="outline"
+              variant="secondary"
               size="sm"
               onClick={() => downloadMigrationExport(pid, mid)}
             >

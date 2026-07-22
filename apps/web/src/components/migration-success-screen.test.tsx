@@ -158,6 +158,7 @@ function baseResults(): StageResultOut[] {
       winning_prompt: "Extract the total figure",
       winning_model: "claude-haiku-4-5",
       score: 0.92,
+      holdout_score: null,
     },
   ];
 }

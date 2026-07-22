@@ -2,9 +2,9 @@ import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   type AssertionOut,
-  type DagData,
+  type DagResponse,
   approveAssertion,
-  getDag,
+  getPipelineDag,
   listAssertions,
   mineContract,
   retireAssertion,
@@ -74,7 +74,7 @@ function StageAssertions({
     <div className="mb-8">
       <div className="mb-2 flex items-center justify-between">
         <h3 className="font-medium text-14 text-ink">{stageName}</h3>
-        <Button variant="outline" size="sm" onClick={handleMine} disabled={mining}>
+        <Button variant="secondary" size="sm" onClick={handleMine} disabled={mining}>
           {mining ? "Mining…" : "Mine contract"}
         </Button>
       </div>
@@ -129,7 +129,7 @@ function StageAssertions({
                     <div className="flex gap-2">
                       {a.status !== "approved" && (
                         <Button
-                          variant="outline"
+                          variant="secondary"
                           size="sm"
                           disabled={approveMut.isPending}
                           onClick={() => approveMut.mutate(a.id)}
@@ -139,7 +139,7 @@ function StageAssertions({
                       )}
                       {a.status !== "retired" && (
                         <Button
-                          variant="outline"
+                          variant="secondary"
                           size="sm"
                           disabled={retireMut.isPending}
                           onClick={() => retireMut.mutate(a.id)}
@@ -165,9 +165,9 @@ function StageAssertions({
 }
 
 export function ContractReviewPanel({ pipelineId }: { pipelineId: number }) {
-  const dagQuery = useQuery<DagData>({
+  const dagQuery = useQuery<DagResponse>({
     queryKey: ["pipeline-dag", pipelineId],
-    queryFn: () => getDag(pipelineId),
+    queryFn: () => getPipelineDag(pipelineId),
   });
 
   const stages = dagQuery.data?.stages ?? [];
@@ -193,7 +193,7 @@ export function ContractReviewPanel({ pipelineId }: { pipelineId: number }) {
         regex patterns) that the stage always produces. Approve invariants to promote them to
         executable assertions used in Phase 8 validation.
       </p>
-      {stages.map((stage) => (
+      {Object.values(stages).map((stage) => (
         <StageAssertions
           key={stage.id}
           pipelineId={pipelineId}

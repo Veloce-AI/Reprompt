@@ -17,8 +17,8 @@ export function Logo({ className }: { className?: string }) {
       {/* incoming beam - the original prompt */}
       <path d="M2 16 H8" stroke="var(--ink)" strokeWidth="2.5" strokeLinecap="round" />
       {/* two candidate arcs - the search, forming a lens */}
-      <path d="M8 16 Q 16 4 24 16" stroke="#8B5CF6" strokeWidth="2.25" strokeLinecap="round" />
-      <path d="M8 16 Q 16 28 24 16" stroke="#14B8A6" strokeWidth="2.25" strokeLinecap="round" />
+      <path d="M8 16 Q 16 4 24 16" stroke="var(--spectrum-violet)" strokeWidth="2.25" strokeLinecap="round" />
+      <path d="M8 16 Q 16 28 24 16" stroke="var(--spectrum-teal)" strokeWidth="2.25" strokeLinecap="round" />
       {/* resolved beam - the winner, emphasized in the brand accent */}
       <path d="M24 16 H30" stroke="var(--beam)" strokeWidth="3" strokeLinecap="round" />
     </svg>

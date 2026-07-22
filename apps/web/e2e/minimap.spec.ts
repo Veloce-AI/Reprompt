@@ -135,10 +135,17 @@ test.describe("Canvas MiniMap overview", () => {
     expect(fillCounts["rgb(227, 232, 240)"]).toBe(28); // --line, "idle"
 
     // Small corner overview, not a large fixture competing with the zoom
-    // controls (bottom-left) or layout toolbar (top-right).
+    // controls (bottom-left) or layout toolbar (top-right). Sized
+    // adaptively (computeMinimapSize in pipeline-canvas.tsx) rather than a
+    // fixed box — a 50-stage LINEAR chain in the default horizontal
+    // orientation is wide/shallow (one node's height, ~50 nodes' worth of
+    // width), so it's expected to hit the width cap while height stays
+    // near the floor, not the old hardcoded "always small" assumption a
+    // fixed-box minimap made.
     const svgBox = await page.locator(".react-flow__minimap-svg").boundingBox();
-    expect(svgBox?.width).toBeLessThanOrEqual(180);
-    expect(svgBox?.height).toBeLessThanOrEqual(140);
+    expect(svgBox?.width).toBeLessThanOrEqual(300);
+    expect(svgBox?.height).toBeLessThanOrEqual(170);
+    expect(svgBox?.height).toBeGreaterThanOrEqual(60);
   });
 
   test("the Map toggle hides and re-shows the minimap without affecting the canvas", async ({

@@ -7,6 +7,7 @@
 
 :root {
   /* ---- Color: light "laboratory" theme (default) ---- */
+  color-scheme: light;
   --paper: #FAFBFD;        /* cool near-white, main bg */
   --ink: #10182B;          /* deep blue-black, primary text */
   --ink-soft: #5A6478;     /* secondary text, labels */
@@ -91,6 +92,81 @@
 
   /* ---- ParityBeam geometry ---- */
   --beam-thickness: 3px;
+}
+
+/* ============================================================
+   Color: dark theme.
+
+   Same "Instrument Grade" identity (cool blue-tinted neutrals,
+   restrained palette, --beam accent), stepped for a dark surface
+   rather than a separate palette. Every token below is a direct
+   dark-mode counterpart of its :root definition above — nothing
+   new added to the vocabulary, no new variable names.
+
+   --spectrum-indigo/--focus-ring aren't redeclared here: both are
+   already `var(--beam)`, so they follow --beam's override for free
+   via normal CSS cascade/resolution. --spectrum-violet/--spectrum-teal
+   are also left unchanged - both were checked against the dark
+   --paper below and read at EQUAL OR BETTER contrast than they do
+   against the light --paper (violet 4.51:1 vs 4.09:1 light, teal
+   7.67:1 vs 2.40:1 light — see the theme-toggle work's validation
+   notes), so the brand's spectrum gradient stays one fixed signature
+   across both themes rather than shifting per theme.
+
+   --parity-pass/--parity-fail are also unchanged: run through
+   dataviz's scripts/validate_palette.js in --mode dark against this
+   file's own dark --paper, the existing light-mode hexes already
+   clear every check on their own. Only --parity-near needed a new
+   dark-tuned step (#D07C0C in place of #D97706) to clear the
+   normal-vision-floor check against --parity-fail; the full trio
+   (#0E9F6E / #D07C0C / #DC2626) passes ALL checks — Lightness band,
+   Chroma floor, CVD separation (worst adjacent ΔE 8.3), Normal-vision
+   floor (worst adjacent ΔE 15.6), Contrast vs surface (all ≥3:1).
+
+   Declared under BOTH the OS-preference media query and an explicit
+   [data-theme="dark"] attribute scope — the media query covers
+   "system" (the default, apps/web/src/lib/theme.ts leaves no
+   attribute set so this is the only rule that applies), the
+   attribute scope covers an explicit manual override, which must
+   win either direction (:not([data-theme="light"]) lets a light
+   override beat OS-dark; the direct attribute selector below applies
+   regardless of the OS setting). Same dual-scope pattern the dataviz
+   skill's own reference palette documents — keep both blocks in sync
+   if either changes.
+   ============================================================ */
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --paper: #0A0F1E;
+    --ink: #EEF1FA;
+    --ink-soft: #9AA3B8;
+    --line: #232B41;
+    --beam: #8C97FF;
+    --beam-soft: #161C33;
+
+    --parity-pass: #0E9F6E;
+    --parity-near: #D07C0C;
+    --parity-fail: #DC2626;
+
+    --shadow-popover: 0 4px 16px rgba(0, 0, 0, 0.45);
+  }
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --paper: #0A0F1E;
+  --ink: #EEF1FA;
+  --ink-soft: #9AA3B8;
+  --line: #232B41;
+  --beam: #8C97FF;
+  --beam-soft: #161C33;
+
+  --parity-pass: #0E9F6E;
+  --parity-near: #D07C0C;
+  --parity-fail: #DC2626;
+
+  --shadow-popover: 0 4px 16px rgba(0, 0, 0, 0.45);
 }
 
 @media (prefers-reduced-motion: reduce) {

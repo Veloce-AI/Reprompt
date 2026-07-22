@@ -3592,3 +3592,105 @@ directly — **6/6 passed** (Analytics model nodes + call drill-down, Live
 mode coloring/substep/beam/minimap unchanged, mode auto-select/manual
 override/reload-refresh, minimap markers on a 50-stage pipeline, Map
 toggle). Fully verified, closed.
+
+## Dark theme (system/light/dark) [DONE — 2026-07-22]
+
+Product owner asked for light/dark following the device's OS preference by
+default. `apps/web/src/styles/tokens.css` had zero dark-theme values
+before this — genuinely new work, not a bug fix.
+
+- **`apps/web/src/lib/theme.ts`** (new) — a small Zustand store,
+  `ThemeMode = "system" | "light" | "dark"`, persisted to `localStorage`.
+  "System" (default) removes any `data-theme` attribute so the browser's
+  own `prefers-color-scheme` media query decides — zero JS listener
+  needed, a live OS theme change is picked up for free. An explicit
+  override sets `data-theme="light"`/`"dark"` on `<html>`, which wins over
+  the OS setting via `tokens.css`'s paired
+  `@media(prefers-color-scheme:dark) :root:not([data-theme="light"])` /
+  `:root[data-theme="dark"]` blocks. `apps/web/index.html` carries a small
+  inline script mirroring the same read-and-apply logic so an explicit
+  override paints correctly on the very first frame, before React loads —
+  keep both in sync if this logic ever changes.
+- **`apps/web/src/components/theme-toggle.tsx`** (new) — three-way
+  segmented control (System/Light/Dark), same visual pattern as the Canvas
+  tab's Spacing/Orientation toggles. Wired into Settings
+  (`apps/web/src/routes/settings.tsx`).
+- **`tokens.css`**: every `:root` color token gets a direct dark-mode
+  counterpart — same "Instrument Grade" identity (cool blue-tinted
+  neutrals, `--beam` accent), stepped for a dark surface, no new token
+  names introduced. Validated with the `dataviz` skill's real
+  `validate_palette.js`, not by eye — `--parity-pass`/`--parity-fail`'s
+  existing hexes already cleared every check unchanged;
+  `--parity-near` needed a new dark-tuned step (`#D07C0C` in place of
+  `#D97706`) to clear the normal-vision-floor check against
+  `--parity-fail` in dark mode — full trio confirmed passing Lightness
+  band, Chroma floor, CVD separation (worst adjacent ΔE 8.3),
+  Normal-vision floor (worst adjacent ΔE 15.6), Contrast vs surface (all
+  ≥3:1). `--spectrum-violet`/`--spectrum-teal` (ParityBeam's gradient)
+  deliberately left unchanged — checked against the dark `--paper` and
+  read at equal-or-better contrast than against light `--paper`, so the
+  brand's spectrum signature stays one fixed identity across both themes
+  rather than shifting per-theme.
+
+**Note on how this landed**: this agent and the Canvas wide-pipeline fix
+below were both interrupted by a process-level session boundary before
+either could write its own final report or tests — recovered directly by
+inspecting the actual diff (both were code-complete and high quality;
+the dark-theme work even left its own validator results documented in
+`tokens.css`'s own comments) rather than re-dispatching from scratch. 4
+new tests added directly (`apps/web/src/lib/theme.test.ts`) covering
+default/persist/DOM-attribute/corrupted-storage-fallback behavior.
+
+**Verified**: `apps/web` **170 passed** (161 + 9 net new across both
+recovered features), clean `tsc --noEmit`. `packages/core`/`apps/api`
+untouched.
+
+## Canvas: adaptive minimap sizing for wide/tall single-rank graphs [DONE — 2026-07-22]
+
+Fixes the specific shape the product owner's screenshot showed: a wide
+single dagre rank (many `generate_final_response_*`-style stages side by
+side, few ranks deep) rendered in the minimap as, in their own words, "a
+single flat horizontal line of dashes" — no per-node markers
+distinguishable. Root cause, confirmed against a real Playwright render
+before the agent was interrupted (documented in the code's own comments,
+not reconstructed after the fact): the minimap's box was a fixed 160×120
+(a ~4:3 ratio), forcing React Flow's `<MiniMap>` to letterbox any graph
+whose real aspect ratio doesn't match — a wide graph's height goes almost
+entirely unused, shrinking node markers into an indistinguishable sliver.
+The same letterboxing happens for a tall narrow chain in the other axis
+(the shape the "Fix illegible canvas layout" entry above already fixed on
+the *main* canvas, not the minimap).
+
+**Fix**: `apps/web/src/components/pipeline-canvas.tsx`'s new
+`computeMinimapSize()` (exported specifically for direct unit testing —
+the interrupted agent had already added that export before being cut off,
+the test itself just hadn't been written yet, added directly here) sizes
+the minimap box to *contain* the real node bounding box (same idea as CSS
+`background-size: contain`) instead of forcing a fixed box and letting
+React Flow's internal letterboxing shrink whichever axis loses. `
+MINIMAP_MAX_W/H` (300×170) cap how large the corner fixture can get,
+`MINIMAP_MIN_W/H` (100×60) keep the minor axis from shrinking to a sliver
+at an extreme aspect ratio, `MINIMAP_MAX_SCALE` (0.5) stops a tiny 1-2
+node graph from being blown up past a sensible overview size.
+
+**Tests added** (`apps/web/src/components/pipeline-canvas.test.tsx`, new
+file — none existed for this component before): empty graph, wide
+single-rank (height stays usable), tall single-column (width stays
+usable), aspect-ratio preservation (contain, not stretch), tiny-graph
+scale cap. 5 tests.
+
+**Verified**: `apps/web` 170 passed total (shared count with the dark
+theme entry above — both landed in the same recovery pass). `tsc
+--noEmit` clean. `packages/core`/`apps/api` untouched.
+
+**e2e re-verification**: ran the existing `canvas-layout`/`canvas-modes`/
+`minimap` Playwright specs directly — 11/12 passed on the first run, one
+real finding: `minimap.spec.ts`'s 50-stage test had a hardcoded
+"minimap is always ≤180×140" assertion left over from the old fixed-box
+sizing. A 50-node LINEAR chain in the default horizontal orientation is
+actually wide/shallow (one node's height, ~50 nodes' worth of width), so
+adaptive sizing correctly hits the new 300px width cap while height stays
+near the 60px floor — exactly the intended behavior, not a regression.
+Updated the assertion to match the new adaptive caps (`≤300×170`, height
+`≥60`) rather than the stale fixed-box assumption. **12/12 passing after
+the fix.**

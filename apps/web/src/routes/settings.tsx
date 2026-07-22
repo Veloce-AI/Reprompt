@@ -18,6 +18,7 @@ import {
 } from "@/lib/api";
 import { AppShell } from "@/components/app-shell";
 import { DevSignInButton } from "@/components/dev-sign-in-button";
+import { ThemeToggle } from "@/components/theme-toggle";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -59,6 +60,12 @@ export default function Settings() {
           <h1 className="text-center font-display text-28 font-semibold leading-display text-ink">
             Settings
           </h1>
+          {/* Appearance is a local device preference, not workspace data - it
+              works (and matters) whether or not you're signed in, so it
+              renders above the sign-in gate rather than behind it. */}
+          <div className="mt-6">
+            <AppearanceCard />
+          </div>
           <Card className="mt-6">
             <CardHeader>
               <CardTitle>Sign in to unlock your workspace settings</CardTitle>
@@ -97,6 +104,7 @@ export default function Settings() {
       </p>
 
       <div className="mt-6 flex flex-col gap-6">
+        <AppearanceCard />
         <WorkspaceNameCard />
         <ApiKeysCard />
         <ConfiguredModelsCard />
@@ -121,6 +129,23 @@ function SessionExpiredNotice() {
       </Link>
       .
     </p>
+  );
+}
+
+function AppearanceCard() {
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Appearance</CardTitle>
+        <CardDescription>
+          Follows your device&apos;s light/dark setting by default. Override it here — your
+          choice is saved on this device.
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        <ThemeToggle />
+      </CardContent>
+    </Card>
   );
 }
 

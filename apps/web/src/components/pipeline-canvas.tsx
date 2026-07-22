@@ -414,6 +414,15 @@ export function PipelineCanvas({
     highlightedModel,
   ]);
 
+  // Adaptive minimap box — see MINIMAP_MAX_W/H's own comment below for why a
+  // fixed 160x120 box (this canvas's pre-existing default) fails a wide
+  // single-rank DAG (product owner report: 6 nodes named
+  // `generate_final_response_*` filling the whole viewport width, minimap
+  // rendering as "a single flat horizontal line of dashes with no visible
+  // node markers"). Computed from the same `nodes` array MiniMap itself
+  // renders from, so it always matches what's actually on screen.
+  const minimapSize = useMemo(() => computeMinimapSize(nodes), [nodes]);
+
   if (isLoading) {
     return (
       <p className="p-8 text-14 text-ink-soft" role="status">
@@ -468,9 +477,11 @@ export function PipelineCanvas({
             // React Flow's own default (200x150) reads as a fairly large
             // fixed fixture next to the small zoom controls and toolbar
             // already in this canvas's corners - `style.width`/`.height`
-            // (not just CSS) drive the minimap's actual SVG pixel size, so
-            // this shrinks it to a genuinely small corner overview instead.
-            style={{ width: 160, height: 120 }}
+            // (not just CSS) drive the minimap's actual SVG pixel size.
+            // Sized adaptively per `computeMinimapSize` below (was a fixed
+            // 160x120 box) so a wide or tall graph's aspect ratio isn't
+            // letterboxed down to indistinguishable node markers.
+            style={{ width: minimapSize.width, height: minimapSize.height }}
             nodeColor={minimapNodeColor}
             nodeStrokeColor="var(--paper)"
             nodeStrokeWidth={2}
@@ -591,6 +602,88 @@ function minimapNodeColor(node: PipelineFlowNode): string {
   if (node.type !== "stage") return "var(--ink-soft)";
   const runState = node.data.runState;
   return runState ? MINIMAP_NODE_COLOR[runState] : "var(--ink-soft)";
+}
+
+// ---- Adaptive minimap sizing ----
+//
+// Root cause (confirmed via Playwright against a real render, not guessed):
+// a fixed-aspect minimap box (previously always 160x120, a 4:3-ish ratio)
+// forces React Flow's <MiniMap> to scale the *whole graph's bounding box*
+// down by whichever axis is more constrained, to avoid distorting node
+// shapes. For a WIDE single dagre rank (many stages side by side, few ranks
+// deep - e.g. a fan-out of "generate_final_response_*" stages, or any DAG
+// whose widest rank ends up on the screen's horizontal axis under the
+// current orientation), the bounding box is many times wider than it is
+// tall. Fitting that into a 160x120 box means the box's width governs the
+// scale and its height goes almost entirely unused (letterboxed) - node
+// markers end up a few px wide with a couple px of gap between them,
+// visually merging into what the product owner accurately described as "a
+// single flat horizontal line of dashes." The same letterboxing happens in
+// the other axis for a TALL narrow chain (the shape "Canvas: legible zoom
+// floor + spacing picker" already fixed on the main canvas) - a fixed box
+// rarely matches an arbitrary DAG's real aspect ratio.
+//
+// The fix: size the minimap box to *contain* the real node bounding box
+// (same idea as CSS `background-size: contain` - scale to fit both max
+// dimensions, preserving aspect ratio, so neither axis is wasted) instead
+// of forcing a fixed box and letting React Flow do the letterboxing
+// internally. `MINIMAP_MAX_W`/`MINIMAP_MAX_H` cap how large the corner
+// fixture can get (still reads as a small overview map, not a second
+// canvas) and `MINIMAP_MIN_W`/`MINIMAP_MIN_H` keep the minor axis from
+// shrinking to a sliver for a very extreme aspect ratio. `MAX_SCALE` stops
+// a tiny graph (1-2 nodes) from being blown up past a sensible "overview"
+// size - a minimap should never render content larger than a true overview
+// would.
+const MINIMAP_MAX_W = 300;
+const MINIMAP_MAX_H = 170;
+const MINIMAP_MIN_W = 100;
+const MINIMAP_MIN_H = 60;
+const MINIMAP_MAX_SCALE = 0.5;
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(Math.max(value, min), max);
+}
+
+/** Real bounding box of every node currently on the canvas, in the same
+ * coordinate space as `node.position` (dagre/layout units, not screen
+ * pixels) - mirrors what React Flow's own `getNodesBounds` computes
+ * internally for `fitView`/`<MiniMap>`, but exposed here so the minimap's
+ * *container* size can be derived from it too, not just its content. Falls
+ * back to each node type's own known card size (`initialWidth`/
+ * `initialHeight`, the same size hint set on every node object above so
+ * `<MiniMap>` can render markers at all - see that field's own comment) -
+ * every node here always carries one, so the fallback never actually fires
+ * outside a defensive edge case. */
+function nodesBBox(nodes: PipelineFlowNode[]): { width: number; height: number } {
+  if (nodes.length === 0) return { width: 0, height: 0 };
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (const node of nodes) {
+    const w = node.initialWidth ?? node.width ?? STAGE_NODE_WIDTH;
+    const h = node.initialHeight ?? node.height ?? STAGE_NODE_HEIGHT;
+    minX = Math.min(minX, node.position.x);
+    minY = Math.min(minY, node.position.y);
+    maxX = Math.max(maxX, node.position.x + w);
+    maxY = Math.max(maxY, node.position.y + h);
+  }
+  return { width: maxX - minX, height: maxY - minY };
+}
+
+/** The minimap's own `style.width`/`.height` - see the block comment above
+ * for the "contain, don't letterbox" reasoning. Exported for the unit test
+ * covering the sizing math directly (no React/DOM needed for that part). */
+export function computeMinimapSize(nodes: PipelineFlowNode[]): { width: number; height: number } {
+  const bbox = nodesBBox(nodes);
+  if (bbox.width <= 0 || bbox.height <= 0) {
+    return { width: MINIMAP_MIN_W, height: MINIMAP_MIN_H };
+  }
+  const scale = Math.min(MINIMAP_MAX_W / bbox.width, MINIMAP_MAX_H / bbox.height, MINIMAP_MAX_SCALE);
+  return {
+    width: clamp(bbox.width * scale, MINIMAP_MIN_W, MINIMAP_MAX_W),
+    height: clamp(bbox.height * scale, MINIMAP_MIN_H, MINIMAP_MAX_H),
+  };
 }
 
 /** Re-run fitView whenever the layout choice, mode, or the node count

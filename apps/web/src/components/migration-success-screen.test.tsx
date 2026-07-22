@@ -91,6 +91,22 @@ function renderScreen(migration: MigrationOut) {
   );
 }
 
+describe("MigrationSuccessScreen — pre-start Prism reference", () => {
+  it("mentions Prism and offers the 'How Prism works' explainer before the migration is started", async () => {
+    vi.mocked(getPipelineDag).mockResolvedValue(baseDag());
+
+    renderScreen(baseMigration({ status: "pending" }));
+
+    expect(await screen.findByText("Prism", { selector: "span" })).toBeInTheDocument();
+    const trigger = screen.getByText("How Prism works");
+    expect(trigger).toBeInTheDocument();
+
+    fireEvent.click(trigger);
+    const dialog = await screen.findByRole("dialog");
+    expect(dialog).toHaveTextContent("Prism is a self-evolving prompt optimizer");
+  });
+});
+
 describe("MigrationSuccessScreen — activity log + live reasoning feed", () => {
   it("renders the activity log with stage names and detail/phase labels, newest at the bottom", async () => {
     vi.mocked(getMigrationStatus).mockResolvedValue(baseMigration());

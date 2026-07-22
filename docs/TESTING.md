@@ -506,27 +506,42 @@ checks on that same wide shape).
    actually apply to that specific model (e.g. "xml_wrap_sections" for a
    Claude target, "terseify_if_small" only for a nano/mini/haiku-class
    model) — see `DEV_TRACKER.md`'s "Phase D(a)".
+1a. Directly under the "Pick a target model..." intro line on this same
+   step-1 screen: a one-line Prism mention — "Running this migration hands
+   each stage's prompt to **Prism** — a self-evolving prompt optimizer" —
+   with the same **"How Prism works"** link next to it (added so Prism is
+   visible before the user has even picked a model, not only after a
+   migration is already running — see `DEV_TRACKER.md`). Click the link →
+   the same drawer described in step 5b below opens; Escape or the close
+   (X) button dismisses it. `apps/web/src/components/new-migration-wizard.tsx`.
 2. Set a bulk default model, override one stage individually.
 3. Step 2: set a budget and parity threshold (default 95%).
 4. Step 3: confirm screen shows the full config correctly, including the
    per-stage override.
 5. Click "Run migration" → **expected**: a real `Migration` row is
-   created and the optimizer actually runs (M3/M4 wiring — Phase 4/4b —
-   landed after this section was first written; the "no fake progress bar"
-   caveat that used to live here is stale and superseded by the live view
-   below). Needs a real BYOK key configured — see `README.md`'s "Getting
-   an AI model API key" section.
-5a. Once started, a subtitle line appears above the run bar: "Optimizing
-   with **Prism** — a self-evolving prompt optimizer", with a **"How Prism
-   works"** text link next to it. Click the link → a drawer opens (same
-   drawer primitive used elsewhere) titled "How Prism works" with two
-   short factual paragraphs on the actual loop (judge-aware critique, up
-   to 3 refine rounds, budget-bounded, per-stage) and one paragraph on
-   what it doesn't do — explicitly states Prism doesn't carry learnings
-   between separate migrations, each migration evolves its own prompt
-   from scratch. Press Escape or click the drawer's close (X) button to
-   dismiss it — see `apps/web/src/components/prism-explainer.tsx` and the
-   dated "Branding/copy pass" section in `DEV_TRACKER.md`.
+   created (status `pending`) and the screen switches to the "Migration
+   saved" not-started view — **"Migration #N created"** with a "Start
+   migration" button (M3/M4 wiring — Phase 4/4b — landed after this
+   section was first written; the "no fake progress bar" caveat that used
+   to live here is stale and superseded by the live view below).
+5a. On this not-started view, below the "Migration saved..." line: the
+   same one-line Prism mention as step 1a — "Starting this runs **Prism**
+   — a self-evolving prompt optimizer" — with its own **"How Prism
+   works"** link, so a user sees what they're about to run before clicking
+   "Start migration". `apps/web/src/components/migration-success-screen.tsx`.
+5b. Click "Start migration". Needs a real BYOK key configured — see
+   `README.md`'s "Getting an AI model API key" section. Once started, a
+   subtitle line appears above the run bar: "Optimizing with **Prism** — a
+   self-evolving prompt optimizer", with a **"How Prism works"** text link
+   next to it. Click the link → a drawer opens (same drawer primitive used
+   elsewhere) titled "How Prism works" with two short factual paragraphs
+   on the actual loop (judge-aware critique, up to 3 refine rounds,
+   budget-bounded, per-stage) and one paragraph on what it doesn't do —
+   explicitly states Prism doesn't carry learnings between separate
+   migrations, each migration evolves its own prompt from scratch. Press
+   Escape or click the drawer's close (X) button to dismiss it — see
+   `apps/web/src/components/prism-explainer.tsx` and the dated
+   "Branding/copy pass" section in `DEV_TRACKER.md`.
 6. While it's running: the pipeline DAG canvas appears live, with the
    currently-optimizing stage's node pulsing indigo (Phase 2 — "Live
    DAG/run status view") and, directly under its name, a small sub-step
@@ -638,7 +653,7 @@ the full design (`apps/web/src/routes/pipeline-workspace.tsx`'s
 `CanvasTabContent`, sharing `apps/web/src/hooks/use-migration-status-poll.ts`
 with `MigrationSuccessScreen`'s own run view).
 
-1. Start a migration from the Migrations tab (§3.3, steps 1–5) so it's
+1. Start a migration from the Migrations tab (§3.3, steps 1–5b) so it's
    actually `running`, then click the **Canvas** tab (`?tab=canvas`) while
    it's still going.
 2. **Expected**: within a couple of seconds, a small pill appears just
@@ -706,6 +721,35 @@ cache — there is no longer a second, independently-drifting DAG renderer.
 - `StageInfo` now has `trace_count` and `total_cost_usd` — if the backend is
   not running the latest code, the graph still renders (fields default to 0 /
   null via Pydantic defaults), but stats will be blank.
+
+### 3.3e Contract Mining (Contracts tab, Phase 5)
+
+No walkthrough existed for this tab before now (Phase 5 — see
+`DEV_TRACKER.md` — shipped without one); this closes that gap and covers
+the "(i)" explainer icon added next to the heading.
+
+1. From the workspace, click the "Contracts" tab (`?tab=contracts`) → a
+   **"Contract Mining"** heading, with a small **"(i)" info icon** right
+   next to it. Hover (or click, or Tab-focus) the icon → a small popover
+   appears below it with a plain-language explanation: "Looks at real
+   outputs from this stage and finds what never changes across them
+   (e.g. 'the flag is always low/medium/high, always cites a number').
+   Those become an executable contract a migrated prompt must satisfy —
+   instead of just matching your original wording." Mouse-leave (or
+   click again) closes it. `apps/web/src/components/ui/info-tooltip.tsx`,
+   used from `apps/web/src/components/contract-review-panel.tsx`.
+2. The heading + info icon render in every state of this tab — while
+   stages are still loading, on a pipeline with zero stages ("No stages
+   found — import a pipeline first."), and once stages are listed — not
+   just the happy path.
+3. Per stage: click **"Mine contract"** → runs the two-axis miner against
+   existing traces (no LLM calls for Axis A) and a table of extracted
+   invariants (`required_keys`/`enum_values`/`regex`) appears, each with a
+   kind, plain-language description, confidence, and status badge.
+4. **Approve** an invariant → status badge flips to "approved" (promotes
+   it to an executable assertion used in Phase 8 validation). **Retire**
+   → status flips to "retired". Both re-fetch the table via the existing
+   assertions query, no page reload needed.
 
 ### 3.4 Auth + Settings (M5)
 

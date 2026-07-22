@@ -12,6 +12,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { InfoTooltip } from "@/components/ui/info-tooltip";
 import {
   Table,
   TableBody,
@@ -170,37 +171,54 @@ export function ContractReviewPanel({ pipelineId }: { pipelineId: number }) {
     queryFn: () => getPipelineDag(pipelineId),
   });
 
-  const stages = dagQuery.data?.stages ?? [];
-
-  if (dagQuery.isLoading) {
-    return <p className="text-14 text-ink-soft" role="status">Loading stages…</p>;
-  }
-
-  if (stages.length === 0) {
-    return (
-      <Card>
-        <CardContent className="p-8 text-center text-14 text-ink-soft">
-          No stages found — import a pipeline first.
-        </CardContent>
-      </Card>
-    );
-  }
+  // Real array (not the raw `Record<string, StageInfo>`) so `.length` is an
+  // actual number — `dagQuery.data?.stages ?? []`'s `Record` branch has no
+  // runtime `.length` (TS only thought it did via the index signature),
+  // which meant a genuinely empty pipeline never hit the `=== 0` check
+  // below and rendered nothing instead of the "No stages found" message.
+  const stages = Object.values(dagQuery.data?.stages ?? {});
 
   return (
     <div>
-      <p className="mb-6 text-13 text-ink-soft">
-        Mine contracts from existing traces to extract invariants (required keys, enum values,
-        regex patterns) that the stage always produces. Approve invariants to promote them to
-        executable assertions used in Phase 8 validation.
-      </p>
-      {Object.values(stages).map((stage) => (
-        <StageAssertions
-          key={stage.id}
-          pipelineId={pipelineId}
-          stageId={stage.id}
-          stageName={stage.name}
-        />
-      ))}
+      <div className="mb-2 flex items-center gap-1.5">
+        <h2 className="font-display text-22 font-semibold text-ink">Contract Mining</h2>
+        <InfoTooltip label="What is contract mining?">
+          Looks at real outputs from this stage and finds what never changes across them (e.g.
+          "the flag is always low/medium/high, always cites a number"). Those become an
+          executable contract a migrated prompt must satisfy — instead of just matching your
+          original wording.
+        </InfoTooltip>
+      </div>
+
+      {dagQuery.isLoading && (
+        <p className="text-14 text-ink-soft" role="status">Loading stages…</p>
+      )}
+
+      {!dagQuery.isLoading && stages.length === 0 && (
+        <Card>
+          <CardContent className="p-8 text-center text-14 text-ink-soft">
+            No stages found — import a pipeline first.
+          </CardContent>
+        </Card>
+      )}
+
+      {!dagQuery.isLoading && stages.length > 0 && (
+        <>
+          <p className="mb-6 text-13 text-ink-soft">
+            Mine contracts from existing traces to extract invariants (required keys, enum
+            values, regex patterns) that the stage always produces. Approve invariants to
+            promote them to executable assertions used in Phase 8 validation.
+          </p>
+          {stages.map((stage) => (
+            <StageAssertions
+              key={stage.id}
+              pipelineId={pipelineId}
+              stageId={stage.id}
+              stageName={stage.name}
+            />
+          ))}
+        </>
+      )}
     </div>
   );
 }

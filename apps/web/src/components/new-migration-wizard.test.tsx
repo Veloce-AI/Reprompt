@@ -134,6 +134,22 @@ beforeEach(() => {
   vi.mocked(listApiKeys).mockResolvedValue([keyFor("openai", 1), keyFor("anthropic", 2)]);
 });
 
+describe("NewMigrationWizard — pre-start Prism reference", () => {
+  it("mentions Prism and offers the 'How Prism works' explainer before a migration is created", async () => {
+    vi.mocked(getPipelineDag).mockResolvedValue(baseDag());
+    vi.mocked(listModelOptions).mockResolvedValue(baseModels());
+
+    renderWizard(vi.fn());
+
+    expect(await screen.findByText("Prism", { selector: "span" })).toBeInTheDocument();
+    const trigger = screen.getByText("How Prism works");
+
+    fireEvent.click(trigger);
+    const dialog = await screen.findByRole("dialog");
+    expect(dialog).toHaveTextContent("Prism is a self-evolving prompt optimizer");
+  });
+});
+
 describe("NewMigrationWizard", () => {
   it("disables Continue until at least one model is checked", async () => {
     vi.mocked(getPipelineDag).mockResolvedValue(baseDag());

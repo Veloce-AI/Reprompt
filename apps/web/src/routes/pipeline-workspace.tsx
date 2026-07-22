@@ -225,7 +225,6 @@ export default function PipelineWorkspace() {
           )}
           {tab === "contracts" && (
             <div className="p-8">
-              <h2 className="mb-2 font-display text-22 font-semibold text-ink">Contract Mining</h2>
               <ContractReviewPanel pipelineId={pid} />
             </div>
           )}

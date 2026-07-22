@@ -16,6 +16,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { AddApiKeyDrawer } from "@/components/add-api-key-drawer";
+import { PrismExplainer } from "@/components/prism-explainer";
 
 type WizardStep = "target-model" | "budget" | "confirm";
 
@@ -216,6 +217,13 @@ export function NewMigrationWizard({
       <p className="mt-1 text-14 text-ink-soft">
         Pick a target model, set a budget and parity threshold, then run the migration.
       </p>
+      <div className="mt-2 flex items-center gap-2">
+        <p className="text-12 text-ink-soft">
+          Running this migration hands each stage's prompt to{" "}
+          <span className="font-medium text-ink">Prism</span> — a self-evolving prompt optimizer
+        </p>
+        <PrismExplainer />
+      </div>
 
       {keyDrawerProvider != null && (
         <AddApiKeyDrawer

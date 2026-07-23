@@ -586,6 +586,7 @@ export interface ConfiguredModel {
   supports_function_calling: boolean;
   requires_api_key: boolean;
   model_card: ModelCardInfo;
+  unlocked: boolean;
 }
 
 export function listConfiguredModels(): Promise<ConfiguredModel[]> {

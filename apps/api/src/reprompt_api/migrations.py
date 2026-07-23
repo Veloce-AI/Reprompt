@@ -261,6 +261,15 @@ def _to_option(model: str) -> ModelOption:
     )
 
 
+def _configured_providers(db: Session, workspace: models.Workspace) -> set[str | None]:
+    return {
+        row.provider
+        for row in db.scalars(
+            select(models.WorkspaceApiKey).where(models.WorkspaceApiKey.workspace_id == workspace.id)
+        ).all()
+    }
+
+
 def get_available_models(db: Session, workspace: models.Workspace) -> list[ModelOption]:
     """Every curated model ``workspace`` can actually target right now:
     every model that needs no API key (local/self-hosted, e.g. Ollama) plus
@@ -270,19 +279,36 @@ def get_available_models(db: Session, workspace: models.Workspace) -> list[Model
     now calls this) so a second caller — ``reprompt_api.rubrics``'s
     auto-select-a-model-when-none-given path — can compute the same
     "what can this workspace actually use" set without duplicating the
-    BYOK-provider-intersection logic or importing a route handler.
+    BYOK-provider-intersection logic or importing a route handler. Used
+    anywhere a *locked* model must not be selectable (migration wizard's
+    picker, rubric auto-select) — see
+    :func:`list_curated_models_with_lock_state` for the visibility-only
+    counterpart that shows locked models too.
     """
-    configured_providers = {
-        row.provider
-        for row in db.scalars(
-            select(models.WorkspaceApiKey).where(models.WorkspaceApiKey.workspace_id == workspace.id)
-        ).all()
-    }
+    configured_providers = _configured_providers(db, workspace)
     options = [_to_option(model) for model in CURATED_MODELS]
     return [
         option
         for option in options
         if not option.requires_api_key or option.provider in configured_providers
+    ]
+
+
+def list_curated_models_with_lock_state(
+    db: Session, workspace: models.Workspace
+) -> list[tuple[ModelOption, bool]]:
+    """Every curated model, paired with whether ``workspace`` can use it
+    right now — unlike :func:`get_available_models` (which drops locked
+    models entirely, correct for a picker where a locked model must not be
+    selectable), this is for a *visibility* surface: Settings' "Configured
+    models" card, where the whole point is showing a curated-but-locked
+    model (e.g. an NVIDIA NIM or OpenRouter entry with no key added yet)
+    and what unlocks it, instead of making it look like it doesn't exist.
+    """
+    configured_providers = _configured_providers(db, workspace)
+    return [
+        (option, not option.requires_api_key or option.provider in configured_providers)
+        for option in (_to_option(model) for model in CURATED_MODELS)
     ]
 
 

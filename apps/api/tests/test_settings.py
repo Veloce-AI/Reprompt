@@ -396,17 +396,27 @@ def test_add_api_key_fails_loudly_when_encryption_key_not_configured(
 # ---------------------------------------------------------------------------
 
 
-def test_list_configured_models_shows_only_no_key_models_before_any_byok_key(
+def test_list_configured_models_shows_every_curated_model_locked_or_not(
     client: TestClient,
 ) -> None:
+    # Changed 2026-07-23 (see DEV_TRACKER.md): this endpoint used to filter
+    # out locked models entirely - now it returns the full curated catalog
+    # with an `unlocked` flag per entry, so a user can see what a new BYOK
+    # key would unlock instead of the model looking like it doesn't exist.
     token, _ = _sign_in(client, "nomodels@example.com")
     response = client.get("/settings/models", headers=_auth_headers(token))
     assert response.status_code == 200, response.text
     body = response.json()
+    models_out = {entry["model"]: entry for entry in body}
     assert len(body) > 0
-    # Every entry returned before any key is added must be a no-key-required
-    # (e.g. local/self-hosted Ollama) model.
-    assert all(entry["requires_api_key"] is False for entry in body)
+    # Every no-key-required (local/self-hosted) model is unlocked...
+    assert all(entry["unlocked"] for entry in body if not entry["requires_api_key"])
+    # ...and every key-requiring model is locked, since no key exists yet.
+    assert all(not entry["unlocked"] for entry in body if entry["requires_api_key"])
+    # Locked models are still present, not filtered out.
+    assert "gpt-4o" in models_out
+    assert models_out["gpt-4o"]["requires_api_key"] is True
+    assert models_out["gpt-4o"]["unlocked"] is False
 
 
 def test_list_configured_models_includes_provider_after_byok_key_added(
@@ -424,6 +434,7 @@ def test_list_configured_models_includes_provider_after_byok_key_added(
     assert "gpt-4o" in models_out
     assert "gpt-4o-mini" in models_out
     assert models_out["gpt-4o"]["requires_api_key"] is True
+    assert models_out["gpt-4o"]["unlocked"] is True
 
 
 def test_list_configured_models_includes_model_card_info(client: TestClient) -> None:
@@ -437,7 +448,7 @@ def test_list_configured_models_includes_model_card_info(client: TestClient) -> 
     assert len(ollama_entry["model_card"]["rules"]) > 0
 
 
-def test_list_configured_models_only_shows_this_workspaces_keys(client: TestClient) -> None:
+def test_list_configured_models_only_unlocks_this_workspaces_keys(client: TestClient) -> None:
     alice_token, _ = _sign_in(client, "alice2@example.com")
     bob_token, _ = _sign_in(client, "bob2@example.com")
 
@@ -447,17 +458,20 @@ def test_list_configured_models_only_shows_this_workspaces_keys(client: TestClie
         headers=_auth_headers(alice_token),
     )
 
+    # gpt-4o is present for both (curated models are always visible - see
+    # test_list_configured_models_shows_every_curated_model_locked_or_not),
+    # but only Alice's workspace has it unlocked.
     bob_models = {
-        entry["model"]
+        entry["model"]: entry
         for entry in client.get("/settings/models", headers=_auth_headers(bob_token)).json()
     }
-    assert "gpt-4o" not in bob_models
+    assert bob_models["gpt-4o"]["unlocked"] is False
 
     alice_models = {
-        entry["model"]
+        entry["model"]: entry
         for entry in client.get("/settings/models", headers=_auth_headers(alice_token)).json()
     }
-    assert "gpt-4o" in alice_models
+    assert alice_models["gpt-4o"]["unlocked"] is True
 
 
 # ---------------------------------------------------------------------------

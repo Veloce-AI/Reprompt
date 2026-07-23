@@ -150,4 +150,8 @@ def test_get_model_card_code_sample_uses_the_actual_model_string() -> None:
     assert response.status_code == 200
     data = response.json()
     assert '"gpt-4o-mini"' in data["code_sample"]
-    assert "from reprompt_core.llm.client import complete" in data["code_sample"]
+    # reprompt_core is this project's own internal package - the sample
+    # must be directly usable by an external caller (pip install litellm),
+    # not reference a package only Reprompt's own codebase has installed.
+    assert "import litellm" in data["code_sample"]
+    assert "reprompt_core" not in data["code_sample"]

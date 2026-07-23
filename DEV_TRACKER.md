@@ -4013,3 +4013,81 @@ Configured Models card refetches automatically and renders gpt-4o's real
 cost/family/rules/code-sample, expanded the code sample and used the copy
 button, confirmed `ollama/qwen2.5:14b` (the pathological case) now loads
 in the same page load instead of stalling it.
+
+## Real-usage fixes: navigation, theme placement, sample code, locked models [DONE — 2026-07-23]
+
+A round of concrete issues found by actually using the running app (not
+reading a diff), across several screens at once.
+
+**Overflow bug in the wizard's model picker.** `new-migration-wizard.tsx`'s
+transform-rule `<li>` was `flex items-start gap-1` with a plain `<span>`
+holding the (sometimes long) rule description — no `min-w-0`/`flex-1` on
+that span, so a flex child with no width constraint doesn't wrap, it
+overflows past the grid cell instead. Same class of bug as the ParityBeam/
+hero-label overlaps fixed earlier this session (something rendered on/past
+its container instead of clear of it). Fixed by giving the description
+span `min-w-0 flex-1`.
+
+**Theme toggle relocated out of Settings.** Was buried in a Settings >
+Appearance card; moved to a persistent bar at the top of every screen
+(`app-shell.tsx`). First attempt used `fixed right-4 top-4` (a floating
+overlay) — this visibly collided with a screen's own top-right controls
+(e.g. Contracts' "Mine contract" button), since a fixed element doesn't
+reserve layout space, it just paints over whatever's there. Fixed by
+giving `main` a real `flex flex-col` structure: a shrink-0 bar (border-b,
+justify-end) holding `ThemeToggle`, then the actual scrollable content
+below it — every screen's content now starts below the bar, not
+underneath it. `AppearanceCard` removed from `settings.tsx` entirely
+(the toggle itself, `theme-toggle.tsx`, is unchanged — only where it's
+mounted moved).
+
+**Landing page unreachable once signed in.** `router.tsx`'s `landingRoute`
+had a `beforeLoad` that redirected any signed-in visitor straight to
+`/pipelines` — by design originally, but in practice there was then no way
+to see marketing content, or get back to it, without signing out.
+Redirect removed entirely: `/` always renders `Landing` regardless of
+session state. `landing.tsx`'s CTAs (header, hero, closing section) now
+swap to "Go to Pipelines" → `/pipelines` when `getSessionToken()` is
+truthy, instead of always pointing at `/login`. `app-shell.tsx`'s logo
+link changed from `/pipelines` to `/` — it's now the one way back to the
+landing page from inside the signed-in app (the "Pipelines" nav item
+stays the actual in-app home).
+
+**Code sample referenced our own internal package.** `code_sample.py`
+generated `from reprompt_core.llm.client import complete` —
+`reprompt_core` is this project's own internal package; a Reprompt user's
+codebase has no reason to have it installed and no way to actually run
+that sample. Changed to generate plain `import litellm` /
+`litellm.completion(...)` — the exact library `complete()` is itself a
+thin wrapper around, and installable with nothing more than
+`pip install litellm`. Every curated model is reachable this way.
+
+**Settings hid locked models entirely — now shows them, matching the
+wizard's own pattern.** `GET /settings/models` used to call
+`get_available_models()`, which filters a locked model out completely —
+so a user with no BYOK keys configured couldn't tell NVIDIA NIM/OpenRouter
+(or any other curated provider) were supported at all. The migration
+wizard's picker (`GET /pipelines/{id}/models`) never had this problem —
+it always returned every curated model and computed lock state
+client-side against `listApiKeys`. Rather than duplicate that logic,
+added `list_curated_models_with_lock_state()` (`migrations.py`, shares
+`_configured_providers()` with `get_available_models` rather than
+recomputing it) and a new `unlocked: bool` field on `ConfiguredModelOut`.
+`get_available_models`/`GET /pipelines/{id}/models` are deliberately
+unchanged — a locked model must still never be *selectable* as a
+migration target, that endpoint's whole job is "usable models only".
+`settings.tsx`'s Configured Models card now renders every curated model
+(dimmed + "API key required" + inline "Add API key" when locked, reusing
+`AddApiKeyDrawer` — the exact same component/queries the wizard already
+uses, so unlocking from Settings updates the wizard and vice versa).
+
+**Verified**: `apps/web` `tsc --noEmit` clean, full suite 178/178 (new:
+locked-model-with-inline-unlock test in `settings.test.tsx`, signed-in-CTA
+test in `landing.test.tsx`). `apps/api` full suite 204/204 (two
+`test_settings.py` tests updated from "locked models are absent" to
+"locked models are present with `unlocked: false`"). `packages/core` full
+suite 361/361, 2 skipped (`test_code_sample.py` updated: asserts plain
+`litellm.completion()` output instead of the old internal-package import,
+purity check now verifies via AST imports rather than a raw substring
+search now that the generated *text* legitimately contains the string
+"litellm.completion").

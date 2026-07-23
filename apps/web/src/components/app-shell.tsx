@@ -2,6 +2,7 @@ import { Link, useRouterState } from "@tanstack/react-router";
 import { Workflow, Settings as SettingsIcon, FileText } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Logo } from "@/components/logo";
+import { ThemeToggle } from "@/components/theme-toggle";
 
 interface NavItem {
   to: string;
@@ -32,8 +33,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         style={{ width: "var(--nav-rail-width)" }}
         aria-label="Primary"
       >
+        {/* Logo goes to the marketing landing page, not Pipelines - the
+            "Pipelines" nav item below is the actual in-app home; this is
+            the one way back to "/" without signing out. */}
         <Link
-          to="/pipelines"
+          to="/"
           className="mb-8 flex flex-col items-center gap-2 px-6 font-display text-20 font-semibold leading-display text-ink"
         >
           <Logo className="h-8 w-8" />
@@ -61,8 +65,18 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           })}
         </div>
       </nav>
-      <main className="flex-1 overflow-y-auto">
-        <div className="mx-auto max-w-[1440px]">{children}</div>
+      <main className="flex flex-1 flex-col overflow-hidden">
+        {/* Reserves real layout space for the theme toggle (rather than a
+            fixed/floating overlay) so it never sits on top of a screen's
+            own top-right controls (e.g. Contracts' "Mine contract"
+            button) - every screen's content starts below this bar, not
+            underneath it. */}
+        <div className="flex shrink-0 justify-end border-b border-line px-8 py-3">
+          <ThemeToggle />
+        </div>
+        <div className="flex-1 overflow-y-auto">
+          <div className="mx-auto max-w-[1440px]">{children}</div>
+        </div>
       </main>
     </div>
   );

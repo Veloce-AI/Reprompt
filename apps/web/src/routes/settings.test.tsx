@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import { fireEvent } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
@@ -77,6 +77,7 @@ function baseConfiguredModel(overrides: Partial<ConfiguredModel> = {}): Configur
     supports_json_mode: true,
     supports_function_calling: true,
     requires_api_key: false,
+    unlocked: true,
     model_card: {
       family: "llama",
       version: 1,
@@ -212,7 +213,7 @@ describe("Settings", () => {
 
     renderSettings();
 
-    await screen.findByText("No API keys configured yet.");
+    await screen.findByText(/No API keys configured yet/);
 
     fireEvent.change(screen.getByLabelText("Provider"), { target: { value: "anthropic" } });
     const keyInput = screen.getByLabelText("API key");
@@ -241,7 +242,7 @@ describe("Settings", () => {
 
     renderSettings();
 
-    await screen.findByText("No API keys configured yet.");
+    await screen.findByText(/No API keys configured yet/);
 
     fireEvent.change(screen.getByLabelText("Provider"), { target: { value: "other" } });
     const customProviderInput = await screen.findByLabelText("Provider name");
@@ -272,7 +273,7 @@ describe("Settings", () => {
     });
 
     await waitFor(() => {
-      expect(screen.getByText("No API keys configured yet.")).toBeInTheDocument();
+      expect(screen.getByText(/No API keys configured yet/)).toBeInTheDocument();
     });
   });
 
@@ -283,7 +284,7 @@ describe("Settings", () => {
 
     renderSettings();
 
-    await screen.findByText("No API keys configured yet.");
+    await screen.findByText(/No API keys configured yet/);
     expect(screen.getByRole("button", { name: "Add API key" })).toBeDisabled();
   });
 
@@ -360,6 +361,61 @@ describe("Settings", () => {
       );
     });
     expect(await screen.findByRole("button", { name: "Copied" })).toBeInTheDocument();
+  });
+
+  it("shows a locked curated model (e.g. NVIDIA NIM) with an inline unlock, not hidden", async () => {
+    vi.mocked(getSessionToken).mockReturnValue("session-token");
+    vi.mocked(getWorkspaceSettings).mockResolvedValue(baseWorkspace());
+    vi.mocked(listApiKeys).mockResolvedValue([]);
+    vi.mocked(listConfiguredModels).mockResolvedValue([
+      baseConfiguredModel(),
+      baseConfiguredModel({
+        model: "nvidia_nim/meta/llama-3.1-405b-instruct",
+        provider: "nvidia_nim",
+        requires_api_key: true,
+        unlocked: false,
+        input_cost_per_1m: null,
+        output_cost_per_1m: null,
+        model_card: {
+          family: "llama",
+          version: 1,
+          description: "Open-weight/self-hosted bucket.",
+          is_small_variant: false,
+          rules: [],
+          supports_reasoning: false,
+          code_sample: 'complete(model="nvidia_nim/meta/llama-3.1-405b-instruct", messages=[...])',
+        },
+      }),
+    ]);
+    vi.mocked(addApiKey).mockResolvedValue({
+      id: 9,
+      provider: "nvidia_nim",
+      last_four: "9999",
+      created_at: "2026-01-15T12:00:00Z",
+    });
+
+    renderSettings();
+
+    // Locked model is visible (not filtered out) with a clear unlock path.
+    const modelName = await screen.findByText("nvidia_nim/meta/llama-3.1-405b-instruct");
+    const modelCard = modelName.closest("div")?.parentElement as HTMLElement;
+    expect(within(modelCard).getByText("API key required")).toBeInTheDocument();
+
+    // "Add API key" is also the ApiKeysCard form's own submit button above -
+    // scope to the locked model's own card to click the right one.
+    fireEvent.click(within(modelCard).getByRole("button", { name: "Add API key" }));
+
+    // The drawer portals outside the render root as a dialog - ApiKeysCard's
+    // own "API key" field is a separate, simultaneously-present element, so
+    // scope every subsequent query into the dialog specifically.
+    const dialog = await screen.findByRole("dialog");
+    const keyInput = within(dialog).getByLabelText("API key");
+    fireEvent.change(keyInput, { target: { value: "nvapi-test-key-000000000000" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Save key & unlock models" }));
+
+    await waitFor(() => {
+      expect(addApiKey).toHaveBeenCalledWith("nvidia_nim", "nvapi-test-key-000000000000");
+    });
   });
 
   it("shows only no-key-required models when no BYOK key is configured", async () => {

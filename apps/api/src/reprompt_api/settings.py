@@ -60,7 +60,11 @@ from reprompt_api import models
 from reprompt_api.auth import get_current_user
 from reprompt_api.crypto import EncryptionNotConfigured, encrypt
 from reprompt_api.db import get_db
-from reprompt_api.migrations import ModelOption, get_available_models
+from reprompt_api.migrations import (
+    ModelOption,
+    get_available_models,
+    list_curated_models_with_lock_state,
+)
 from reprompt_api.model_cards import FamilyCardOut, build_family_card
 
 router = APIRouter(prefix="/settings", tags=["settings"])
@@ -305,9 +309,16 @@ class ConfiguredModelOut(BaseModel):
     supports_function_calling: bool
     requires_api_key: bool
     model_card: FamilyCardOut
+    unlocked: bool
+    """True if this workspace can target this model right now (no key
+    needed, or its provider has a BYOK key configured). False means it's
+    curated but locked - still shown (not filtered out) so a user can see
+    what adding a key for that provider would unlock, rather than a
+    curated model silently looking like it doesn't exist. See
+    reprompt_api.migrations.list_curated_models_with_lock_state."""
 
 
-def _to_configured_model_out(option: ModelOption) -> ConfiguredModelOut:
+def _to_configured_model_out(option: ModelOption, unlocked: bool) -> ConfiguredModelOut:
     return ConfiguredModelOut(
         model=option.model,
         provider=option.provider,
@@ -319,6 +330,7 @@ def _to_configured_model_out(option: ModelOption) -> ConfiguredModelOut:
         supports_function_calling=option.supports_function_calling,
         requires_api_key=option.requires_api_key,
         model_card=build_family_card(option.model),
+        unlocked=unlocked,
     )
 
 
@@ -326,16 +338,21 @@ def _to_configured_model_out(option: ModelOption) -> ConfiguredModelOut:
 def list_configured_models(
     current_user: models.User = Depends(get_current_user), db: Session = Depends(get_db)
 ) -> list[ConfiguredModelOut]:
-    """Every curated model this workspace can actually target right now:
-    every model that needs no API key (local/self-hosted, e.g. Ollama) plus
-    every model whose provider has a BYOK key configured for this workspace.
-    Each entry carries its model-card info (prompt family + which transform
-    rules will apply) so a user can see *how* their prompt will be rewritten
-    for that target without opening a migration wizard first.
+    """Every curated model, including ones this workspace can't target yet:
+    each entry carries `unlocked` (no key needed, or its provider has a
+    BYOK key configured) plus its model-card info (prompt family + which
+    transform rules will apply), so a user can see the full curated
+    catalog - including what a new key would unlock - not just what's
+    already usable. The migration wizard's own picker
+    (`GET /pipelines/{id}/models`) is intentionally different: it still
+    only lists *usable* models via `get_available_models`, since a locked
+    model must not be selectable as a migration target.
     """
     workspace = _get_workspace_or_500(db, current_user)
-    available = get_available_models(db, workspace)
-    return [_to_configured_model_out(option) for option in available]
+    return [
+        _to_configured_model_out(option, unlocked)
+        for option, unlocked in list_curated_models_with_lock_state(db, workspace)
+    ]
 
 
 # ---------------------------------------------------------------------------

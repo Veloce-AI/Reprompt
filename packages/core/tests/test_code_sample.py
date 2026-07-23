@@ -62,10 +62,17 @@ def test_omits_thinking_for_ollama_despite_raw_litellm_flag() -> None:
     assert "# thinking= / reasoning_effort= omitted" in result
 
 
-def test_uses_the_real_complete_import() -> None:
+def test_uses_plain_litellm_not_the_internal_package() -> None:
+    # reprompt_core is this project's own internal package - a Reprompt
+    # user's codebase has no reason to have it installed, or want to
+    # depend on it. The sample must be directly usable by an external
+    # caller with nothing more than `pip install litellm` - see the
+    # module's own docstring for why.
     caps = get_model_capabilities("gpt-4o")
     result = generate_code_sample(caps)
-    assert "from reprompt_core.llm.client import complete" in result
+    assert "import litellm" in result
+    assert "litellm.completion(" in result
+    assert "reprompt_core" not in result
 
 
 # ---------------------------------------------------------------------------
@@ -75,7 +82,13 @@ def test_uses_the_real_complete_import() -> None:
 
 def test_module_never_calls_the_llm_client() -> None:
     """Same enforcement pattern as test_model_card.py's equivalent test —
-    this module renders a call as text, it must never make one."""
+    this module renders a call as text, it must never make one. Checked via
+    imports (not a raw substring search): the generated *text* legitimately
+    contains the literal string "litellm.completion(" now (see
+    test_uses_plain_litellm_not_the_internal_package), so the only way to
+    tell "renders text mentioning a call" apart from "actually imports and
+    could make one" is to confirm neither `litellm` nor
+    `reprompt_core.llm.client` is ever imported by this module itself."""
     source = inspect.getsource(code_sample)
     tree = ast.parse(source)
 
@@ -89,4 +102,4 @@ def test_module_never_calls_the_llm_client() -> None:
             imported_names.update(f"{module}.{alias.name}" for alias in node.names)
 
     assert not any("llm.client" in name for name in imported_names)
-    assert "litellm.completion" not in source
+    assert "litellm" not in imported_names

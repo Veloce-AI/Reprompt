@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, afterEach } from "vitest";
 import { render, screen } from "@testing-library/react";
 import {
   createMemoryHistory,
@@ -8,6 +8,7 @@ import {
   RouterProvider,
 } from "@tanstack/react-router";
 import Landing from "./landing";
+import { setSessionToken, clearSessionToken } from "@/lib/api";
 
 window.scrollTo = vi.fn() as unknown as typeof window.scrollTo;
 
@@ -41,14 +42,19 @@ function renderLanding() {
   const rootRoute = createRootRoute();
   const landingRoute = createRoute({ getParentRoute: () => rootRoute, path: "/", component: Landing });
   const loginRoute = createRoute({ getParentRoute: () => rootRoute, path: "/login", component: () => null });
+  const pipelinesRoute = createRoute({ getParentRoute: () => rootRoute, path: "/pipelines", component: () => null });
   const schemaRoute = createRoute({ getParentRoute: () => rootRoute, path: "/schema", component: () => null });
-  const routeTree = rootRoute.addChildren([landingRoute, loginRoute, schemaRoute]);
+  const routeTree = rootRoute.addChildren([landingRoute, loginRoute, pipelinesRoute, schemaRoute]);
   const router = createRouter({
     routeTree,
     history: createMemoryHistory({ initialEntries: ["/"] }),
   });
   return render(<RouterProvider router={router} />);
 }
+
+afterEach(() => {
+  clearSessionToken();
+});
 
 describe("Landing", () => {
   it("renders the hero headline and a sign-in CTA", async () => {
@@ -92,5 +98,20 @@ describe("Landing", () => {
       "href",
       "/schema"
     );
+  });
+
+  it("shows the landing page (not a redirect) to a signed-in visitor, with CTAs pointed at Pipelines", async () => {
+    setSessionToken("a-real-session-token");
+    renderLanding();
+
+    expect(
+      await screen.findByText("Change the AI model behind your product without breaking it — and prove it.")
+    ).toBeInTheDocument();
+    const ctas = screen.getAllByRole("link", { name: /Go to Pipelines/ });
+    expect(ctas.length).toBeGreaterThan(0);
+    for (const cta of ctas) {
+      expect(cta).toHaveAttribute("href", "/pipelines");
+    }
+    expect(screen.queryByRole("link", { name: /^Sign in/ })).not.toBeInTheDocument();
   });
 });

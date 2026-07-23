@@ -374,7 +374,7 @@ export function NewMigrationWizard({
                                       <span className="mt-0.5 flex-shrink-0">
                                         {rule.will_apply ? "✓" : "—"}
                                       </span>
-                                      <span>
+                                      <span className="min-w-0 flex-1">
                                         <strong>{rule.name}:</strong> {rule.description}
                                       </span>
                                     </li>

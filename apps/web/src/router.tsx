@@ -1,6 +1,5 @@
 import { createRouter, createRoute, createRootRoute, Outlet, redirect } from "@tanstack/react-router";
 import { RouteErrorFallback } from "./components/route-error-fallback";
-import { getSessionToken } from "./lib/api";
 import Home from "./routes/home";
 import Landing from "./routes/landing";
 import DevKit from "./routes/dev-kit";
@@ -25,17 +24,13 @@ const rootRoute = createRootRoute({
   errorComponent: RouteErrorFallback,
 });
 
-// Marketing/first-visit landing page. A signed-in visitor is redirected
-// straight to /pipelines in beforeLoad - they never see this, per the
-// landing-page plan (DEV_TRACKER.md's "Landing page" section).
+// Marketing page, always shown at "/" regardless of session state - a
+// signed-in visitor can still land here (bookmark, direct link, checking
+// what it looks like) and navigate into the app via its own nav/CTA
+// (Landing itself swaps "Sign in" for "Go to Pipelines" when signed in).
 const landingRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/",
-  beforeLoad: () => {
-    if (getSessionToken()) {
-      throw redirect({ to: "/pipelines" });
-    }
-  },
   component: Landing,
 });
 

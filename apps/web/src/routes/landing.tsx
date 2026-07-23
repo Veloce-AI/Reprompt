@@ -14,6 +14,7 @@ import {
 import { Logo } from "@/components/logo";
 import { ParityBeam } from "@/components/parity-beam";
 import { Button } from "@/components/ui/button";
+import { getSessionToken } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
 const TRACE_STAGES = ["Classify", "Search", "Summarize", "Answer"];
@@ -203,6 +204,12 @@ function SectionHeading({ eyebrow, title }: { eyebrow: string; title: string }) 
 export default function Landing() {
   const activeTraceStage = useCycle(TRACE_STAGES.length, 1000);
   const activePrismStep = useCycle(PRISM_LOOP_STEPS.length, 1100);
+  // Landing is shown regardless of session state (a signed-in visitor can
+  // still land here via bookmark/direct link) - every CTA below points at
+  // the app instead of the sign-in form once there's already a session.
+  const isSignedIn = Boolean(getSessionToken());
+  const ctaTo = isSignedIn ? "/pipelines" : "/login";
+  const ctaLabel = isSignedIn ? "Go to Pipelines" : "Sign in";
 
   return (
     <div className="flex min-h-screen flex-col bg-paper">
@@ -212,7 +219,7 @@ export default function Landing() {
           Reprompt
         </div>
         <Button asChild variant="secondary" size="sm">
-          <Link to="/login">Sign in</Link>
+          <Link to={ctaTo}>{ctaLabel}</Link>
         </Button>
       </header>
 
@@ -229,8 +236,8 @@ export default function Landing() {
             </p>
             <div className="flex flex-wrap items-center justify-center gap-3 md:justify-start">
               <Button asChild size="lg">
-                <Link to="/login">
-                  Sign in
+                <Link to={ctaTo}>
+                  {ctaLabel}
                   <ArrowRight className="h-4 w-4" aria-hidden="true" />
                 </Link>
               </Button>
@@ -391,11 +398,13 @@ export default function Landing() {
               Bring your own traces. See the scorecard.
             </h2>
             <p className="max-w-md text-14 text-ink-soft">
-              Sign in to import a pipeline and run your first migration.
+              {isSignedIn
+                ? "Import a pipeline and run your first migration."
+                : "Sign in to import a pipeline and run your first migration."}
             </p>
             <Button asChild size="lg">
-              <Link to="/login">
-                Sign in
+              <Link to={ctaTo}>
+                {ctaLabel}
                 <ArrowRight className="h-4 w-4" aria-hidden="true" />
               </Link>
             </Button>

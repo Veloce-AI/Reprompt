@@ -2,13 +2,22 @@
 
 Answers a different question from :mod:`reprompt_core.llm.model_card`
 (prompt-text rewriting) and :mod:`reprompt_core.llm.registry` (capability
-facts): *given a model string, what does a real call to it look like using
-this codebase's own call path?* Pure text-in/text-out — no LLM call, no
-I/O, no randomness, same discipline as :mod:`reprompt_core.llm.model_card`
-(see that module's own docstring; this module never imports or calls
-:func:`reprompt_core.llm.client.complete`, only reads facts from
-:func:`reprompt_core.llm.registry.get_model_capabilities` and
-:func:`reprompt_core.llm.model_card.resolve_family`).
+facts): *given a model string, what does a real call to it look like for
+someone outside this codebase?* Deliberately generates plain
+``litellm.completion()`` calls, not ``reprompt_core.llm.client.complete()``
+— ``reprompt_core`` is this project's own internal package, not something
+a Reprompt user's codebase has installed or would want to depend on. Every
+curated model this project supports is reachable by any external caller
+with nothing more than ``pip install litellm``, so that's what the sample
+shows — the exact library this codebase's own :func:`reprompt_core.llm.
+client.complete` is itself a thin wrapper around (see that function's own
+``litellm.completion(**params)`` call). Pure text-in/text-out — no LLM
+call, no I/O, no randomness, same discipline as
+:mod:`reprompt_core.llm.model_card` (see that module's own docstring;
+this module never imports or calls :func:`reprompt_core.llm.client.
+complete`, only reads facts from :func:`reprompt_core.llm.registry.
+get_model_capabilities` and :func:`reprompt_core.llm.model_card.
+resolve_family`).
 
 Why generated, not hand-written per model
 -------------------------------------------------------------------------
@@ -57,9 +66,9 @@ def generate_code_sample(caps: ModelCapabilities) -> str:
         function trusts them as given, it does not call LiteLLM itself.
     """
     lines = [
-        "from reprompt_core.llm.client import complete",
+        "import litellm",
         "",
-        "response = complete(",
+        "response = litellm.completion(",
         f'    model="{caps.model}",',
         '    messages=[{"role": "user", "content": "..."}],',
     ]

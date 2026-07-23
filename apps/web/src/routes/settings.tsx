@@ -17,9 +17,9 @@ import {
   type SystemModel,
   type SystemModelPurpose,
 } from "@/lib/api";
+import { AddApiKeyDrawer } from "@/components/add-api-key-drawer";
 import { AppShell } from "@/components/app-shell";
 import { DevSignInButton } from "@/components/dev-sign-in-button";
-import { ThemeToggle } from "@/components/theme-toggle";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
@@ -33,6 +33,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { cn } from "@/lib/utils";
 
 // Curated suggestion list only - the provider field is free text server-side
 // (see apps/api/src/reprompt_api/models.py's WorkspaceApiKey docstring for
@@ -62,12 +63,6 @@ export default function Settings() {
           <h1 className="text-center font-display text-28 font-semibold leading-display text-ink">
             Settings
           </h1>
-          {/* Appearance is a local device preference, not workspace data - it
-              works (and matters) whether or not you're signed in, so it
-              renders above the sign-in gate rather than behind it. */}
-          <div className="mt-6">
-            <AppearanceCard />
-          </div>
           <Card className="mt-6">
             <CardHeader>
               <CardTitle>Sign in to unlock your workspace settings</CardTitle>
@@ -106,7 +101,6 @@ export default function Settings() {
       </p>
 
       <div className="mt-6 flex flex-col gap-6">
-        <AppearanceCard />
         <WorkspaceNameCard />
         <ApiKeysCard />
         <ConfiguredModelsCard />
@@ -131,23 +125,6 @@ function SessionExpiredNotice() {
       </Link>
       .
     </p>
-  );
-}
-
-function AppearanceCard() {
-  return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Appearance</CardTitle>
-        <CardDescription>
-          Follows your device&apos;s light/dark setting by default. Override it here — your
-          choice is saved on this device.
-        </CardDescription>
-      </CardHeader>
-      <CardContent>
-        <ThemeToggle />
-      </CardContent>
-    </Card>
   );
 }
 
@@ -316,7 +293,12 @@ function ApiKeysCard() {
         )}
 
         {keysQuery.data && keysQuery.data.length === 0 && (
-          <p className="text-13 text-ink-soft">No API keys configured yet.</p>
+          <p className="text-13 text-ink-soft">
+            No API keys configured yet — only local, no-key models (Ollama) are available until
+            you add one. Supported providers:{" "}
+            <span className="font-medium text-ink">{SUGGESTED_PROVIDERS.join(", ")}</span>, or any
+            other LiteLLM-supported provider via &quot;Other&quot; below.
+          </p>
         )}
 
         {keysQuery.data && keysQuery.data.length > 0 && (
@@ -461,6 +443,12 @@ function CopyCodeButton({ code }: { code: string }) {
 }
 
 function ConfiguredModelsCard() {
+  // Which provider the inline add-a-key drawer is open for; null = closed.
+  // Same component/pattern the migration wizard's model picker already
+  // uses for its own locked models - unlocking here shouldn't need a
+  // different flow than unlocking there.
+  const [keyDrawerProvider, setKeyDrawerProvider] = useState<string | null>(null);
+
   const modelsQuery = useQuery({
     queryKey: ["settings-configured-models"],
     queryFn: listConfiguredModels,
@@ -487,13 +475,22 @@ function ConfiguredModelsCard() {
 
   return (
     <Card>
+      {keyDrawerProvider != null && (
+        <AddApiKeyDrawer
+          provider={keyDrawerProvider}
+          open
+          onOpenChange={(open) => {
+            if (!open) setKeyDrawerProvider(null);
+          }}
+        />
+      )}
       <CardHeader>
         <CardTitle>Configured models</CardTitle>
         <CardDescription>
-          What you can actually target in a migration right now: local models need no key,
-          everything else needs a BYOK key above for that provider. Each model shows the prompt
-          rewrite rules (model-card transforms) that will apply when it's picked as a migration
-          target.
+          The full curated catalog, including providers you haven&apos;t added a key for yet -
+          those stay visible (dimmed, with an inline &quot;Add API key&quot;) instead of looking
+          like they don&apos;t exist. Each model shows the prompt rewrite rules (model-card
+          transforms) that will apply when it&apos;s picked as a migration target.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-6">
@@ -519,7 +516,10 @@ function ConfiguredModelsCard() {
               {providerModels.map((model) => (
                 <div
                   key={model.model}
-                  className="rounded-control border border-line p-4 text-13"
+                  className={cn(
+                    "rounded-control border p-4 text-13",
+                    model.unlocked ? "border-line" : "border-line opacity-60"
+                  )}
                 >
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <span className="font-mono font-medium text-ink">{model.model}</span>
@@ -528,6 +528,18 @@ function ConfiguredModelsCard() {
                       {formatCost(model.output_cost_per_1m)} out
                     </span>
                   </div>
+                  {!model.unlocked && model.provider && (
+                    <div className="mt-2 flex flex-wrap items-center gap-2">
+                      <Badge variant="neutral">API key required</Badge>
+                      <button
+                        type="button"
+                        className="text-12 font-medium text-beam hover:underline"
+                        onClick={() => setKeyDrawerProvider(model.provider)}
+                      >
+                        Add API key
+                      </button>
+                    </div>
+                  )}
                   {/* model_card is a required field on the wire contract, but this
                       reads it defensively (optional chaining + fallbacks) rather than
                       assuming the live response always matches the TS type exactly -

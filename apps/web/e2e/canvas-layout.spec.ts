@@ -420,16 +420,20 @@ test.describe("canvas dagre auto-layout — tall/narrow pipeline (~38 stages, mo
     expect(zoomedOutScale).toBeGreaterThanOrEqual(0.5 - 0.01);
   });
 
-  test("never becomes scrollable on a short-but-not-tiny window, even though PipelineCanvas's own min-h-[480px] floor can be taller than what's actually available", async ({
+  test("fits exactly on a short-but-not-tiny window - no scrollbar, and nothing clipped either", async ({
     page,
   }) => {
     // Real repro: a 660px-tall window left ~462px available for the tab
     // content wrapper once the pipeline header/tabs/theme-toggle bar are
-    // accounted for - a few pixels under the 480px floor, which used to
-    // leave the wrapper's own `overflow-y-auto` scrollable by that
-    // difference (confirmed live: scrollHeight 480 vs clientHeight 462).
-    // Canvas must never scroll at this level - React Flow's own pan/zoom
-    // is the only way this content is meant to be reachable.
+    // accounted for. PipelineCanvas used to carry a min-h-[480px] floor -
+    // a few pixels taller than that 462px - which first showed up as a
+    // scrollbar (confirmed live: scrollHeight 480 vs clientHeight 462 on
+    // the wrapper), and after making that wrapper overflow-hidden instead
+    // of overflow-y-auto, as a clipped sliver of the minimap/controls
+    // instead. The floor is gone now (h-full alone is enough - the whole
+    // ancestor chain gives this a real, definite height), so this
+    // asserts the stronger property: the canvas box exactly matches its
+    // container, nothing scrolled *or* clipped.
     await page.setViewportSize({ width: 1330, height: 660 });
     const { dag, total } = buildTallNarrowDag();
     await mockPipelineApi(page, dag, total);
@@ -437,6 +441,16 @@ test.describe("canvas dagre auto-layout — tall/narrow pipeline (~38 stages, mo
     await page.goto(`/pipelines/${PIPELINE_ID}?tab=canvas`);
     await expect(page.locator(".react-flow__node.react-flow__node-stage")).toHaveCount(total);
     await page.waitForTimeout(300);
+
+    const metrics = await page.evaluate(() => {
+      const wrapper = document
+        .querySelector(".react-flow__renderer")
+        ?.closest("div.overflow-hidden, div.overflow-y-auto");
+      if (!wrapper) return null;
+      return { scrollHeight: wrapper.scrollHeight, clientHeight: wrapper.clientHeight };
+    });
+    expect(metrics).not.toBeNull();
+    expect(metrics!.scrollHeight).toBe(metrics!.clientHeight);
 
     const isScrollable = await page.evaluate(() => {
       const wrapper = document

@@ -215,30 +215,28 @@ export default function PipelineWorkspace() {
 
         {/* flex + flex-col (not just the flex-1 item class) so the Canvas
             tab's PipelineCanvas - whose default wrapper div is itself
-            "h-full min-h-[480px] flex-1" - gets a real flex-item main size
-            to grow into. Without display:flex here, that inner flex-1 is
-            inert (this div isn't a flex *container*), height:100% has no
-            definite ancestor height to resolve against (min-height doesn't
-            count per spec), and react-flow's own 100%-height root collapses
-            to 0 - the DAG's nodes render in the DOM (data/labels are all
-            present) but paint in a zero-height viewport, i.e. invisible.
-            Single child per tab (mutually exclusive conditionals below) so
-            this doesn't change layout for Data/Rubrics/Migrations.
+            "h-full flex-1" - gets a real flex-item main size to grow into.
+            Without display:flex here, that inner flex-1 is inert (this div
+            isn't a flex *container*), height:100% has no definite ancestor
+            height to resolve against, and react-flow's own 100%-height
+            root collapses to 0 - the DAG's nodes render in the DOM
+            (data/labels are all present) but paint in a zero-height
+            viewport, i.e. invisible. Single child per tab (mutually
+            exclusive conditionals below) so this doesn't change layout for
+            Data/Rubrics/Migrations.
 
-            overflow-y-auto only for non-Canvas tabs: Canvas's own
-            PipelineCanvas keeps a min-h-[480px] floor (guards against
-            react-flow measuring a near-zero height during the same
-            definite-size propagation this comment describes above), which
-            can be a few pixels taller than the *actual* available space on
-            a short-but-not-tiny window (confirmed: 480px vs 462px
-            available in one real repro) - on the Canvas tab specifically
-            that must never produce a scrollbar here (React Flow's own
-            pan/zoom is the only way this content is meant to be reachable,
-            same reasoning as app-shell.tsx's overflow-x-hidden), so it's
-            overflow-hidden instead; the sub-480px sliver is simply
-            clipped, never scrolled to. Every other tab's content can
-            genuinely be taller than the viewport and still wants to
-            scroll here as before. */}
+            overflow-y-auto only for non-Canvas tabs: on Canvas, this level
+            must never produce a scrollbar - React Flow's own pan/zoom is
+            the only way its content is meant to be reachable, same
+            reasoning as app-shell.tsx's overflow-x-hidden - so it's
+            overflow-hidden instead. (PipelineCanvas used to carry a
+            min-h-[480px] floor that could exceed the *actual* available
+            space on a short-but-not-tiny window - confirmed once: 480px
+            vs 462px available - which is what first triggered this
+            scrollbar; the floor itself is gone now, so overflow-hidden
+            here is belt-and-braces, not covering for a live gap.) Every
+            other tab's content can genuinely be taller than the viewport
+            and still wants to scroll here as before. */}
         <div className={cn("flex flex-1 flex-col", tab === "canvas" ? "overflow-hidden" : "overflow-y-auto")}>
           {tab === "canvas" && (
             <CanvasTabContent

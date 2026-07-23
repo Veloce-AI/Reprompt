@@ -494,7 +494,17 @@ export function PipelineCanvas({
   }
 
   return (
-    <div className={className ?? "h-full min-h-[480px] flex-1"}>
+    // No min-h floor: a fixed minimum taller than the actual available
+    // space just gets clipped by the parent's overflow-hidden (Canvas
+    // must never scroll - see pipeline-workspace.tsx) rather than
+    // shrinking to fit, cutting off the minimap/controls on a short
+    // window. h-full alone is enough - the whole ancestor chain up to
+    // AppShell's h-screen root gives this a real, definite (never
+    // near-zero) height, which is what the old min-height floor was
+    // originally guarding against (see DEV_TRACKER.md's "canvas and all,
+    // nothing is there" entry) - that guarantee now comes from the chain
+    // itself, not from a hardcoded pixel floor.
+    <div className={className ?? "h-full flex-1"}>
       <ReactFlow
         nodes={nodes}
         edges={edges}

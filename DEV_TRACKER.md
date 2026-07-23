@@ -4670,3 +4670,37 @@ not a regression from this fix). `pipeline-workspace.test.tsx` +
 `pipeline-workspace.canvas-live.test.tsx`: 15/15. Reproduced and fixed
 against the exact real pipeline from the report (dev DB pipeline id 1,
 "Renamed via curl test"), not just a synthetic shape.
+
+## Canvas scroll, round 3: dropped the min-h floor instead of clipping it [DONE — 2026-07-23]
+
+Round 2's `overflow-hidden` fix removed the scrollbar but traded it for a
+different visible defect the user caught immediately on the same tight
+window: the bottom of the minimap was clipped. That's exactly what
+`overflow-hidden` does to the ~18px excess `min-h-[480px]` used to force
+past the actually-available space - correct in that a scrollbar is gone,
+but still cutting off real content instead of ever asking "does Canvas
+need that floor at all."
+
+It doesn't. The floor's real job (documented in DEV_TRACKER.md's "canvas
+and all, nothing is there" entry) was guarding against `react-flow`
+measuring a near-zero height while the ancestor chain lacked a *definite*
+size anywhere - `min-height` never produces a spec-definite size, so a
+descendant's `height:100%` had nothing real to resolve against and
+collapsed to 0. That chain is now definite end-to-end (`h-screen` →
+`h-full` → `h-full` → `flex-1`, following this session's earlier two
+Canvas-scroll fixes), so the floor's original purpose is already covered
+by the chain itself. Removed `min-h-[480px]` from `pipeline-canvas.tsx`'s
+default wrapper entirely - `h-full flex-1` now sizes Canvas to exactly
+whatever its container actually has, never more. `overflow-hidden` on
+the tab wrapper (round 2's fix) stays as belt-and-braces, but there's
+nothing left for it to clip.
+
+**Verified**: strengthened the round-2 regression test in
+`e2e/canvas-layout.spec.ts` from "not scrollable" to the stronger
+`scrollHeight === clientHeight` (proves nothing is being silently
+clipped, not just that there's no scrollbar) - passes at the same 660px
+repro height. Full `canvas-layout.spec.ts`: 6/7 (same pre-existing,
+unrelated flake as round 2, confirmed via `git stash` again). Full
+apps/web suite: 195/195. Re-verified against the real reported pipeline
+at an even tighter 620px window: full minimap visible, no clipping, no
+scrollbar.

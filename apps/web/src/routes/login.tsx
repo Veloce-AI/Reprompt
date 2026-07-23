@@ -63,7 +63,7 @@ export default function Login() {
         <div className="border-t border-line pt-4">
           <DevSignInButton
             email={email}
-            onSignedIn={() => navigate({ to: "/" })}
+            onSignedIn={() => navigate({ to: "/pipelines" })}
           />
         </div>
       )}

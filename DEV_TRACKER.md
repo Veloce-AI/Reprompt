@@ -3694,3 +3694,47 @@ near the 60px floor — exactly the intended behavior, not a regression.
 Updated the assertion to match the new adaptive caps (`≤300×170`, height
 `≥60`) rather than the stale fixed-box assumption. **12/12 passing after
 the fix.**
+
+## Landing page Phase 0 — routing plumbing [DONE — 2026-07-23]
+
+First slice of the marketing landing page work: move the existing
+Pipelines list off of `/` so a real landing page can live there. This
+phase is routing only — no landing-page copy, visuals, or animation yet
+(that's Phase 1+, not started). A first attempt at this phase was
+dispatched to an agent that stalled ("no progress for 600s, stream
+watchdog did not recover") and left only a placeholder `landing.tsx`
+component; that placeholder was kept (it's reasonable minimal content —
+title, one line of copy) and the routing changes around it were done
+directly instead of re-dispatching.
+
+**Changes**:
+- `apps/web/src/router.tsx`: Pipelines list route moved from `path: "/"`
+  to `path: "/pipelines"`. New `landingRoute` mounted at `path: "/"` with
+  a `beforeLoad` that redirects a signed-in visitor (`getSessionToken()`
+  truthy) straight to `/pipelines` — same pattern already used elsewhere
+  in this router for auth-gated redirects. A signed-out visitor sees the
+  `Landing` placeholder component.
+- `apps/web/src/components/app-shell.tsx`: nav's "Pipelines" item and the
+  logo/brand link both point at `/pipelines` now; `isActive` no longer
+  needs the old `=== "/"` special case since `/pipelines` isn't a prefix
+  of anything else.
+- Every other hardcoded `to: "/"` / `window.location.assign("/")` found
+  via grep now points at `/pipelines`: `auth-verify.tsx` (post-magic-link
+  redirect), `login.tsx` (post-sign-in redirect), `pipelines-import.tsx`
+  ("Back to pipelines" link), `schema.tsx` ("← Pipelines" link),
+  `route-error-fallback.tsx` ("Go to Pipelines" error-boundary button).
+- Test files with their own synthetic/stub routers updated to mount
+  `homeRoute` at `/pipelines` instead of `/`: `home.test.tsx` (also its
+  `initialEntries` and a pathname assertion), `schema.test.tsx`,
+  `settings.test.tsx`, `auth-verify.test.tsx`.
+- `docs/TESTING.md`'s route map (§3) documents the new split: `/`
+  (landing, marketing/first-visit only) and `/pipelines` (moved home).
+
+**Verified**: `pnpm exec tsc --noEmit` clean. `pnpm test` — 170 passed,
+22 test files (same total as before this phase, since it only redirects
+existing test targets rather than adding new ones — new tests land in
+Phase 1 alongside real landing-page content).
+
+**Next**: Phase 1 (real landing-page copy/sections, simple CSS/SVG
+motion reusing the Logo/ParityBeam visual language) — not started, needs
+its own pass rather than being bundled with this one.

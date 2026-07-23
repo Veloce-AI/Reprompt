@@ -206,7 +206,7 @@ export default function PipelinesImport() {
               >
                 View pipeline canvas
               </Button>
-              <Link to="/">
+              <Link to="/pipelines">
                 <Button variant="secondary">Back to pipelines</Button>
               </Link>
             </div>

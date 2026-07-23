@@ -25,7 +25,7 @@ export default function AuthVerify() {
     verifyMagicLink(token)
       .then((result) => {
         setSessionToken(result.session_token);
-        navigate({ to: "/" });
+        navigate({ to: "/pipelines" });
       })
       .catch((error) => {
         setStatus("error");

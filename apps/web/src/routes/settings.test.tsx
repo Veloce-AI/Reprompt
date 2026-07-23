@@ -102,7 +102,7 @@ function renderSettings() {
     path: "/settings",
     component: Settings,
   });
-  const homeRoute = createRoute({ getParentRoute: () => rootRoute, path: "/", component: () => null });
+  const homeRoute = createRoute({ getParentRoute: () => rootRoute, path: "/pipelines", component: () => null });
   const loginRoute = createRoute({ getParentRoute: () => rootRoute, path: "/login", component: () => null });
   const routeTree = rootRoute.addChildren([settingsRoute, homeRoute, loginRoute]);
   const router = createRouter({

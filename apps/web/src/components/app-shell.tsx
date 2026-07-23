@@ -10,7 +10,7 @@ interface NavItem {
 }
 
 const NAV_ITEMS: NavItem[] = [
-  { to: "/", label: "Pipelines", icon: Workflow },
+  { to: "/pipelines", label: "Pipelines", icon: Workflow },
   { to: "/schema", label: "Trace format", icon: FileText },
   { to: "/settings", label: "Settings", icon: SettingsIcon },
 ];
@@ -33,7 +33,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         aria-label="Primary"
       >
         <Link
-          to="/"
+          to="/pipelines"
           className="mb-8 flex flex-col items-center gap-2 px-6 font-display text-20 font-semibold leading-display text-ink"
         >
           <Logo className="h-8 w-8" />
@@ -41,8 +41,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         </Link>
         <div className="flex flex-col gap-1 px-3">
           {NAV_ITEMS.map((item) => {
-            const isActive =
-              item.to === "/" ? pathname === "/" : pathname.startsWith(item.to);
+            const isActive = pathname.startsWith(item.to);
             const Icon = item.icon;
             return (
               <Link

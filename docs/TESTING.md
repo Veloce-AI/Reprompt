@@ -173,7 +173,11 @@ After any restart, hard-refresh the browser (`Ctrl+Shift+R`).
 ## 3. How to navigate — the full screen map
 
 ```
-/                                      Pipelines home
+/                                      Landing page (marketing/first-visit only —
+                                        signed-in visitors redirect straight to
+                                        /pipelines in beforeLoad, never see this)
+/pipelines                             Pipelines home (was "/" — moved 2026-07-23,
+                                        see DEV_TRACKER.md's "Landing page Phase 0")
 /pipelines/import                      Import wizard (3 steps)
 /pipelines/$pipelineId?tab=canvas      Pipeline workspace — Canvas tab (default; Live/Analytics mode toggle, §3.3d)
 /pipelines/$pipelineId?tab=data        Pipeline workspace — Data tab (StageRecord browser, Phase 3)

@@ -40,7 +40,7 @@ function basePipeline(overrides: Partial<PipelineSummary> = {}): PipelineSummary
 
 function renderHome() {
   const rootRoute = createRootRoute();
-  const homeRoute = createRoute({ getParentRoute: () => rootRoute, path: "/", component: Home });
+  const homeRoute = createRoute({ getParentRoute: () => rootRoute, path: "/pipelines", component: Home });
   const importRoute = createRoute({
     getParentRoute: () => rootRoute,
     path: "/pipelines/import",
@@ -55,7 +55,7 @@ function renderHome() {
   const routeTree = rootRoute.addChildren([homeRoute, importRoute, pipelineRoute, schemaRoute]);
   const router = createRouter({
     routeTree,
-    history: createMemoryHistory({ initialEntries: ["/"] }),
+    history: createMemoryHistory({ initialEntries: ["/pipelines"] }),
   });
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
@@ -138,7 +138,7 @@ describe("Home (pipelines list)", () => {
       await screen.findByRole("button", { name: "Delete Financial Extraction Pipeline" })
     );
 
-    expect(router.state.location.pathname).toBe("/");
+    expect(router.state.location.pathname).toBe("/pipelines");
   });
 
   it("surfaces an error if the delete request fails", async () => {

@@ -43,7 +43,7 @@ export function RouteErrorFallback({ error, reset }: ErrorComponentProps) {
               <Button type="button" variant="primary" onClick={reset}>
                 Try again
               </Button>
-              <Button type="button" variant="secondary" onClick={() => window.location.assign("/")}>
+              <Button type="button" variant="secondary" onClick={() => window.location.assign("/pipelines")}>
                 Go to Pipelines
               </Button>
             </div>

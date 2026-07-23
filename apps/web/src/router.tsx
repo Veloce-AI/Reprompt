@@ -1,6 +1,8 @@
 import { createRouter, createRoute, createRootRoute, Outlet, redirect } from "@tanstack/react-router";
 import { RouteErrorFallback } from "./components/route-error-fallback";
+import { getSessionToken } from "./lib/api";
 import Home from "./routes/home";
+import Landing from "./routes/landing";
 import DevKit from "./routes/dev-kit";
 import PipelinesImport from "./routes/pipelines-import";
 import PipelineWorkspace, { WORKSPACE_TABS, type WorkspaceTab } from "./routes/pipeline-workspace";
@@ -23,9 +25,23 @@ const rootRoute = createRootRoute({
   errorComponent: RouteErrorFallback,
 });
 
-const homeRoute = createRoute({
+// Marketing/first-visit landing page. A signed-in visitor is redirected
+// straight to /pipelines in beforeLoad - they never see this, per the
+// landing-page plan (DEV_TRACKER.md's "Landing page" section).
+const landingRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/",
+  beforeLoad: () => {
+    if (getSessionToken()) {
+      throw redirect({ to: "/pipelines" });
+    }
+  },
+  component: Landing,
+});
+
+const homeRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/pipelines",
   component: Home,
 });
 
@@ -126,6 +142,7 @@ const schemaRoute = createRoute({
 });
 
 const routeTree = rootRoute.addChildren([
+  landingRoute,
   homeRoute,
   devKitRoute,
   pipelinesImportRoute,

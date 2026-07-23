@@ -135,7 +135,7 @@ export default function SchemaReference() {
   return (
     <AppShell>
     <div className="mx-auto max-w-[960px] p-8">
-      <Link to="/" className="text-13 text-ink-soft hover:text-ink">
+      <Link to="/pipelines" className="text-13 text-ink-soft hover:text-ink">
         ← Pipelines
       </Link>
       <h1 className="font-display text-40 font-semibold leading-display text-ink">

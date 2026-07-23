@@ -223,8 +223,23 @@ export default function PipelineWorkspace() {
             to 0 - the DAG's nodes render in the DOM (data/labels are all
             present) but paint in a zero-height viewport, i.e. invisible.
             Single child per tab (mutually exclusive conditionals below) so
-            this doesn't change layout for Data/Rubrics/Migrations. */}
-        <div className="flex flex-1 flex-col overflow-y-auto">
+            this doesn't change layout for Data/Rubrics/Migrations.
+
+            overflow-y-auto only for non-Canvas tabs: Canvas's own
+            PipelineCanvas keeps a min-h-[480px] floor (guards against
+            react-flow measuring a near-zero height during the same
+            definite-size propagation this comment describes above), which
+            can be a few pixels taller than the *actual* available space on
+            a short-but-not-tiny window (confirmed: 480px vs 462px
+            available in one real repro) - on the Canvas tab specifically
+            that must never produce a scrollbar here (React Flow's own
+            pan/zoom is the only way this content is meant to be reachable,
+            same reasoning as app-shell.tsx's overflow-x-hidden), so it's
+            overflow-hidden instead; the sub-480px sliver is simply
+            clipped, never scrolled to. Every other tab's content can
+            genuinely be taller than the viewport and still wants to
+            scroll here as before. */}
+        <div className={cn("flex flex-1 flex-col", tab === "canvas" ? "overflow-hidden" : "overflow-y-auto")}>
           {tab === "canvas" && (
             <CanvasTabContent
               pipelineId={pid}

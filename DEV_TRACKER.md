@@ -4625,3 +4625,48 @@ the next time a "Test" button gets added elsewhere). Full suites:
 apps/api 227/227, apps/web 195/195. Screenshotted the real dev server:
 "Test any model" now renders directly beneath "Add API key," above
 "Configured models."
+
+## Canvas scroll, round 2: PipelineCanvas's own min-h floor, not the theme bar [DONE — 2026-07-23]
+
+User reported the Canvas scrollbar was still there after the earlier
+theme-bar fix, on a real pipeline ("Renamed via curl test" — 31 layers,
+mostly one node wide). That fix was real but incomplete: it addressed
+the *document-level* scroll (AppShell's outer wrapper), but a second,
+narrower scrollbar lived one level deeper, on `pipeline-workspace.tsx`'s
+own tab-content wrapper (`overflow-y-auto`, shared by every tab).
+
+Root cause, found by inspecting every scrollable element in the live DOM
+rather than guessing: `PipelineCanvas`'s default wrapper carries `h-full
+min-h-[480px] flex-1` — a hard 480px floor. At a 660px-tall window, the
+actual space left for that wrapper after the pipeline header/tabs/theme
+bar was 462px - 18px under the floor, so the wrapper's own
+`overflow-y-auto` kicked in for that difference. Confirmed directly:
+`scrollHeight: 480` vs `clientHeight: 462` on that exact element, and
+that no amount of the earlier theme-bar fix could touch it, since it's a
+different container.
+
+Fix, same principle as the earlier horizontal-overflow fix (Canvas must
+never trigger a page/container-level scrollbar — React Flow's own
+pan/zoom is the only intended way to reach content beyond the viewport):
+`pipeline-workspace.tsx`'s tab-content wrapper is now
+`overflow-hidden` specifically on the Canvas tab, `overflow-y-auto` on
+every other tab (Data/Rubrics/Contracts/Migrations still need and get
+real scrolling for genuinely tall content). The `min-h-[480px]` floor
+itself was left in place — it guards against react-flow measuring a
+near-zero height during the same "definite ancestor height" propagation
+chain documented on `pipeline-workspace.tsx`'s outer wrapper — so on a
+window this tight, the excess ~18px is simply clipped (a barely-visible
+sliver at the very bottom of the minimap) instead of producing a
+scrollbar.
+
+**Verified**: new permanent Playwright regression test in
+`e2e/canvas-layout.spec.ts` at a 660px-tall viewport, using the existing
+`buildTallNarrowDag()` shape (the closest synthetic analog to the real
+reported pipeline) - asserts the Canvas wrapper is never scrollable.
+Full `canvas-layout.spec.ts` suite: 6/7 (the 7th, an unrelated
+"colors a running migration" test, was confirmed failing identically on
+`master` *before* this change via `git stash` - a pre-existing flake,
+not a regression from this fix). `pipeline-workspace.test.tsx` +
+`pipeline-workspace.canvas-live.test.tsx`: 15/15. Reproduced and fixed
+against the exact real pipeline from the report (dev DB pipeline id 1,
+"Renamed via curl test"), not just a synthetic shape.

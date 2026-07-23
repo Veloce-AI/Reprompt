@@ -419,6 +419,37 @@ test.describe("canvas dagre auto-layout — tall/narrow pipeline (~38 stages, mo
     const zoomedOutScale = await getZoomScale(page);
     expect(zoomedOutScale).toBeGreaterThanOrEqual(0.5 - 0.01);
   });
+
+  test("never becomes scrollable on a short-but-not-tiny window, even though PipelineCanvas's own min-h-[480px] floor can be taller than what's actually available", async ({
+    page,
+  }) => {
+    // Real repro: a 660px-tall window left ~462px available for the tab
+    // content wrapper once the pipeline header/tabs/theme-toggle bar are
+    // accounted for - a few pixels under the 480px floor, which used to
+    // leave the wrapper's own `overflow-y-auto` scrollable by that
+    // difference (confirmed live: scrollHeight 480 vs clientHeight 462).
+    // Canvas must never scroll at this level - React Flow's own pan/zoom
+    // is the only way this content is meant to be reachable.
+    await page.setViewportSize({ width: 1330, height: 660 });
+    const { dag, total } = buildTallNarrowDag();
+    await mockPipelineApi(page, dag, total);
+
+    await page.goto(`/pipelines/${PIPELINE_ID}?tab=canvas`);
+    await expect(page.locator(".react-flow__node.react-flow__node-stage")).toHaveCount(total);
+    await page.waitForTimeout(300);
+
+    const isScrollable = await page.evaluate(() => {
+      const wrapper = document
+        .querySelector(".react-flow__renderer")
+        ?.closest("div.overflow-hidden, div.overflow-y-auto");
+      if (!wrapper) return null;
+      return (
+        wrapper.scrollHeight > wrapper.clientHeight &&
+        getComputedStyle(wrapper).overflowY !== "hidden"
+      );
+    });
+    expect(isScrollable).toBe(false);
+  });
 });
 
 test.describe("canvas dagre auto-layout — wide pipeline (35 stages, two 12-wide layers) regression", () => {

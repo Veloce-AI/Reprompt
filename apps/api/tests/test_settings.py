@@ -21,6 +21,7 @@ from urllib.parse import parse_qs, urlparse
 import pytest
 from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
+from litellm.types.utils import Choices, Message as LiteLLMMessage, ModelResponse, Usage
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -29,6 +30,23 @@ from reprompt_api import crypto, models
 from reprompt_api.db import get_db
 from reprompt_api.main import app
 from reprompt_api.models import Base
+
+
+def _fake_response(*, model: str = "gpt-4o-2024-08-06", content: str = "ok") -> ModelResponse:
+    return ModelResponse(
+        id="chatcmpl-test",
+        created=0,
+        model=model,
+        object="chat.completion",
+        choices=[
+            Choices(
+                finish_reason="stop",
+                index=0,
+                message=LiteLLMMessage(content=content, role="assistant"),
+            )
+        ],
+        usage=Usage(prompt_tokens=5, completion_tokens=1, total_tokens=6),
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -549,3 +567,97 @@ def test_list_system_models_only_reflects_this_workspaces_keys(client: TestClien
         if entry["purpose"] == "judge"
     )
     assert alice_judge["selected_model"] == "claude-sonnet-4-5"
+
+
+# ---------------------------------------------------------------------------
+# POST /settings/models/test
+# ---------------------------------------------------------------------------
+
+
+def test_test_model_makes_a_real_scoped_call_and_returns_a_preview(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    token, _ = _sign_in(client, "testmodel@example.com")
+    client.post(
+        "/settings/api-keys",
+        json={"provider": "openai", "api_key": "sk-testmodelkey12345"},
+        headers=_auth_headers(token),
+    )
+
+    captured: dict = {}
+
+    def fake_completion(**kwargs):
+        captured.update(kwargs)
+        return _fake_response(content="ok")
+
+    monkeypatch.setattr("reprompt_core.llm.client.litellm.completion", fake_completion)
+
+    response = client.post(
+        "/settings/models/test", json={"model": "gpt-4o"}, headers=_auth_headers(token)
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["model"] == "gpt-4o-2024-08-06"
+    assert body["provider"] == "openai"
+    assert body["content_preview"] == "ok"
+    assert body["latency_ms"] >= 0
+
+    # The workspace's real (decrypted) key reached LiteLLM as a direct
+    # kwarg, same mechanism test_llm_context.py verifies at the unit level.
+    assert captured["api_key"] == "sk-testmodelkey12345"
+    assert captured["max_tokens"] == 5
+
+
+def test_test_model_without_a_configured_key_returns_a_clear_422(client: TestClient) -> None:
+    token, _ = _sign_in(client, "testmodel-nokey@example.com")
+
+    response = client.post(
+        "/settings/models/test", json={"model": "gpt-4o"}, headers=_auth_headers(token)
+    )
+    assert response.status_code == 422
+    assert "openai" in response.json()["detail"]
+    assert "/settings" not in response.json()["detail"] or "above" in response.json()["detail"]
+
+
+def test_test_model_no_key_required_local_model_never_asks_for_one(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    token, _ = _sign_in(client, "testmodel-local@example.com")
+
+    monkeypatch.setattr(
+        "reprompt_core.llm.client.litellm.completion",
+        lambda **kwargs: _fake_response(model="ollama/llama3.1", content="ok"),
+    )
+
+    response = client.post(
+        "/settings/models/test",
+        json={"model": "ollama/llama3.1"},
+        headers=_auth_headers(token),
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["content_preview"] == "ok"
+
+
+def test_test_model_truncates_a_long_response_to_a_short_preview(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    token, _ = _sign_in(client, "testmodel-long@example.com")
+    client.post(
+        "/settings/api-keys",
+        json={"provider": "openai", "api_key": "sk-longkey123456789"},
+        headers=_auth_headers(token),
+    )
+
+    long_content = "x" * 200
+    monkeypatch.setattr(
+        "reprompt_core.llm.client.litellm.completion",
+        lambda **kwargs: _fake_response(content=long_content),
+    )
+
+    response = client.post(
+        "/settings/models/test", json={"model": "gpt-4o"}, headers=_auth_headers(token)
+    )
+    assert response.status_code == 200, response.text
+    preview = response.json()["content_preview"]
+    assert len(preview) <= 81  # 80 chars + the trailing ellipsis char
+    assert preview.endswith("…")

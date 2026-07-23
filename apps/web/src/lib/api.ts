@@ -603,6 +603,26 @@ export function listConfiguredModels(): Promise<ConfiguredModel[]> {
   return request<ConfiguredModel[]>("/settings/models", { headers: authHeaders() });
 }
 
+export interface ModelTestResult {
+  model: string;
+  provider: string | null;
+  latency_ms: number;
+  content_preview: string;
+}
+
+/** Makes one real, minimal call to `model` using this workspace's saved
+ * BYOK key - "does this key actually work for this model", not just "is
+ * a row saved for it". Throws ApiError (422) if no key is configured for
+ * the model's provider, same shape every other settings call already
+ * uses for that case. */
+export function testModel(model: string): Promise<ModelTestResult> {
+  return request<ModelTestResult>("/settings/models/test", {
+    method: "POST",
+    headers: { ...authHeaders(), "Content-Type": "application/json" },
+    body: JSON.stringify({ model }),
+  });
+}
+
 // SystemModel mirrors apps/api's settings.SystemModelOut - which model
 // Reprompt's OWN harness (judge, mutator, rubric generation) is currently
 // auto-selecting for this workspace, via the exact same

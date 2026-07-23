@@ -25,6 +25,7 @@ vi.mock("@/lib/api", async () => {
     deleteApiKey: vi.fn(),
     listConfiguredModels: vi.fn(),
     listSystemModels: vi.fn(),
+    testModel: vi.fn(),
   };
 });
 
@@ -36,6 +37,7 @@ import {
   listApiKeys,
   listConfiguredModels,
   listSystemModels,
+  testModel,
   updateWorkspaceSettings,
 } from "@/lib/api";
 
@@ -361,6 +363,42 @@ describe("Settings", () => {
       );
     });
     expect(await screen.findByRole("button", { name: "Copied" })).toBeInTheDocument();
+  });
+
+  it("tests an unlocked model and shows the real latency on success", async () => {
+    vi.mocked(getSessionToken).mockReturnValue("session-token");
+    vi.mocked(getWorkspaceSettings).mockResolvedValue(baseWorkspace());
+    vi.mocked(listApiKeys).mockResolvedValue([baseKey()]);
+    vi.mocked(listConfiguredModels).mockResolvedValue([baseConfiguredModel()]);
+    vi.mocked(testModel).mockResolvedValue({
+      model: "ollama/llama3.1",
+      provider: "ollama",
+      latency_ms: 342,
+      content_preview: "ok",
+    });
+
+    renderSettings();
+
+    await screen.findByText("ollama/llama3.1");
+    fireEvent.click(screen.getByRole("button", { name: "Test" }));
+
+    expect(await screen.findByText("Works — 342ms")).toBeInTheDocument();
+    expect(testModel).toHaveBeenCalledWith("ollama/llama3.1");
+  });
+
+  it("shows 'Test failed' when a model test errors", async () => {
+    vi.mocked(getSessionToken).mockReturnValue("session-token");
+    vi.mocked(getWorkspaceSettings).mockResolvedValue(baseWorkspace());
+    vi.mocked(listApiKeys).mockResolvedValue([baseKey()]);
+    vi.mocked(listConfiguredModels).mockResolvedValue([baseConfiguredModel()]);
+    vi.mocked(testModel).mockRejectedValue(new Error("No API key configured"));
+
+    renderSettings();
+
+    await screen.findByText("ollama/llama3.1");
+    fireEvent.click(screen.getByRole("button", { name: "Test" }));
+
+    expect(await screen.findByText("Test failed")).toBeInTheDocument();
   });
 
   it("shows a locked curated model (e.g. NVIDIA NIM) with an inline unlock, not hidden", async () => {

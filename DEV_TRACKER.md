@@ -4278,3 +4278,68 @@ endpoints via Playwright route mocking to show done/running/idle/failed
 states simultaneously without needing a real LLM call): fill, badge,
 pulsing dot, live "● 3s" duration, and visibly varying edge thickness
 all render correctly together.
+
+## "Test model" button — real connectivity check, not just a saved row [DONE — 2026-07-23]
+
+Requested earlier this session: "have a test button that tests if the
+model is operational and working." Settings' Configured Models card gets
+a "Test" button per *unlocked* model (locked ones have nothing to test
+yet — they already get "Add API key" instead).
+
+**Backend**: `POST /settings/models/test` (`settings.py`) — makes one
+real, minimal call (`"Reply with exactly one word: ok"`, `max_tokens=5`)
+via the same `complete_with_workspace_credentials` path every other real
+LLM call in the product already uses (contracts, rubrics, the wizard's
+own stage-level `/pipelines/{id}/stages/{id}/test-prompt`, now also the
+subject of this session's Ollama credential-bug fix above). Same error
+handling as that existing endpoint (`ProviderKeyNotConfigured` → 422,
+encryption/transient/permanent LLM errors → 500/502/422). Workspace-
+scoped, not pipeline-scoped — this is a "does this key work at all"
+check, meant to run right after adding a key, before any pipeline is
+even involved.
+
+**Frontend**: one shared `useMutation` across every model's "Test"
+button (`testMutation.variables` tells each row whether *it's* the one
+pending/just resolved) rather than one mutation per row. Success shows
+"Works — Xms"; failure shows "Test failed" with the real error as a
+title/tooltip.
+
+**Verified**: `apps/api` full suite 214/214 (4 new tests: real scoped
+call reaches LiteLLM with the workspace's actual decrypted key, no-key
+workspace gets a clear 422, a no-key-required local model never asks for
+one, a long response gets truncated to an 80-char preview). `apps/web`
+`tsc --noEmit` clean, full suite 188/188 (2 new: success shows real
+latency, failure shows "Test failed").
+
+## Fixed: wide Canvas pushed the whole app shell wider than the viewport [DONE — 2026-07-23]
+
+Reported directly against the real dev server, after the earlier
+vertical-scroll fix: "the scroll is still there, see right corner" — a
+screenshot showed the nav rail scrolled partially out of view on the
+left with a vertical scrollbar on the right, on a wide single-rank
+Canvas (many `generate_final_response_*`-style stages side by side, the
+same shape from an earlier, already-fixed minimap bug). Different bug
+from the earlier one (that was vertical, `min-h-screen` vs `h-screen`) —
+this was horizontal.
+
+Root cause: `app-shell.tsx`'s `<main>` is a flex item of the outer
+`flex` row (nav + main), but had no `min-w-0`. A flex item's default
+`min-width` is its own content's intrinsic minimum, not 0 — a wide
+Canvas child could force `main` wider than its `flex-1` share, growing
+the whole row (nav rail included) past the viewport and scrolling the
+*document* horizontally instead of being contained. Exact same
+root-cause pattern as the migration wizard's transform-rule text
+overflow fixed earlier this session (a flex/grid child with no width
+floor blows out its container instead of wrapping/clipping), just one
+level higher in the tree this time. Fixed: `min-w-0` added to `main`,
+plus `overflow-x-hidden` on the inner scrollable content region (Canvas
+has its own pan/zoom for wide content — this level should never itself
+need to scroll horizontally).
+
+**Verified**: `tsc --noEmit` clean, full `apps/web` suite 188/188 (no
+existing test asserted the missing classes). Live check: a fully
+network-mocked 9-stage single-rank DAG (the reported shape) in Analytics
+mode — `document.documentElement.scrollWidth <=
+document.documentElement.clientWidth` exactly (previously would have
+exceeded it), nav rail's "Home" link stays in viewport, screenshotted to
+confirm.

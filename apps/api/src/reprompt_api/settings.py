@@ -54,12 +54,14 @@ from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from reprompt_core.llm.client import PermanentLLMError, RepromptLLMError, TransientLLMError
 from reprompt_core.llm.model_select import NoAvailableModelError, Purpose, select_model
 
 from reprompt_api import models
 from reprompt_api.auth import get_current_user
 from reprompt_api.crypto import EncryptionNotConfigured, encrypt
 from reprompt_api.db import get_db
+from reprompt_api.llm_context import ProviderKeyNotConfigured, complete_with_workspace_credentials
 from reprompt_api.migrations import (
     ModelOption,
     get_available_models,
@@ -353,6 +355,75 @@ def list_configured_models(
         _to_configured_model_out(option, unlocked)
         for option, unlocked in list_curated_models_with_lock_state(db, workspace)
     ]
+
+
+class ModelTestIn(BaseModel):
+    model: str = Field(
+        min_length=1, max_length=255, description="A LiteLLM model string, e.g. 'gpt-4o'."
+    )
+
+
+class ModelTestOut(BaseModel):
+    model: str
+    provider: str | None
+    latency_ms: float
+    content_preview: str
+    """First ~80 chars of the real response, trimmed - enough to see it's
+    a genuine reply (not just a 200 with an empty body) without echoing a
+    full completion back for what's meant to be a quick connectivity
+    check."""
+
+
+@router.post("/models/test", response_model=ModelTestOut)
+def test_model(
+    body: ModelTestIn,
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> ModelTestOut:
+    """Makes one real, minimal call to `body.model` using this workspace's
+    saved BYOK key (same credential-scoping path as the migration wizard's
+    stage-level `/pipelines/{id}/stages/{id}/test-prompt`), so "I added a
+    key" and "this key actually works for this model" don't have to be
+    two different leaps of faith. Not pipeline/stage-scoped like that
+    endpoint - this is a workspace-level "does this key work at all"
+    check, asked right after adding a key or picking a model, before any
+    pipeline is even involved.
+    """
+    workspace = _get_workspace_or_500(db, current_user)
+
+    try:
+        result = complete_with_workspace_credentials(
+            db,
+            workspace,
+            body.model,
+            [{"role": "user", "content": "Reply with exactly one word: ok"}],
+            max_tokens=5,
+        )
+    except ProviderKeyNotConfigured as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"No API key configured for provider '{exc.provider}' in this "
+                "workspace. Add one above before testing this model."
+            ),
+        ) from exc
+    except EncryptionNotConfigured as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    except TransientLLMError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    except (PermanentLLMError, RepromptLLMError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    preview = result.content.strip()
+    if len(preview) > 80:
+        preview = preview[:80] + "…"
+
+    return ModelTestOut(
+        model=result.model,
+        provider=result.provider,
+        latency_ms=result.latency_ms,
+        content_preview=preview,
+    )
 
 
 # ---------------------------------------------------------------------------

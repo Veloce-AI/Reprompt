@@ -77,7 +77,15 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           })}
         </div>
       </nav>
-      <main className="flex flex-1 flex-col overflow-hidden">
+      {/* min-w-0: a flex item's default min-width is its content's own
+          intrinsic min-width, not 0 - a wide child inside `main` (a wide
+          single-rank Canvas DAG, the exact shape this was found against)
+          could otherwise force `main` wider than its flex-1 share, growing
+          this whole row past the viewport and scrolling the *document*
+          horizontally, nav rail included, instead of being contained.
+          Same root-cause pattern as the migration wizard's transform-rule
+          text overflow fixed earlier this session, one level up the tree. */}
+      <main className="flex min-w-0 flex-1 flex-col overflow-hidden">
         {/* Reserves real layout space for the theme toggle (rather than a
             fixed/floating overlay) so it never sits on top of a screen's
             own top-right controls (e.g. Contracts' "Mine contract"
@@ -86,7 +94,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         <div className="flex shrink-0 justify-end border-b border-line px-8 py-3">
           <ThemeToggle />
         </div>
-        <div className="flex-1 overflow-y-auto">
+        {/* overflow-x-hidden, not just overflow-y-auto: Canvas has its own
+            internal pan/zoom for content wider than its container (that's
+            the whole point of React Flow) - this level should never itself
+            become horizontally scrollable, only vertically for genuinely
+            tall (not wide) screens. */}
+        <div className="flex-1 overflow-y-auto overflow-x-hidden">
           <div className="mx-auto max-w-[1440px]">{children}</div>
         </div>
       </main>

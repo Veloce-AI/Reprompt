@@ -12,6 +12,7 @@ import {
   listApiKeys,
   listConfiguredModels,
   listSystemModels,
+  testModel,
   updateWorkspaceSettings,
   type ConfiguredModel,
   type SystemModel,
@@ -455,6 +456,15 @@ function ConfiguredModelsCard() {
     retry: false,
   });
 
+  // One shared mutation for every model's "Test" button rather than one
+  // per row - `testMutation.variables` (the model string just mutated
+  // with) tells each row whether *it* is the one currently pending/just
+  // resolved, so "did my key actually work for this model" is answered
+  // in place instead of only "is a row saved for it".
+  const testMutation = useMutation({
+    mutationFn: (model: string) => testModel(model),
+  });
+
   if (modelsQuery.isError && isUnauthorized(modelsQuery.error)) {
     return (
       <Card>
@@ -538,6 +548,37 @@ function ConfiguredModelsCard() {
                       >
                         Add API key
                       </button>
+                    </div>
+                  )}
+                  {model.unlocked && (
+                    <div className="mt-2 flex flex-wrap items-center gap-2">
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        disabled={testMutation.isPending && testMutation.variables === model.model}
+                        onClick={() => testMutation.mutate(model.model)}
+                      >
+                        {testMutation.isPending && testMutation.variables === model.model
+                          ? "Testing…"
+                          : "Test"}
+                      </Button>
+                      {testMutation.variables === model.model && testMutation.isSuccess && (
+                        <Badge variant="pass" title={testMutation.data.content_preview}>
+                          Works — {Math.round(testMutation.data.latency_ms)}ms
+                        </Badge>
+                      )}
+                      {testMutation.variables === model.model && testMutation.isError && (
+                        <Badge
+                          variant="fail"
+                          title={
+                            testMutation.error instanceof ApiError
+                              ? testMutation.error.message
+                              : "Test failed"
+                          }
+                        >
+                          Test failed
+                        </Badge>
+                      )}
                     </div>
                   )}
                   {/* model_card is a required field on the wire contract, but this

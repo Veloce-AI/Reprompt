@@ -11,7 +11,7 @@ import {
   ShieldCheck,
   Workflow,
 } from "lucide-react";
-import { Logo } from "@/components/logo";
+import { AppShell } from "@/components/app-shell";
 import { ParityBeam } from "@/components/parity-beam";
 import { Button } from "@/components/ui/button";
 import { getSessionToken } from "@/lib/api";
@@ -212,18 +212,8 @@ export default function Landing() {
   const ctaLabel = isSignedIn ? "Go to Pipelines" : "Sign in";
 
   return (
-    <div className="flex min-h-screen flex-col bg-paper">
-      <header className="mx-auto flex w-full max-w-[1440px] items-center justify-between px-8 py-6">
-        <div className="flex items-center gap-2 font-display text-20 font-semibold leading-display text-ink">
-          <Logo className="h-7 w-7" />
-          Reprompt
-        </div>
-        <Button asChild variant="secondary" size="sm">
-          <Link to={ctaTo}>{ctaLabel}</Link>
-        </Button>
-      </header>
-
-      <main className="flex-1">
+    <AppShell>
+      <main>
         {/* ---- Hero ---- */}
         <section className="mx-auto flex w-full max-w-[1440px] flex-col items-center gap-10 px-8 pb-20 pt-8 text-center md:flex-row md:text-left">
           <div className="flex flex-1 flex-col items-center gap-5 md:items-start">
@@ -425,6 +415,6 @@ export default function Landing() {
           </Link>
         </div>
       </footer>
-    </div>
+    </AppShell>
   );
 }

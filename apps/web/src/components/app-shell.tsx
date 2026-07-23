@@ -1,5 +1,5 @@
 import { Link, useRouterState } from "@tanstack/react-router";
-import { Workflow, Settings as SettingsIcon, FileText } from "lucide-react";
+import { Workflow, Settings as SettingsIcon, FileText, Home } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Logo } from "@/components/logo";
 import { ThemeToggle } from "@/components/theme-toggle";
@@ -11,6 +11,7 @@ interface NavItem {
 }
 
 const NAV_ITEMS: NavItem[] = [
+  { to: "/", label: "Home", icon: Home },
   { to: "/pipelines", label: "Pipelines", icon: Workflow },
   { to: "/schema", label: "Trace format", icon: FileText },
   { to: "/settings", label: "Settings", icon: SettingsIcon },
@@ -33,9 +34,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         style={{ width: "var(--nav-rail-width)" }}
         aria-label="Primary"
       >
-        {/* Logo goes to the marketing landing page, not Pipelines - the
-            "Pipelines" nav item below is the actual in-app home; this is
-            the one way back to "/" without signing out. */}
+        {/* Logo also goes to "/" (the landing page), same as the "Home"
+            nav item below - two paths to the same place, matching the
+            usual "click the logo to go home" convention. */}
         <Link
           to="/"
           className="mb-8 flex flex-col items-center gap-2 px-6 font-display text-20 font-semibold leading-display text-ink"
@@ -45,7 +46,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         </Link>
         <div className="flex flex-col gap-1 px-3">
           {NAV_ITEMS.map((item) => {
-            const isActive = pathname.startsWith(item.to);
+            // "/" would match pathname.startsWith(item.to) for every route -
+            // needs an exact match, unlike every other nav item.
+            const isActive = item.to === "/" ? pathname === "/" : pathname.startsWith(item.to);
             const Icon = item.icon;
             return (
               <Link

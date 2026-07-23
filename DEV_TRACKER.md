@@ -4137,3 +4137,28 @@ proving an optional `base_url` override still gets picked up). `apps/web`
 `tsc --noEmit` clean, full suite 178/178 (wizard's existing 11 tests still
 pass unchanged after the `ModelOptionCard` extraction — confirms it's a
 pure refactor, not a behavior change).
+
+## Landing page joins the persistent nav rail; explicit Home item [DONE — 2026-07-23]
+
+Landing had its own standalone header (logo + a single CTA button) instead
+of `AppShell`'s nav rail every other screen uses - inconsistent, and the
+only way back to it was clicking the logo (not very discoverable). Fixed:
+
+- `app-shell.tsx`'s `NAV_ITEMS` gains a `Home` entry (lucide `Home` icon)
+  pointing at `/`, first in the list. `isActive`'s `pathname.startsWith()`
+  check needed a special case for this one: every path starts with `"/"`,
+  so without an exact-match carve-out, "Home" would show as active on
+  every single screen, not just the landing page itself.
+- `landing.tsx` now renders inside `<AppShell>` like every other route,
+  its own redundant header (logo + duplicate CTA button) removed
+  entirely — the hero's own CTA already covers what that button did. Its
+  outer `min-h-screen` wrapper div was also redundant once `AppShell`
+  owns the outer frame, so that came out too.
+
+**Verified**: `tsc --noEmit` clean, full `apps/web` suite 178/178
+(`landing.test.tsx`'s existing 6 tests needed no changes - both still
+pass because a `<Link to="/schema">`/`<Link to="/pipelines">` render fine
+against a test router stub that has those routes registered, which
+`landing.test.tsx`'s already did). Screenshotted the real dev server:
+"Home" correctly highlighted only on `/`, nav rail/theme-toggle bar
+identical to every other screen, hero/rest of the page unaffected.

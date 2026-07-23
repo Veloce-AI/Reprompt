@@ -9,6 +9,7 @@ import {
   listApiKeys,
   listModelOptions,
   listOpenRouterCatalog,
+  listSystemModels,
   lookupModelOption,
   type MigrationOut,
   type ModelCardInfo,
@@ -17,6 +18,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { Select } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
 import { AddApiKeyDrawer } from "@/components/add-api-key-drawer";
 import { PrismExplainer } from "@/components/prism-explainer";
@@ -290,6 +292,16 @@ export function NewMigrationWizard({
   // every stage did before this section existed.
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [stageOverrides, setStageOverrides] = useState<Record<string, Set<string>>>({});
+  // Advanced, optional per-migration judge/mutator override - collapsed by
+  // default, most migrations just take Reprompt's global default (whatever
+  // Settings' System models table shows). Empty string = "use the global
+  // default", same convention as the Rubrics tab's model select. Was
+  // previously a real API field (target_model_config.judge_model/
+  // mutator_model) with no wizard UI at all - see Fable's "promote it to a
+  // visible, collapsed-by-default section" recommendation in DEV_TRACKER.md.
+  const [showJudgeMutatorAdvanced, setShowJudgeMutatorAdvanced] = useState(false);
+  const [judgeModelOverride, setJudgeModelOverride] = useState("");
+  const [mutatorModelOverride, setMutatorModelOverride] = useState("");
   // Which provider the inline add-a-key drawer is open for; null = closed.
   const [keyDrawerProvider, setKeyDrawerProvider] = useState<string | null>(null);
   // "Add a custom model" - any LiteLLM model string beyond the curated
@@ -311,6 +323,14 @@ export function NewMigrationWizard({
     queryKey: ["openrouter-catalog", pipelineId],
     queryFn: () => listOpenRouterCatalog(pipelineId),
   });
+  // Same query key as the Rubrics tab's resolved-"Auto"-label fix, so
+  // whichever tab a reviewer visits first warms it for the other.
+  const systemModelsQuery = useQuery({
+    queryKey: ["settings-system-models"],
+    queryFn: listSystemModels,
+  });
+  const judgeDefault = systemModelsQuery.data?.find((m) => m.purpose === "judge");
+  const mutatorDefault = systemModelsQuery.data?.find((m) => m.purpose === "mutator");
   // Same query key as Settings' ApiKeysCard, so adding a key from either
   // place updates both. `retry: false` + the isSuccess guard below mean an
   // unauthenticated session (401 here) simply shows every model unlocked -
@@ -415,17 +435,31 @@ export function NewMigrationWizard({
   );
   const stages = Object.values(dagQuery.data?.stages ?? {}).sort((a, b) => a.id - b.id);
 
+  // Candidates for the judge/mutator override selects: every curated or
+  // looked-up model this workspace can actually call right now (unlocked),
+  // deduped - the same "usable" bar target-model selection already applies,
+  // since a judge/mutator override is just as unusable without a key.
+  const judgeMutatorCandidates = [
+    ...new Map(
+      [...(modelsQuery.data ?? []), ...customModels]
+        .filter((option) => !isLocked(option))
+        .map((option) => [option.model, option])
+    ).values(),
+  ];
+
   const migrationMutation = useMutation({
     mutationFn: () =>
       createMigration(pipelineId, {
         target_model_config: {
           models: [...selectedModels],
-          // Omit the key entirely (not `{}`) when nothing was customized -
-          // keeps the common-case payload/stored shape identical to before
-          // this section existed.
+          // Omit each key entirely (not send it as `{}`/`null`) when
+          // untouched - keeps the common-case payload/stored shape
+          // identical to before these sections existed.
           ...(Object.keys(stageOverridesPayload).length > 0
             ? { stage_overrides: stageOverridesPayload }
             : {}),
+          ...(judgeModelOverride ? { judge_model: judgeModelOverride } : {}),
+          ...(mutatorModelOverride ? { mutator_model: mutatorModelOverride } : {}),
         },
         budget: Number(budget),
         parity_threshold: Number(parityThresholdPercent) / 100,
@@ -707,6 +741,80 @@ export function NewMigrationWizard({
               </div>
             )}
 
+            {selectedModels.size > 0 && (
+              <div>
+                <button
+                  type="button"
+                  onClick={() => setShowJudgeMutatorAdvanced((v) => !v)}
+                  aria-expanded={showJudgeMutatorAdvanced}
+                  className="text-13 font-medium text-beam hover:underline"
+                >
+                  {showJudgeMutatorAdvanced
+                    ? "Hide advanced: override judge/mutator for this migration"
+                    : "Advanced: override judge/mutator for this migration"}
+                </button>
+                {showJudgeMutatorAdvanced && (
+                  <div className="mt-3 space-y-4 rounded-control border border-line p-4">
+                    <p className="text-12 text-ink-soft">
+                      Optional — Reprompt's own judge and mutator (the models that score and
+                      rewrite candidate prompts) default to whatever Settings' System models
+                      table shows. Override either one for just this migration.
+                    </p>
+                    <div className="grid grid-cols-2 gap-4">
+                      <div>
+                        <label
+                          htmlFor="judge-model-override"
+                          className="mb-1 block text-12 font-medium text-ink"
+                        >
+                          Judge
+                        </label>
+                        <Select
+                          id="judge-model-override"
+                          value={judgeModelOverride}
+                          onChange={(e) => setJudgeModelOverride(e.target.value)}
+                        >
+                          <option value="">
+                            {judgeDefault
+                              ? `Same as global: ${judgeDefault.selected_model}`
+                              : "Same as global default"}
+                          </option>
+                          {judgeMutatorCandidates.map((option) => (
+                            <option key={option.model} value={option.model}>
+                              {option.model}
+                            </option>
+                          ))}
+                        </Select>
+                      </div>
+                      <div>
+                        <label
+                          htmlFor="mutator-model-override"
+                          className="mb-1 block text-12 font-medium text-ink"
+                        >
+                          Mutator
+                        </label>
+                        <Select
+                          id="mutator-model-override"
+                          value={mutatorModelOverride}
+                          onChange={(e) => setMutatorModelOverride(e.target.value)}
+                        >
+                          <option value="">
+                            {mutatorDefault
+                              ? `Same as global: ${mutatorDefault.selected_model}`
+                              : "Same as global default"}
+                          </option>
+                          {judgeMutatorCandidates.map((option) => (
+                            <option key={option.model} value={option.model}>
+                              {option.model}
+                            </option>
+                          ))}
+                        </Select>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
             <div className="flex justify-end">
               <Button
                 variant="primary"
@@ -820,6 +928,28 @@ export function NewMigrationWizard({
                 </ul>
                 <p className="mt-2 text-12 text-ink-soft">
                   These stages use their own model list instead of the target models above.
+                </p>
+              </div>
+            )}
+
+            {(judgeModelOverride || mutatorModelOverride) && (
+              <div>
+                <h2 className="mb-2 text-13 font-medium text-ink">Judge/mutator overrides</h2>
+                <ul className="space-y-1">
+                  {judgeModelOverride && (
+                    <li className="text-13 text-ink">
+                      Judge: <span className="font-mono">{judgeModelOverride}</span>
+                    </li>
+                  )}
+                  {mutatorModelOverride && (
+                    <li className="text-13 text-ink">
+                      Mutator: <span className="font-mono">{mutatorModelOverride}</span>
+                    </li>
+                  )}
+                </ul>
+                <p className="mt-2 text-12 text-ink-soft">
+                  Used only for this migration — every other migration keeps using the global
+                  default.
                 </p>
               </div>
             )}

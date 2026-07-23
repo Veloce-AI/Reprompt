@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Link } from "@tanstack/react-router";
 import {
   approveAllRubrics,
   approveRubric,
@@ -7,6 +8,7 @@ import {
   getPipelineDag,
   listConfiguredModels,
   listRubrics,
+  listSystemModels,
   updateRubric,
   type RubricOut,
   type RubricUpdate,
@@ -73,6 +75,22 @@ export function RubricReviewPanel({ pipelineId }: { pipelineId: number }) {
   });
   const availableModels = (modelsQuery.data ?? []).filter((m) => m.unlocked);
 
+  // What "Auto-select a model" actually resolves to - same data Settings'
+  // System models table reads (an env var pin if the operator set one,
+  // otherwise auto-select). Surfaced inline so this dropdown stops being
+  // opaque: previously "Auto" gave no hint of what would actually run,
+  // which is why the resolved-but-invisible pin (e.g. every purpose
+  // pointing at the same NVIDIA model) read as confusing/broken here even
+  // though Settings already showed the real answer one tab away.
+  const systemModelsQuery = useQuery({
+    queryKey: ["settings-system-models"],
+    queryFn: listSystemModels,
+  });
+  const rubricDefault = systemModelsQuery.data?.find((m) => m.purpose === "rubric_generation");
+  const autoOptionLabel = rubricDefault
+    ? `Auto — ${rubricDefault.selected_model}`
+    : "Auto-select a model";
+
   const approveAllMutation = useMutation({
     mutationFn: () => approveAllRubrics(pipelineId),
     onSuccess: (updated) => queryClient.setQueryData(["rubrics", pipelineId], updated),
@@ -136,48 +154,58 @@ export function RubricReviewPanel({ pipelineId }: { pipelineId: number }) {
           </p>
         </div>
 
-        <div className="flex items-center gap-3">
-          <Select
-            value={model}
-            onChange={(e) => {
-              setModel(e.target.value);
-              localStorage.setItem("reprompt_rubric_model", e.target.value);
-            }}
-            className="w-64"
-            aria-label="Model for rubric generation (optional — auto-selected if left blank)"
-          >
-            <option value="">Auto-select a model</option>
-            {availableModels.map((m) => (
-              <option key={m.model} value={m.model}>
-                {m.model}
-              </option>
-            ))}
-          </Select>
-          <Button
-            variant="secondary"
-            onClick={handleGenerateAll}
-            disabled={generatingAll || allStages.length === 0}
-          >
-            {generatingAll ? "Generating…" : "Generate all rubrics"}
-          </Button>
-
-          {/* "Approve all" is always available, not gated on a per-stage
-              "viewed" flag: the rubrics are all rendered on this one page (not
-              paginated or hidden behind a click-to-expand), so a reviewer who
-              scans the page has already seen everything there is to see. A
-              "viewed" flag would need its own persisted state and would only
-              protect against a reviewer who scrolls past without reading -
-              which "Approve all" doesn't uniquely enable anyway (per-stage
-              "Approve" has the exact same risk). Simpler to keep one clear
-              rule than a second, weaker safety net. */}
-          {rubrics && rubrics.length > 0 && (
-            <Button
-              variant="primary"
-              onClick={() => approveAllMutation.mutate()}
-              disabled={allApproved || approveAllMutation.isPending}
+        <div className="flex flex-col items-end gap-1">
+          <div className="flex items-center gap-3">
+            <Select
+              value={model}
+              onChange={(e) => {
+                setModel(e.target.value);
+                localStorage.setItem("reprompt_rubric_model", e.target.value);
+              }}
+              className="w-64"
+              aria-label="Model for rubric generation (optional — auto-selected if left blank)"
             >
-              {allApproved ? "All stages approved" : "Approve all"}
+              <option value="">{autoOptionLabel}</option>
+              {availableModels.map((m) => (
+                <option key={m.model} value={m.model}>
+                  {m.model}
+                </option>
+              ))}
+            </Select>
+            <Button
+              variant="secondary"
+              onClick={handleGenerateAll}
+              disabled={generatingAll || allStages.length === 0}
+            >
+              {generatingAll ? "Generating…" : "Generate all rubrics"}
             </Button>
+
+            {/* "Approve all" is always available, not gated on a per-stage
+                "viewed" flag: the rubrics are all rendered on this one page (not
+                paginated or hidden behind a click-to-expand), so a reviewer who
+                scans the page has already seen everything there is to see. A
+                "viewed" flag would need its own persisted state and would only
+                protect against a reviewer who scrolls past without reading -
+                which "Approve all" doesn't uniquely enable anyway (per-stage
+                "Approve" has the exact same risk). Simpler to keep one clear
+                rule than a second, weaker safety net. */}
+            {rubrics && rubrics.length > 0 && (
+              <Button
+                variant="primary"
+                onClick={() => approveAllMutation.mutate()}
+                disabled={allApproved || approveAllMutation.isPending}
+              >
+                {allApproved ? "All stages approved" : "Approve all"}
+              </Button>
+            )}
+          </div>
+          {rubricDefault && (
+            <p className="text-11 text-ink-soft">
+              Judge and Mutator default to this same model too — see{" "}
+              <Link to="/settings" className="text-beam hover:underline">
+                Settings
+              </Link>
+            </p>
           )}
         </div>
       </div>

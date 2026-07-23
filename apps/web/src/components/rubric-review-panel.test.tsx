@@ -1,3 +1,4 @@
+import React from "react";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import { fireEvent } from "@testing-library/react";
@@ -13,7 +14,15 @@ vi.mock("@/lib/api", () => ({
   getPipelineDag: vi.fn(),
   generateRubric: vi.fn(),
   listConfiguredModels: vi.fn(),
+  listSystemModels: vi.fn(),
 }));
+
+// Link needs a RouterProvider context that these unit tests don't provide -
+// stub it as a passthrough (same pattern as migration-success-screen.test.tsx).
+vi.mock("@tanstack/react-router", async () => {
+  const actual = await vi.importActual<typeof import("@tanstack/react-router")>("@tanstack/react-router");
+  return { ...actual, Link: ({ children }: { children: React.ReactNode }) => <>{children}</> };
+});
 
 import {
   approveAllRubrics,
@@ -22,6 +31,7 @@ import {
   getPipelineDag,
   listConfiguredModels,
   listRubrics,
+  listSystemModels,
   updateRubric,
 } from "@/lib/api";
 
@@ -74,6 +84,12 @@ beforeEach(() => {
   });
   vi.mocked(listConfiguredModels).mockReset();
   vi.mocked(listConfiguredModels).mockResolvedValue([]);
+  vi.mocked(listSystemModels).mockReset();
+  vi.mocked(listSystemModels).mockResolvedValue([
+    { purpose: "rubric_generation", selected_model: "nvidia_nim/deepseek-ai/deepseek-v4-flash", reason: "pinned via REPROMPT_RUBRIC_MODEL" },
+    { purpose: "judge", selected_model: "nvidia_nim/deepseek-ai/deepseek-v4-flash", reason: "pinned via REPROMPT_JUDGE_MODEL" },
+    { purpose: "mutator", selected_model: "nvidia_nim/deepseek-ai/deepseek-v4-flash", reason: "pinned via REPROMPT_MUTATOR_MODEL" },
+  ]);
 });
 
 describe("RubricReviewPanel", () => {
@@ -176,6 +192,39 @@ describe("RubricReviewPanel", () => {
     expect(screen.getByRole("button", { name: "All stages approved" })).toBeDisabled();
   });
 
+  it("shows what 'Auto' actually resolves to, and links back to Settings for the full picture", async () => {
+    vi.mocked(listRubrics).mockResolvedValue([]);
+
+    renderPanel();
+
+    const select = await screen.findByLabelText(
+      "Model for rubric generation (optional — auto-selected if left blank)"
+    );
+    expect(
+      await within(select).findByRole("option", {
+        name: "Auto — nvidia_nim/deepseek-ai/deepseek-v4-flash",
+      })
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/Judge and Mutator default to this same model too/)
+    ).toBeInTheDocument();
+  });
+
+  it("falls back to the plain 'Auto-select a model' label when the system-models lookup fails", async () => {
+    vi.mocked(listRubrics).mockResolvedValue([]);
+    vi.mocked(listSystemModels).mockRejectedValue(new Error("unreachable"));
+
+    renderPanel();
+
+    const select = await screen.findByLabelText(
+      "Model for rubric generation (optional — auto-selected if left blank)"
+    );
+    expect(within(select).getByRole("option", { name: "Auto-select a model" })).toBeInTheDocument();
+    expect(
+      screen.queryByText(/Judge and Mutator default to this same model too/)
+    ).not.toBeInTheDocument();
+  });
+
   it("shows an empty state when the pipeline has no rubrics yet", async () => {
     vi.mocked(listRubrics).mockResolvedValue([]);
 
@@ -238,7 +287,11 @@ describe("RubricReviewPanel", () => {
     const select = await screen.findByLabelText(
       "Model for rubric generation (optional — auto-selected if left blank)"
     );
-    expect(within(select).getByRole("option", { name: "Auto-select a model" })).toBeInTheDocument();
+    expect(
+      await within(select).findByRole("option", {
+        name: "Auto — nvidia_nim/deepseek-ai/deepseek-v4-flash",
+      })
+    ).toBeInTheDocument();
     expect(await within(select).findByRole("option", { name: "gpt-4o" })).toBeInTheDocument();
     expect(
       within(select).queryByRole("option", { name: "openrouter/z-ai/glm-4.7" })

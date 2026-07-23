@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import { fireEvent } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { NewMigrationWizard } from "./new-migration-wizard";
@@ -12,6 +12,7 @@ vi.mock("@/lib/api", async () => {
     getPipelineDag: vi.fn(),
     listModelOptions: vi.fn(),
     listOpenRouterCatalog: vi.fn(),
+    listSystemModels: vi.fn(),
     createMigration: vi.fn(),
     getModelCard: vi.fn(),
     listApiKeys: vi.fn(),
@@ -26,6 +27,7 @@ import {
   listApiKeys,
   listModelOptions,
   listOpenRouterCatalog,
+  listSystemModels,
   getModelCard,
 } from "@/lib/api";
 import type { ApiKeyOut } from "@/lib/api";
@@ -129,6 +131,7 @@ beforeEach(() => {
   vi.mocked(getPipelineDag).mockReset();
   vi.mocked(listModelOptions).mockReset();
   vi.mocked(listOpenRouterCatalog).mockReset();
+  vi.mocked(listSystemModels).mockReset();
   vi.mocked(createMigration).mockReset();
   vi.mocked(getModelCard).mockReset();
   vi.mocked(listApiKeys).mockReset();
@@ -140,6 +143,11 @@ beforeEach(() => {
   // Default: empty catalog - only the new OpenRouter-picker-specific test
   // below needs a populated one.
   vi.mocked(listOpenRouterCatalog).mockResolvedValue([]);
+  vi.mocked(listSystemModels).mockResolvedValue([
+    { purpose: "rubric_generation", selected_model: "nvidia_nim/deepseek-ai/deepseek-v4-flash", reason: "pinned via REPROMPT_RUBRIC_MODEL" },
+    { purpose: "judge", selected_model: "nvidia_nim/deepseek-ai/deepseek-v4-flash", reason: "pinned via REPROMPT_JUDGE_MODEL" },
+    { purpose: "mutator", selected_model: "nvidia_nim/deepseek-ai/deepseek-v4-flash", reason: "pinned via REPROMPT_MUTATOR_MODEL" },
+  ]);
 });
 
 describe("NewMigrationWizard — pre-start Prism reference", () => {
@@ -233,6 +241,72 @@ describe("NewMigrationWizard", () => {
 
     await waitFor(() => {
       expect(onCreated).toHaveBeenCalledWith(expect.objectContaining({ id: 42 }));
+    });
+  });
+
+  it("defaults judge/mutator to the global system model and sends only the one actually overridden", async () => {
+    vi.mocked(getPipelineDag).mockResolvedValue(baseDag());
+    vi.mocked(listModelOptions).mockResolvedValue(baseModels());
+    vi.mocked(createMigration).mockResolvedValue({
+      id: 43,
+      pipeline_id: 1,
+      target_model_config: { models: ["gpt-4o-mini"], judge_model: "claude-haiku-4-5" },
+      budget: 10,
+      parity_threshold: 0.95,
+      status: "pending",
+      total_cost_usd: null,
+      stopped_early: false,
+      stop_reason: null,
+      progress_stage_name: null,
+      progress_current: null,
+      progress_total: null,
+      progress_substep: null,
+      activity_log: null,
+      completed_at: null,
+      stage_states: {},
+    });
+
+    renderWizard(vi.fn());
+
+    await screen.findByLabelText("gpt-4o-mini");
+    fireEvent.click(screen.getByLabelText("gpt-4o-mini"));
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Advanced: override judge/mutator for this migration" })
+    );
+    const judgeSelect = await screen.findByLabelText("Judge");
+    const mutatorSelect = screen.getByLabelText("Mutator");
+    expect(
+      within(judgeSelect).getByRole("option", {
+        name: "Same as global: nvidia_nim/deepseek-ai/deepseek-v4-flash",
+      })
+    ).toBeInTheDocument();
+    expect(
+      within(mutatorSelect).getByRole("option", {
+        name: "Same as global: nvidia_nim/deepseek-ai/deepseek-v4-flash",
+      })
+    ).toBeInTheDocument();
+
+    fireEvent.change(judgeSelect, { target: { value: "claude-haiku-4-5" } });
+    // Mutator left untouched - should not appear in the payload at all.
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Continue to budget & parity threshold" })
+    );
+    await screen.findByLabelText("Budget");
+    fireEvent.change(screen.getByLabelText("Budget"), { target: { value: "10" } });
+    fireEvent.click(screen.getByRole("button", { name: "Continue to review" }));
+
+    await screen.findByRole("button", { name: "Run migration" });
+    expect(screen.getByText("Judge/mutator overrides")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Run migration" }));
+
+    await waitFor(() => {
+      expect(createMigration).toHaveBeenCalledWith(1, {
+        target_model_config: { models: ["gpt-4o-mini"], judge_model: "claude-haiku-4-5" },
+        budget: 10,
+        parity_threshold: 0.95,
+      });
     });
   });
 

@@ -4494,3 +4494,55 @@ explanation text). Full apps/web suite: 191/191. Screenshotted the real
 dev server: gpt-4o's `terseify_if_small` line now reads "○
 terseify_if_small: ... — only applies to small/cheap model variants" in
 plain muted text, no strikethrough.
+
+## Model-selection UX: make "Auto" mean something, surface judge/mutator overrides [DONE — 2026-07-23]
+
+User's complaint, verbatim: seeing the same NVIDIA model repeated three
+times in Settings' System models table, then landing on the Rubrics tab
+and seeing an unrelated "Auto-select a model" dropdown that only offered
+Ollama models — asked "how am I supposed to define LLM for my judge and
+all and then target model," and to consult Fable again rather than patch
+this piecemeal a third time.
+
+Consulted Fable (discussion-only agent) on the underlying information
+architecture. His diagnosis: the three surfaces (env-var-pinned harness
+defaults, per-call override dropdowns, target-model picker) are correctly
+scoped by *who can change them and when* — the actual bug is that
+"Auto-select a model" is opaque, never showing what it resolves to, so
+identical-by-design defaults read as broken. His ordered fix list (cost
+low to high), all built this pass:
+
+1. **Rubrics' "Auto-select a model" now shows the resolved model** —
+   `rubric-review-panel.tsx` fetches the same `/settings/system-models`
+   data Settings already reads and renders `Auto — nvidia_nim/…` instead
+   of a blind "Auto-select a model". Falls back to the old plain label if
+   that lookup fails, never blocks the dropdown.
+2. **A one-line chip explains "why is it the same everywhere"** — "Judge
+   and Mutator default to this same model too — see Settings", linking
+   back to the System models table, right under the same dropdown.
+3. **Judge/mutator override promoted from an invisible API field to a
+   real wizard section** — `target_model_config.judge_model`/
+   `mutator_model` already existed server-side (per-migration override,
+   outranks the env var) but had no UI at all. New collapsed-by-default
+   "Advanced: override judge/mutator for this migration" section in
+   `new-migration-wizard.tsx`, each select defaulting to "Same as global:
+   nvidia_nim/…" (same resolved-default pattern as #1), populated from the
+   same unlocked-model set the target-model grid already uses. Only sent
+   in the create-migration payload when actually changed — an untouched
+   selection stays omitted, same convention as `stage_overrides`. Echoed
+   in the wizard's confirm/review step when set.
+
+Deliberately left alone per Fable's recommendation: the target-model
+grid/search/lookup picker (already good, a harness-role picker would only
+make it worse) and making the env vars UI-editable (single operator,
+still building — not worth the auth/audit surface it would drag in yet).
+
+**Verified**: new/updated tests across `rubric-review-panel.test.tsx`
+(resolved-label rendering, fallback-on-failure, Settings chip) and
+`new-migration-wizard.test.tsx` (defaults shown for both selects, only
+the actually-changed one sent in the payload, confirm-step summary).
+Full apps/web suite: 194/194. Screenshotted the real dev server signed in
+as a fresh user: Rubrics dropdown reads "Auto —
+nvidia_nim/deepseek-ai/dee…" with the Settings chip beneath it; the
+wizard's advanced section shows "Same as global: nvidia_nim/…" for both
+Judge and Mutator before any override is picked.

@@ -430,6 +430,30 @@ describe("NewMigrationWizard", () => {
     expect(descriptions.length).toBeGreaterThanOrEqual(1);
   });
 
+  it("explains why a non-applying transform rule doesn't apply, instead of just striking it through", async () => {
+    vi.mocked(getPipelineDag).mockResolvedValue(baseDag());
+    vi.mocked(listModelOptions).mockResolvedValue(baseModels());
+    vi.mocked(getModelCard).mockResolvedValue({
+      ...baseModelCard("openai"),
+      rules: [
+        {
+          name: "terseify_if_small",
+          description: "Strip hedging/filler phrases.",
+          applies_to: "small_only",
+          will_apply: false,
+        },
+      ],
+    });
+
+    renderWizard(vi.fn());
+    await screen.findByLabelText("gpt-4o-mini");
+
+    const explanations = await screen.findAllByText(
+      /only applies to small\/cheap model variants/
+    );
+    expect(explanations.length).toBeGreaterThanOrEqual(1);
+  });
+
   it("shows key-requiring models locked (visible but disabled) when their provider has no key", async () => {
     vi.mocked(getPipelineDag).mockResolvedValue(baseDag());
     vi.mocked(listModelOptions).mockResolvedValue(baseModels());

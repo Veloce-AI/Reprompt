@@ -146,12 +146,26 @@ function ModelOptionCard({
                     className={
                       rule.will_apply
                         ? "flex items-start gap-1 text-ink"
-                        : "flex items-start gap-1 text-ink-soft line-through"
+                        : "flex items-start gap-1 text-ink-soft"
                     }
                   >
-                    <span className="mt-0.5 flex-shrink-0">{rule.will_apply ? "✓" : "—"}</span>
+                    <span className="mt-0.5 flex-shrink-0" aria-hidden="true">
+                      {rule.will_apply ? "✓" : "○"}
+                    </span>
                     <span className="min-w-0 flex-1">
                       <strong>{rule.name}:</strong> {rule.description}
+                      {/* Not a cancelled/error rule - just inactive for
+                          this specific model. Say why instead of leaving
+                          it to a struck-through line to imply (users read
+                          strikethrough as "removed"/"broken"). */}
+                      {!rule.will_apply && (
+                        <span className="italic">
+                          {" "}
+                          — {rule.applies_to === "small_only"
+                            ? "only applies to small/cheap model variants"
+                            : "doesn't apply to this model"}
+                        </span>
+                      )}
                     </span>
                   </li>
                 ))}

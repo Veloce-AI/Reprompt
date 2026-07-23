@@ -4467,3 +4467,30 @@ not a mock): typing "claude" live-filters to
 `openrouter/anthropic/claude-3-haiku` / `-3.5-sonnet` / `-3.7-sonnet`,
 placeholder reads "Search 96 OpenRouter models…", selecting one adds a
 full model card with real cost/context data.
+
+## Clarified: a non-applying transform rule isn't struck through anymore [DONE — 2026-07-23]
+
+User flagged (screenshot of the Migrations tab's model cards): a
+non-applying model-card rule (e.g. `terseify_if_small` shown against
+`gpt-4o`, which isn't a small/cheap variant) rendered with `line-through`
+styling — this was always intentional (see model_card.py's `applies_to:
+"small_only"`), but strikethrough reads as "removed"/"cancelled"/"this
+is broken", not "not currently relevant". Settings already sidesteps
+this by only listing rules that *do* apply; the wizard's `ModelOptionCard`
+deliberately shows the full rule set (applying and not) so a reviewer
+can see the whole family's behavior while comparing models, which is
+exactly where the confusing styling showed up.
+
+`new-migration-wizard.tsx`: dropped `line-through` entirely, swapped the
+"—" glyph for "○" (reads as "inactive", not "cancelled"), and appended an
+explicit reason instead of leaving it to the reader to guess — "— only
+applies to small/cheap model variants" for an `applies_to: "small_only"`
+rule that isn't currently active (the only real case today, per
+model_card.py: an `"all"` rule is never absent from a family card it's
+listed on).
+
+**Verified**: new frontend test (non-applying rule renders its
+explanation text). Full apps/web suite: 191/191. Screenshotted the real
+dev server: gpt-4o's `terseify_if_small` line now reads "○
+terseify_if_small: ... — only applies to small/cheap model variants" in
+plain muted text, no strikethrough.

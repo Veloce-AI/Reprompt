@@ -148,7 +148,7 @@ export function ParityBeam({
       )}
 
       {cost && (
-        <span className="absolute right-0 top-1/2 -translate-y-1/2 text-12 font-mono tabular-nums text-ink-soft pl-2">
+        <span className="absolute -bottom-5 right-0 text-12 font-mono tabular-nums text-ink-soft">
           {cost}
         </span>
       )}

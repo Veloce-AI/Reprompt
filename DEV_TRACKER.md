@@ -3889,3 +3889,42 @@ which is correct-by-default rather than a guess.
 `CURATED_MODELS`'s size/contents). `apps/web` `tsc --noEmit` clean,
 `pnpm test` 175/175 (frontend tests mock the models API response
 directly, unaffected by the backend list changing).
+
+## Fixed: two label/beam text overlaps found via real screenshots [DONE — 2026-07-23]
+
+Caught by actually driving the dev server and screenshotting the landing
+page (light + dark, real incremental scroll — a `fullPage: true`
+Playwright screenshot on its own turned out to be a false negative here:
+it renders content beyond the current viewport without triggering the
+page's scroll-based `IntersectionObserver` reveals, so a first pass
+looked like the Prism/Proof sections were missing entirely; a real
+scroll — `window.scrollTo` and incremental `mouse.wheel` alike — proved
+that part was working correctly all along), not from reading the diff.
+
+**1. `ParityBeam`'s `cost` label sat on top of the beam itself.**
+`apps/web/src/components/parity-beam.tsx`: the `cost` span was
+`absolute right-0 top-1/2 -translate-y-1/2` — vertically centered on the
+same axis as the beam track, so its text always rendered struck through
+by the beam's own color fill. Pre-existing, not introduced by the
+landing page: `dev-kit.tsx`'s own `<ParityBeam score={96.4} showLabel
+cost="$0.42/1k" />` kit entry has the identical bug, just less visible
+with a short cost string — the landing page's longer
+`"$0.004 → $0.0006 / call"` made it obvious. Fixed by moving the cost
+label to `-bottom-5 right-0`, mirroring how the score label already sits
+clear of the beam at `-top-5`.
+
+**2. Hero SVG's "verified match out" label sat on the curve it labels.**
+`apps/web/src/routes/landing.tsx`'s `HeroBeam`: the label was at
+`y="112"`, almost exactly on the teal candidate-arc's lowest point
+(`y≈116` at the curve's midpoint, per the quadratic Bézier control point
+math) — same underlying mistake as the ParityBeam bug, a label placed
+directly on the line it annotates instead of clear of it. Moved to
+`y="140"`.
+
+**Verified**: re-screenshotted both fixes in isolation (cropped to just
+the scorecard / just the hero graphic) to confirm legibility, then
+re-ran full light+dark real-scroll passes to confirm no other section
+regressed. `parity-beam.test.tsx` (14) and `landing.test.tsx` (5) still
+pass — neither asserted the old (buggy) positioning classes, so no test
+needed updating alongside the fix. Full `apps/web` suite 175/175,
+`tsc --noEmit` clean.

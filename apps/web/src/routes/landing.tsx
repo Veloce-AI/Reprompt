@@ -177,7 +177,7 @@ function HeroBeam() {
           transition: "stroke-dashoffset var(--duration-base) var(--ease-out) 400ms",
         }}
       />
-      <text x="240" y="112" textAnchor="end" className="fill-parity-pass" style={{ font: "12px var(--font-mono)" }}>
+      <text x="240" y="140" textAnchor="end" className="fill-parity-pass" style={{ font: "12px var(--font-mono)" }}>
         verified match out
       </text>
     </svg>

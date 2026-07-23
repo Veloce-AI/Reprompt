@@ -5,6 +5,7 @@ import {
   approveRubric,
   generateRubric,
   getPipelineDag,
+  listConfiguredModels,
   listRubrics,
   updateRubric,
   type RubricOut,
@@ -22,6 +23,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Select } from "@/components/ui/select";
 
 /**
  * The rubric review screen's body, extracted from the old standalone
@@ -58,6 +60,18 @@ export function RubricReviewPanel({ pipelineId }: { pipelineId: number }) {
     queryKey: ["dag", pipelineId],
     queryFn: () => getPipelineDag(pipelineId),
   });
+
+  // Same query key as Settings' Configured Models / the migration wizard's
+  // picker, so it's already warm by the time a reviewer lands here in the
+  // normal flow. A dropdown of what's actually usable (was a bare free-text
+  // input a reviewer had to already know the exact LiteLLM model string to
+  // fill in - the one other model-selection surface in this codebase that
+  // hadn't been upgraded to the same picker pattern as Settings/the wizard).
+  const modelsQuery = useQuery({
+    queryKey: ["settings-configured-models"],
+    queryFn: listConfiguredModels,
+  });
+  const availableModels = (modelsQuery.data ?? []).filter((m) => m.unlocked);
 
   const approveAllMutation = useMutation({
     mutationFn: () => approveAllRubrics(pipelineId),
@@ -123,8 +137,7 @@ export function RubricReviewPanel({ pipelineId }: { pipelineId: number }) {
         </div>
 
         <div className="flex items-center gap-3">
-          <Input
-            placeholder="Model (optional — auto-selected if left blank)"
+          <Select
             value={model}
             onChange={(e) => {
               setModel(e.target.value);
@@ -132,7 +145,14 @@ export function RubricReviewPanel({ pipelineId }: { pipelineId: number }) {
             }}
             className="w-64"
             aria-label="Model for rubric generation (optional — auto-selected if left blank)"
-          />
+          >
+            <option value="">Auto-select a model</option>
+            {availableModels.map((m) => (
+              <option key={m.model} value={m.model}>
+                {m.model}
+              </option>
+            ))}
+          </Select>
           <Button
             variant="secondary"
             onClick={handleGenerateAll}
@@ -209,7 +229,7 @@ export function RubricReviewPanel({ pipelineId }: { pipelineId: number }) {
             <p className="font-display text-20 font-semibold text-ink">No rubrics yet</p>
             <p className="mt-2 text-14 text-ink-soft">
               Click &ldquo;Generate all rubrics&rdquo; to generate rubrics for every stage automatically — a
-              model is picked for you, or enter one above to choose yourself.
+              model is picked for you, or choose one above yourself.
             </p>
           </CardContent>
         </Card>

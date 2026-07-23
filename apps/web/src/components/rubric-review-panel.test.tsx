@@ -12,6 +12,7 @@ vi.mock("@/lib/api", () => ({
   approveAllRubrics: vi.fn(),
   getPipelineDag: vi.fn(),
   generateRubric: vi.fn(),
+  listConfiguredModels: vi.fn(),
 }));
 
 import {
@@ -19,6 +20,7 @@ import {
   approveRubric,
   generateRubric,
   getPipelineDag,
+  listConfiguredModels,
   listRubrics,
   updateRubric,
 } from "@/lib/api";
@@ -70,6 +72,8 @@ beforeEach(() => {
     stages: {},
     edges: [],
   });
+  vi.mocked(listConfiguredModels).mockReset();
+  vi.mocked(listConfiguredModels).mockResolvedValue([]);
 });
 
 describe("RubricReviewPanel", () => {
@@ -179,6 +183,66 @@ describe("RubricReviewPanel", () => {
 
     expect(await screen.findByText("No rubrics yet")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Approve all" })).not.toBeInTheDocument();
+  });
+
+  it("offers a dropdown of unlocked models instead of requiring a typed-in string", async () => {
+    vi.mocked(listRubrics).mockResolvedValue([]);
+    vi.mocked(listConfiguredModels).mockResolvedValue([
+      {
+        model: "gpt-4o",
+        provider: "openai",
+        input_cost_per_1m: 2.5,
+        output_cost_per_1m: 10,
+        max_input_tokens: 128000,
+        max_output_tokens: 16384,
+        supports_json_mode: true,
+        supports_function_calling: true,
+        requires_api_key: true,
+        unlocked: true,
+        model_card: {
+          family: "openai",
+          version: 1,
+          description: "",
+          is_small_variant: false,
+          rules: [],
+          supports_reasoning: false,
+          code_sample: "",
+        },
+      },
+      {
+        // Locked models must not appear as choosable options.
+        model: "openrouter/z-ai/glm-4.7",
+        provider: "openrouter",
+        input_cost_per_1m: 0.4,
+        output_cost_per_1m: 1.5,
+        max_input_tokens: 202752,
+        max_output_tokens: 8192,
+        supports_json_mode: true,
+        supports_function_calling: false,
+        requires_api_key: true,
+        unlocked: false,
+        model_card: {
+          family: "generic",
+          version: 1,
+          description: "",
+          is_small_variant: false,
+          rules: [],
+          supports_reasoning: false,
+          code_sample: "",
+        },
+      },
+    ]);
+
+    renderPanel();
+
+    const select = await screen.findByLabelText(
+      "Model for rubric generation (optional — auto-selected if left blank)"
+    );
+    expect(within(select).getByRole("option", { name: "Auto-select a model" })).toBeInTheDocument();
+    expect(await within(select).findByRole("option", { name: "gpt-4o" })).toBeInTheDocument();
+    expect(
+      within(select).queryByRole("option", { name: "openrouter/z-ai/glm-4.7" })
+    ).not.toBeInTheDocument();
   });
 
   it("generates rubrics with a blank model field — auto-selection is the default, not a blocker", async () => {

@@ -4343,3 +4343,31 @@ mode — `document.documentElement.scrollWidth <=
 document.documentElement.clientWidth` exactly (previously would have
 exceeded it), nav rail's "Home" link stays in viewport, screenshotted to
 confirm.
+
+## Cross-screen consistency: Rubrics tab's model picker [DONE — 2026-07-23]
+
+First finding from the broader consistency pass Fable recommended
+(#2/#3 in that discussion). Rubrics was the one remaining model-selection
+surface never upgraded to the picker pattern Settings/the wizard already
+use — a bare free-text `<Input>` a reviewer had to already know the exact
+LiteLLM model string to fill in correctly, with no visibility into what
+was actually usable. (This is also the screen the earlier "No API key
+configured for provider 'ollama'" false-error report came from - that
+part was already fixed at the credential layer; this is the matching
+UI-side fix.)
+
+`rubric-review-panel.tsx` now fetches the same `listConfiguredModels`
+data Settings/the wizard already use and renders a `<Select>` — "Auto-
+select a model" plus every currently-*unlocked* model — instead of a
+plain text field. Locked models don't appear as choosable options (same
+reasoning as `get_available_models` server-side: a model without a
+working key shouldn't be selectable). The stale "or enter one above to
+choose yourself" empty-state copy (a holdover from when it really was a
+free-text field) updated to "or choose one above yourself".
+
+**Verified**: `tsc --noEmit` clean, full `apps/web` suite 189/189 (1 new
+test: dropdown offers unlocked models, omits locked ones; existing
+`rubric-review-panel.test.tsx` suite needed only a `listConfiguredModels`
+mock added, no behavior changes to other tests). Screenshotted the real
+dev server: dropdown renders correctly with a real BYOK-backed model
+list, empty-state copy reads correctly.

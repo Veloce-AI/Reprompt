@@ -3798,3 +3798,94 @@ against a fresh throwaway DB per `docs/DEVELOPMENT.md`'s gotcha:
 
 **Next**: Phase 2 (richer flow animation) and Phase 3 (responsive/a11y
 polish) — not started.
+
+## Landing page Phase 2 — richer animation [DONE — 2026-07-23]
+
+Adds two more motion layers on top of Phase 1's hero draw-in and flow-dot,
+both aimed at making the "data moving through a sequence" idea land
+without reading it — plus a scroll-triggered entrance for every section
+below the hero, so the page doesn't dump all its content statically on
+load.
+
+**Cycling highlight** (`useCycle` in `landing.tsx`): sweeps an active
+index 0..N-1 on a `setInterval`, used to highlight one trace stage
+(Classify → Search → Summarize → Answer) and one Prism step (Mutate →
+Score → Critique → Refine) at a time, looping — the Prism row wrapping
+back to Mutate after Refine doubles as the visual for "loops for up to 3
+rounds" without a separate loop-back arrow graphic. This is the one
+animation on the page driven from JS state rather than pure CSS, so unlike
+Phase 1's motion (which rides `--duration-base`/`--ease-out` and gets
+reduced-motion handling for free from tokens.css), it needed its own
+`useReducedMotion` hook backed by `matchMedia` — the first JS use of
+`matchMedia` in this codebase (`theme.ts` deliberately avoids it, relying
+on CSS's own `prefers-color-scheme` cascade instead, per that file's own
+comment — but there's no CSS-only way to gate a JS interval).
+
+**Scroll reveal** (`Reveal` component, `.landing-reveal`/
+`-visible` in `globals.css`): fades + slides each section's content in the
+first time it enters the viewport via `IntersectionObserver`, disconnecting
+after the first trigger (no repeated fire on scroll-back). Reduced motion
+skips straight to the visible end state.
+
+**Tests**: `apps/web/src/routes/landing.test.tsx` (new, 5 tests) — hero
+headline + sign-in CTA, trace stage sequence, Prism step sequence + round
+cap, the scorecard's ParityBeam renders, footer schema link. Needed local
+`matchMedia`/`IntersectionObserver` stubs (jsdom implements neither) —
+same per-file-stub convention this suite already uses for `window.scrollTo`.
+
+**Verified**: `tsc --noEmit` clean. `pnpm test` 175/175 (170 + 5 new).
+
+**Next**: Phase 3 (responsive/a11y polish, prefers-reduced-motion audit
+beyond what's already built in) — not started.
+
+## Model catalog: NVIDIA NIM + OpenRouter curated entries [DONE — 2026-07-23]
+
+Extends `apps/api/src/reprompt_api/migrations.py`'s `CURATED_MODELS` with
+nine entries across two aggregator providers, closing out the
+previously-deferred "new model family research" (Gemini/OpenAI/Anthropic
+were already curated; Llama/DeepSeek/Qwen/GLM/MiniMax were not) by routing
+through two providers that each carry many families under one API key,
+rather than hand-integrating each family directly.
+
+**NVIDIA NIM** (`nvidia_nim/...`, build.nvidia.com, free-tier
+OpenAI-compatible): `meta/llama-3.1-405b-instruct`,
+`deepseek-ai/deepseek-v3.2`, `qwen/qwen3-235b-a22b`,
+`nvidia/llama-3.1-nemotron-ultra-253b-v1`. Slugs sourced from a
+maintainer-documented NIM API catalog (litellm's own pricing table only
+carries NIM's rerank models, not chat — confirmed via
+`litellm.models_by_provider["nvidia_nim"]`, 3 entries, all rerank), so
+these four have no litellm-side cost data; `get_model_capabilities()`
+already degrades to `cost=None` gracefully for any model it can't price,
+same as an unrecognized model string generally.
+
+**OpenRouter** (`openrouter/...`): `z-ai/glm-4.7`, `minimax/minimax-m2.1`,
+`mistralai/mistral-large-2512`, `x-ai/grok-4`, `moonshotai/kimi-k2.5`.
+Sourced directly from the installed litellm's own
+`litellm.model_cost`/`models_by_provider` (96 known `openrouter/` entries)
+rather than scraping openrouter.ai — ground truth in what litellm actually
+routes, same principle as the earlier model-card research pass. All nine
+verified to resolve through `get_model_capabilities()` without error
+before landing (provider correctly identified, `requires_api_key=True`,
+OpenRouter entries carry real cost data, NIM entries degrade to `None` as
+expected).
+
+**Discoverability**: `apps/web/src/routes/settings.tsx`'s
+`SUGGESTED_PROVIDERS` dropdown gets `"nvidia_nim"`/`"openrouter"` added
+(env vars confirmed via `litellm.validate_environment()`:
+`NVIDIA_NIM_API_KEY`/`OPENROUTER_API_KEY`) — both were already reachable
+via the existing "Other" free-text fallback, this just makes them visible
+without needing to already know the exact internal provider slug.
+
+**Not changed**: `model_card.py`'s `resolve_family()` open-weight name
+markers — GLM/MiniMax/Grok/Kimi aren't added to the `_OPEN_WEIGHT_MARKERS`
+tuple that buckets a model into the `"llama"` prompt-family. Whether each
+of those is genuinely open-weight wasn't confirmed with the same
+confidence as the already-listed families, and misclassifying one would
+silently apply the wrong prompt-transform assumption — left to fall
+through to `resolve_family`'s documented `"generic"` fallback instead,
+which is correct-by-default rather than a guess.
+
+**Verified**: `apps/api` full suite 204/204 (no test hardcodes
+`CURATED_MODELS`'s size/contents). `apps/web` `tsc --noEmit` clean,
+`pnpm test` 175/175 (frontend tests mock the models API response
+directly, unaffected by the backend list changing).

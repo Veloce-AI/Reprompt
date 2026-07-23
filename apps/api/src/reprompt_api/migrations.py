@@ -71,6 +71,20 @@ router = APIRouter(prefix="/pipelines", tags=["migrations"])
 # the picker — not an attempt to enumerate every model LiteLLM knows about.
 # Spans the major hosted providers plus a couple of local/open options (no
 # API key required), per the task's own examples.
+#
+# The nvidia_nim/openrouter entries below are each aggregators that route
+# many unrelated open-weight families through one LiteLLM provider string
+# (see model_card.py's resolve_family docstring) — added specifically to
+# cover the model families the product plan called out (Llama, DeepSeek,
+# Qwen, GLM, MiniMax) without hand-building a direct integration for each
+# one. Slugs verified against litellm.model_cost/models_by_provider (the
+# openrouter ones) or a maintainer-documented NIM catalog (the nvidia_nim
+# ones — litellm's own pricing table only knows NIM's rerank models, not
+# its chat models, so there's no litellm-side cost data for those four; the
+# capability registry already degrades gracefully to cost=None for that
+# case, same as any other model it can't price). Requires NVIDIA_NIM_API_KEY
+# / OPENROUTER_API_KEY respectively — both listed in Settings' BYOK provider
+# suggestions.
 CURATED_MODELS: list[str] = [
     "gpt-4o",
     "gpt-4o-mini",
@@ -80,6 +94,17 @@ CURATED_MODELS: list[str] = [
     "gemini/gemini-2.0-flash-lite",
     "ollama/llama3.1",
     "ollama/qwen2.5:14b",
+    # NVIDIA NIM (build.nvidia.com) — free-tier friendly, OpenAI-compatible.
+    "nvidia_nim/meta/llama-3.1-405b-instruct",
+    "nvidia_nim/deepseek-ai/deepseek-v3.2",
+    "nvidia_nim/qwen/qwen3-235b-a22b",
+    "nvidia_nim/nvidia/llama-3.1-nemotron-ultra-253b-v1",
+    # OpenRouter — one key, many families not otherwise directly integrated.
+    "openrouter/z-ai/glm-4.7",
+    "openrouter/minimax/minimax-m2.1",
+    "openrouter/mistralai/mistral-large-2512",
+    "openrouter/x-ai/grok-4",
+    "openrouter/moonshotai/kimi-k2.5",
 ]
 
 

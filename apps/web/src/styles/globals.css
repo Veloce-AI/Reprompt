@@ -105,3 +105,25 @@
     left: 0%;
   }
 }
+
+/* Landing page — per-section scroll reveal (fade + slide up on first entry
+   into the viewport, see routes/landing.tsx's Reveal component). Reduced
+   motion skips straight to the visible end state instead of animating. */
+.landing-reveal {
+  opacity: 0;
+  transform: translateY(16px);
+  transition: opacity 500ms var(--ease-out), transform 500ms var(--ease-out);
+}
+
+.landing-reveal-visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .landing-reveal {
+    opacity: 1;
+    transform: none;
+    transition: none;
+  }
+}

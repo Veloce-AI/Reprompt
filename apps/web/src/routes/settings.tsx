@@ -37,7 +37,7 @@ import {
 // why: LiteLLM supports many more providers than any fixed list, and "any
 // provider" is an explicit project design goal). "Other" reveals a plain
 // text input so nothing is actually blocked by this list.
-const SUGGESTED_PROVIDERS = ["openai", "anthropic", "gemini"] as const;
+const SUGGESTED_PROVIDERS = ["openai", "anthropic", "gemini", "nvidia_nim", "openrouter"] as const;
 
 function formatDate(iso: string): string {
   try {

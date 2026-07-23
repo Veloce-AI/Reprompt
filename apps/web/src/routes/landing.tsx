@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link } from "@tanstack/react-router";
 import {
   ArrowRight,
@@ -47,6 +47,70 @@ const FLOW_STEPS = [
 ];
 
 const PRISM_STEPS = ["Mutate", "Score", "Critique", "Refine"];
+
+/** Mirrors tokens.css's own `prefers-reduced-motion` handling for the one
+ * animation on this page driven from JS rather than pure CSS (the step
+ * cyclers below) - CSS motion elsewhere on this page rides `--duration-base`,
+ * which tokens.css already zeroes under reduced motion for free. */
+function useReducedMotion(): boolean {
+  const [reduced, setReduced] = useState(
+    () => typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches
+  );
+  useEffect(() => {
+    const query = window.matchMedia("(prefers-reduced-motion: reduce)");
+    const onChange = () => setReduced(query.matches);
+    query.addEventListener("change", onChange);
+    return () => query.removeEventListener("change", onChange);
+  }, []);
+  return reduced;
+}
+
+/** Loops an active index 0..count-1 on a fixed interval - used to sweep a
+ * highlight across the trace stages and the Prism steps so both rows read
+ * as "data moving through a sequence" rather than a static list. Disabled
+ * entirely (stays at index 0) under reduced motion. */
+function useCycle(count: number, intervalMs: number): number {
+  const reducedMotion = useReducedMotion();
+  const [active, setActive] = useState(0);
+  useEffect(() => {
+    if (reducedMotion) return;
+    const id = setInterval(() => setActive((i) => (i + 1) % count), intervalMs);
+    return () => clearInterval(id);
+  }, [reducedMotion, count, intervalMs]);
+  return reducedMotion ? 0 : active;
+}
+
+/** Fades/slides a section's content in the first time it scrolls into view,
+ * via IntersectionObserver rather than a scroll listener. Purely decorative
+ * (see globals.css's landing-flow-dot comment on why marketing-page motion
+ * is exempt from the "motion must map to a real state" rule) - skips
+ * straight to visible under reduced motion instead of animating in. */
+function Reveal({ children, className }: { children: React.ReactNode; className?: string }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [visible, setVisible] = useState(false);
+
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        if (entry.isIntersecting) {
+          setVisible(true);
+          observer.disconnect();
+        }
+      },
+      { threshold: 0.15 }
+    );
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
+
+  return (
+    <div ref={ref} className={cn("landing-reveal", visible && "landing-reveal-visible", className)}>
+      {children}
+    </div>
+  );
+}
 
 /**
  * Hero mark: a scaled-up version of the Logo's own beam-split-converge
@@ -130,6 +194,9 @@ function SectionHeading({ eyebrow, title }: { eyebrow: string; title: string }) 
 }
 
 export default function Landing() {
+  const activeTraceStage = useCycle(TRACE_STAGES.length, 1000);
+  const activePrismStep = useCycle(PRISM_STEPS.length, 1100);
+
   return (
     <div className="flex min-h-screen flex-col bg-paper">
       <header className="mx-auto flex w-full max-w-[1440px] items-center justify-between px-8 py-6">
@@ -172,7 +239,7 @@ export default function Landing() {
 
         {/* ---- What is a trace ---- */}
         <section className="border-t border-line px-8 py-16">
-          <div className="mx-auto max-w-[1440px]">
+          <Reveal className="mx-auto max-w-[1440px]">
             <SectionHeading eyebrow="Where it starts" title="It starts with what your pipeline already does" />
             <p className="max-w-2xl text-14 text-ink-soft">
               Give Reprompt real examples of your pipeline running — what went into each step,
@@ -182,7 +249,14 @@ export default function Landing() {
             <div className="mt-8 flex flex-wrap items-center gap-2">
               {TRACE_STAGES.map((stage, i) => (
                 <div key={stage} className="flex items-center gap-2">
-                  <div className="rounded-card border border-line bg-paper px-4 py-2 text-13 font-medium text-ink">
+                  <div
+                    className={cn(
+                      "rounded-card border px-4 py-2 text-13 font-medium transition-colors duration-base ease-out",
+                      i === activeTraceStage
+                        ? "border-beam bg-beam-soft text-beam"
+                        : "border-line bg-paper text-ink"
+                    )}
+                  >
                     {stage}
                   </div>
                   {i < TRACE_STAGES.length - 1 && (
@@ -191,12 +265,12 @@ export default function Landing() {
                 </div>
               ))}
             </div>
-          </div>
+          </Reveal>
         </section>
 
         {/* ---- The flow ---- */}
         <section id="how-it-works" className="border-t border-line px-8 py-16">
-          <div className="mx-auto max-w-[1440px]">
+          <Reveal className="mx-auto max-w-[1440px]">
             <SectionHeading eyebrow="How it works" title="From trace to proof, in five steps" />
             <div className="relative">
               <div
@@ -223,12 +297,12 @@ export default function Landing() {
                 })}
               </ol>
             </div>
-          </div>
+          </Reveal>
         </section>
 
         {/* ---- Prism spotlight ---- */}
         <section className="border-t border-line bg-beam-soft/40 px-8 py-16">
-          <div className="mx-auto max-w-[1440px]">
+          <Reveal className="mx-auto max-w-[1440px]">
             <SectionHeading eyebrow="The optimizer" title="Prism: the search, when one rewrite isn't enough" />
             <div className="flex flex-col gap-8 md:flex-row md:items-start">
               <p className="max-w-xl text-14 text-ink-soft">
@@ -242,7 +316,14 @@ export default function Landing() {
                 <div className="flex flex-wrap items-center gap-2">
                   {PRISM_STEPS.map((step, i) => (
                     <div key={step} className="flex items-center gap-2">
-                      <div className="rounded-card border border-line bg-paper px-3 py-1.5 text-13 font-medium text-ink">
+                      <div
+                        className={cn(
+                          "rounded-card border px-3 py-1.5 text-13 font-medium transition-colors duration-base ease-out",
+                          i === activePrismStep
+                            ? "border-beam bg-beam-soft text-beam"
+                            : "border-line bg-paper text-ink"
+                        )}
+                      >
                         {step}
                       </div>
                       {i < PRISM_STEPS.length - 1 && (
@@ -251,7 +332,7 @@ export default function Landing() {
                     </div>
                   ))}
                   <span className="rounded-full border border-line bg-paper px-3 py-1 text-12 font-medium text-ink-soft">
-                    up to 3 rounds
+                    up to 3 rounds, looping back to Mutate
                   </span>
                 </div>
                 <div className="flex flex-col gap-3 text-13 text-ink-soft">
@@ -272,12 +353,12 @@ export default function Landing() {
                 </div>
               </div>
             </div>
-          </div>
+          </Reveal>
         </section>
 
         {/* ---- Proof not promise ---- */}
         <section className="border-t border-line px-8 py-16">
-          <div className="mx-auto max-w-[1440px]">
+          <Reveal className="mx-auto max-w-[1440px]">
             <SectionHeading eyebrow="The result" title="Proof, not a promise" />
             <p className="max-w-2xl text-14 text-ink-soft">
               Every migration is checked three ways — a fast rule-based pass, an AI judge
@@ -288,7 +369,7 @@ export default function Landing() {
               <p className="mb-6 text-13 font-medium text-ink-soft">Example scorecard</p>
               <ParityBeam score={97} cost="$0.004 → $0.0006 / call" showLabel animateIn />
             </div>
-          </div>
+          </Reveal>
         </section>
 
         {/* ---- CTA ---- */}

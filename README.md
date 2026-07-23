@@ -6,7 +6,7 @@
 **Change the AI model behind your product without breaking it — and prove it.**
 
 *by [Veloce AI](https://veloceai.in/)*
-
+Markdown Preview Mermaid Support"
 ![Status](https://img.shields.io/badge/status-in%20development-4C5FE8)
 ![License](https://img.shields.io/badge/license-proprietary-8B5CF6)
 ![Python](https://img.shields.io/badge/python-3.12-14B8A6)
@@ -18,6 +18,25 @@ the outputs still match — no manual prompt rewriting, no guessing.
 [What it does](#what-reprompt-does) · [How the search works](#how-the-try-it-until-it-matches-step-actually-works) · [What's built](#whats-built-so-far) · [How to run it](#how-to-run-it--try-it-yourself)
 
 </div>
+
+---
+
+```mermaid
+flowchart TD
+    A([Upload pipeline trace files]) --> B[Parse stages + structure]
+    B --> C[Learn what good looks like\nper stage — rubric generation]
+    C --> D[Run optimizer search]
+    D --> E[Mutator rewrites prompt]
+    E --> F[Try on target model]
+    F --> G{Score three ways:\nrule checks + similarity + AI judge}
+    G -->|Score not good enough\nand budget left| E
+    G -->|Good enough| H[Prove on holdout examples\nnever used during search]
+    H --> I([Hand back winning prompts\n+ cost + accuracy scorecard])
+
+    style A fill:#4C5FE8,color:#fff,stroke:none
+    style I fill:#14B8A6,color:#fff,stroke:none
+    style G fill:#8B5CF6,color:#fff,stroke:none
+```
 
 ---
 
@@ -61,6 +80,32 @@ is the interesting part — here's what's actually happening under it.
 |---|---|---|
 | **Simple** | Asks an AI to rewrite the prompt once, then tries a handful of settings (temperature, output format) around it. | Fast, cheap, the default. |
 | **Prism** — a self-evolving prompt optimizer | Evolves the prompt through several rounds before locking in a winner: rewrites it, tries it, looks at *exactly why* the weak attempts fell short (which checks failed, how different the answer was, an AI judge's own reasoning), asks the AI to fix those specific problems, then tries again — up to 3 rounds. | Harder migrations where a single rewrite isn't enough — a couple of rounds of "try → see what's wrong → fix it" beats guessing blindly, for far less cost than trying hundreds of random variations. |
+
+```mermaid
+flowchart LR
+    subgraph Simple["Simple (default)"]
+        direction TB
+        S1[Rewrite prompt once] --> S2[Try a handful of\ntemperature + format variants]
+        S2 --> S3([Pick best score])
+    end
+
+    subgraph Prism["Prism (harder migrations)"]
+        direction TB
+        P1[Round 1:\nrewrite prompt] --> P2[Try variants]
+        P2 --> P3{Score improved?}
+        P3 -->|Yes or max rounds reached| P5([Pick best score])
+        P3 -->|No — look at\nexact failures| P4[Round 2:\nfix those specific problems]
+        P4 --> P2
+    end
+
+    In([One pipeline stage]) --> Simple
+    In --> Prism
+
+    style In fill:#4C5FE8,color:#fff,stroke:none
+    style S3 fill:#14B8A6,color:#fff,stroke:none
+    style P5 fill:#14B8A6,color:#fff,stroke:none
+    style P3 fill:#8B5CF6,color:#fff,stroke:none
+```
 
 Both are 100% our own code, calling any AI provider the same way — see
 ["What it's built with"](#what-its-built-with) below. **Prism evolves within
@@ -108,6 +153,7 @@ technical detail: `DEV_TRACKER.md`.
 | Review screens (see your pipeline, review what Reprompt learned) | ✅ Working |
 | Log in, save your API keys securely | ✅ Working |
 | **The actual "try the cheaper model until it matches" search** | ⚙️ Engine built + tested, not wired into the app yet — see below |
+| End-to-end test on real data (Nemotron migration harness) | ✅ Working — real production traces, real NVIDIA NIM calls, verified passes |
 | Final report screen | 🚧 Waiting on the above |
 
 See `docs/DEVELOPMENT.md` for the exact list of what's left and in what
@@ -130,6 +176,13 @@ and all you need for local dev; Postgres is optional (see
 - **Full technical plan**: `docs/DEVELOPMENT.md`
 - **Detailed, current build status of the optimizer**: `DEV_TRACKER.md`
 - **The exact data format it expects**: `docs/trace-format.md`
+- **End-to-end test against a real model**: `docs/E2E_TESTING.md` — how to
+  run the Nemotron migration harness (real NVIDIA NIM calls on real production
+  traces), which env vars to set, and what the output means
+- **Before/after demo script**: `scripts/demo_nemotron_migration.py` — runs
+  the full optimizer on a real legal/tax RAG trace and prints the original
+  Gemini cost vs. Nemotron cost, parity score per stage, and winning prompts;
+  run with `NVIDIA_NIM_API_KEY=nvapi-... uv run python scripts/demo_nemotron_migration.py`
 
 ### Getting an AI model API key
 
@@ -175,11 +228,44 @@ changes as decisions get made.
 ## Folder structure
 
 ```
-apps/api/       The backend server
-apps/web/       The website / product UI
-packages/core/  The actual "brain" - the logic above lives here, kept
-                separate so it can run on its own, not tied to the web app
-docs/           Everything else - how to run it, the data format, the plan
+apps/api/                         The backend server (FastAPI + SQLAlchemy)
+  src/reprompt_api/
+    migrations.py                 Migration wizard endpoints + curated model list
+    optimizer_runner.py           Runs the core optimizer against real DB data
+    llm_context.py                Bridges stored workspace API keys into LiteLLM calls
+    settings.py                   BYOK key storage (encrypted per workspace)
+
+apps/web/                         The product UI (React + TypeScript + Vite)
+
+packages/core/                    The engine — no FastAPI, runs headless in tests/CLI
+  src/reprompt_core/
+    optimizer/loop.py             run_optimizer() — the main search loop
+    optimizer/mutator.py          Prompt mutation (rewrites + Prism critique-refine)
+    optimizer/scoring.py          Three-way scoring: rules + embedding sim + AI judge
+    llm/client.py                 complete() — one function, every provider via LiteLLM
+    llm/registry.py               Model capability facts (cost, context, JSON mode, key needed)
+    llm/model_select.py           Auto-picks judge/mutator model from what's available
+    importers/query_log.py        Parses real pipeline trace files into TraceFile
+    rubric_generator.py           Learns "what good looks like" from examples
+  tests/
+    test_e2e_nemotron.py          End-to-end smoke test: real NVIDIA NIM calls on a
+                                  real production trace — skipped unless NVIDIA_NIM_API_KEY set
+    fixtures/query_log/           Two committed real trace files (3-stage CI fixture +
+                                  32-stage demo fixture) from a legal/tax RAG pipeline
+
+scripts/
+  demo_nemotron_migration.py      Before/after demo: runs the optimizer on a real trace,
+                                  prints original Gemini cost vs Nemotron cost + winners
+  setup.sh                        First-time install (deps, DB, encryption key)
+
+docs/
+  E2E_TESTING.md                  How to run the Nemotron harness, env vars, output explained
+  NEMOTRON_TEST_PIPELINE_PLAN.md  Plan and reasoning behind the E2E test design
+  trace-format.md                 The exact .txt file format Reprompt imports
+  DEVELOPMENT.md                  Full technical plan and what's left to build
+  TESTING.md                      Step-by-step first-run guide
+
+DEV_TRACKER.md                    Phase-by-phase build status, decisions, test counts
 ```
 
 ## License

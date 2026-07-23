@@ -1,7 +1,7 @@
 # Prism — Remaining Phases Implementation Plan (Phases 3–8 + GEPA)
 
-Authored 2026-07-22 (Opus) against the PDF `reprompt_prism_documentation.pdf`
-and the live codebase. This is the execution spec handed to Sonnet. Each
+Written 2026-07-22 against the PDF `reprompt_prism_documentation.pdf`
+and the live codebase. Each
 phase section is self-contained: what to build, where it lives, the data
 model, the API surface, the core logic, the tests, and its dependencies.
 

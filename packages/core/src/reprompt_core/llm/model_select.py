@@ -92,8 +92,9 @@ _GENERAL_ANALYSIS_TIERS: tuple[tuple[str, ...], ...] = (
     # models get a discriminated-union-shaped schema "almost right").
     ("claude-sonnet-4-5", "gpt-4o", "gemini/gemini-2.0-flash"),
     # Tier 2: smaller/cheaper siblings of the same families — capable,
-    # not first choice.
-    ("claude-haiku-4-5", "gpt-4o-mini", "gemini/gemini-2.0-flash-lite"),
+    # not first choice. Includes Nemotron (free NVIDIA NIM, strong
+    # instruction-following) alongside the smaller cloud siblings.
+    ("claude-haiku-4-5", "gpt-4o-mini", "gemini/gemini-2.0-flash-lite", "nvidia_nim/nvidia/llama-3.3-nemotron-super-49b-v1"),
     # Tier 3: local/open-weight — last resort: no vendor cost data and
     # generally weaker instruction-following guarantees than the cloud
     # frontier tiers above.

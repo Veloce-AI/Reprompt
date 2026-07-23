@@ -93,6 +93,8 @@ CURATED_MODELS: list[str] = [
     "claude-haiku-4-5",
     "gemini/gemini-2.0-flash",
     "gemini/gemini-2.0-flash-lite",
+    # NVIDIA NIM — free-tier hosted model, key: NVIDIA_NIM_API_KEY
+    "nvidia_nim/nvidia/llama-3.3-nemotron-super-49b-v1",
     "ollama/llama3.1",
     "ollama/qwen2.5:14b",
     # NVIDIA NIM (build.nvidia.com) — free-tier friendly, OpenAI-compatible.

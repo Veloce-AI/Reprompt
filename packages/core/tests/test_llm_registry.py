@@ -154,3 +154,39 @@ def test_get_model_capabilities_provider_agnostic_across_families() -> None:
         caps = get_model_capabilities(model)
         assert caps.provider is not None
         assert caps.requires_api_key is True
+
+
+# ---------------------------------------------------------------------------
+# NVIDIA NIM provider wiring (3b, 3c in Nemotron pipeline plan)
+# ---------------------------------------------------------------------------
+
+
+_NEMOTRON_MODEL = "nvidia_nim/nvidia/llama-3.3-nemotron-super-49b-v1"
+
+
+def test_nvidia_nim_provider_name_is_nvidia_nim() -> None:
+    """LiteLLM must derive the provider as 'nvidia_nim' for the Nemotron model string.
+
+    This is a gate test: if the provider name is wrong, the BYOK bridge
+    (llm_context.complete_with_workspace_credentials) will look up the wrong
+    provider row in the DB and raise ProviderKeyNotConfigured for a key that
+    is actually stored — the whole Nemotron path silently breaks.
+    """
+    from reprompt_core.llm.registry import _provider_name  # type: ignore[attr-defined]
+
+    assert _provider_name(_NEMOTRON_MODEL) == "nvidia_nim"
+
+
+def test_nvidia_nim_requires_api_key() -> None:
+    """Nemotron is a cloud model — requires_api_key must be True (not in _NO_KEY_PROVIDERS)."""
+    caps = get_model_capabilities(_NEMOTRON_MODEL)
+    assert caps.requires_api_key is True
+
+
+def test_nvidia_nim_missing_credential_reports_nvidia_nim_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    """When NVIDIA_NIM_API_KEY is absent, missing_credential_env_vars must report that
+    exact var — not an infra var like NVIDIA_NIM_API_BASE, and not an empty list.
+    This confirms the BYOK settings UI will show the right 'add a key' prompt."""
+    monkeypatch.delenv("NVIDIA_NIM_API_KEY", raising=False)
+    missing = missing_credential_env_vars(_NEMOTRON_MODEL)
+    assert "NVIDIA_NIM_API_KEY" in missing

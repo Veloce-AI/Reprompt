@@ -76,7 +76,7 @@ describe("Landing", () => {
 
     expect(await screen.findByText("Mutate")).toBeInTheDocument();
     expect(screen.getByText("Critique")).toBeInTheDocument();
-    expect(screen.getByText(/up to 3 rounds/)).toBeInTheDocument();
+    expect(screen.getByText(/up to 3 refine rounds/)).toBeInTheDocument();
   });
 
   it("shows an example scorecard via ParityBeam", async () => {

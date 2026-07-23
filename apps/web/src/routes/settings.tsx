@@ -1,6 +1,7 @@
 import { useReducer, useState, type FormEvent } from "react";
 import { Link } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Check, Copy } from "lucide-react";
 import {
   ApiError,
   addApiKey,
@@ -19,6 +20,7 @@ import {
 import { AppShell } from "@/components/app-shell";
 import { DevSignInButton } from "@/components/dev-sign-in-button";
 import { ThemeToggle } from "@/components/theme-toggle";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -249,6 +251,12 @@ function ApiKeysCard() {
     mutationFn: () => addApiKey(provider === "other" ? customProvider : provider, apiKey),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["settings-api-keys"] });
+      // A new key can unlock previously-locked curated models (both cards
+      // below filter by which providers have a configured key) - without
+      // this, "Configured models"/"System models" silently stay stale
+      // until the whole page is reloaded.
+      queryClient.invalidateQueries({ queryKey: ["settings-configured-models"] });
+      queryClient.invalidateQueries({ queryKey: ["settings-system-models"] });
       // Clear the form - the key must never remain visible or resubmittable
       // after a successful save, per "never displayed after save."
       setApiKey("");
@@ -260,6 +268,10 @@ function ApiKeysCard() {
     mutationFn: (id: number) => deleteApiKey(id),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["settings-api-keys"] });
+      // Deleting a key can lock models back out - same staleness concern
+      // as the add path above, in the other direction.
+      queryClient.invalidateQueries({ queryKey: ["settings-configured-models"] });
+      queryClient.invalidateQueries({ queryKey: ["settings-system-models"] });
     },
   });
 
@@ -419,6 +431,35 @@ function formatCost(perMillion: number | null): string {
   return `$${perMillion.toFixed(2)} / 1M tokens`;
 }
 
+/** Copies `code` to the clipboard and shows a brief "Copied" confirmation -
+ * the first clipboard-copy affordance in this codebase, so kept local
+ * rather than a new shared component until a second caller needs it. */
+function CopyCodeButton({ code }: { code: string }) {
+  const [copied, setCopied] = useState(false);
+
+  async function handleCopy() {
+    await navigator.clipboard.writeText(code);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1500);
+  }
+
+  return (
+    <Button variant="secondary" size="sm" onClick={handleCopy}>
+      {copied ? (
+        <>
+          <Check className="h-3.5 w-3.5" aria-hidden="true" />
+          Copied
+        </>
+      ) : (
+        <>
+          <Copy className="h-3.5 w-3.5" aria-hidden="true" />
+          Copy code
+        </>
+      )}
+    </Button>
+  );
+}
+
 function ConfiguredModelsCard() {
   const modelsQuery = useQuery({
     queryKey: ["settings-configured-models"],
@@ -505,6 +546,11 @@ function ConfiguredModelsCard() {
                         {model.model_card.description}
                       </p>
                       <ul className="mt-2 flex flex-wrap gap-2">
+                        {model.model_card.supports_reasoning && (
+                          <li>
+                            <Badge variant="pass">Thinking mode</Badge>
+                          </li>
+                        )}
                         {(model.model_card.rules ?? [])
                           .filter((rule) => rule.will_apply)
                           .map((rule) => (
@@ -516,10 +562,24 @@ function ConfiguredModelsCard() {
                               {rule.name.replace(/_/g, " ")}
                             </li>
                           ))}
-                        {(model.model_card.rules ?? []).every((rule) => !rule.will_apply) && (
-                          <li className="text-12 text-ink-soft">No transform rules apply.</li>
-                        )}
+                        {!model.model_card.supports_reasoning &&
+                          (model.model_card.rules ?? []).every((rule) => !rule.will_apply) && (
+                            <li className="text-12 text-ink-soft">No transform rules apply.</li>
+                          )}
                       </ul>
+                      {model.model_card.code_sample && (
+                        <details className="mt-3">
+                          <summary className="cursor-pointer text-12 font-medium text-ink-soft hover:text-ink">
+                            Code sample
+                          </summary>
+                          <div className="mt-2 flex flex-col items-start gap-2">
+                            <pre className="w-full overflow-x-auto rounded-control bg-beam-soft/30 p-3 font-mono text-12 text-ink">
+                              {model.model_card.code_sample}
+                            </pre>
+                            <CopyCodeButton code={model.model_card.code_sample} />
+                          </div>
+                        </details>
+                      )}
                     </>
                   ) : (
                     <p className="mt-2 text-12 text-ink-soft">

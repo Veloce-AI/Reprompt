@@ -107,6 +107,8 @@ function baseModelCard(family: string): ModelCardInfo {
         will_apply: true,
       },
     ],
+    supports_reasoning: false,
+    code_sample: `complete(model="${family}-example", messages=[...])`,
   };
 }
 

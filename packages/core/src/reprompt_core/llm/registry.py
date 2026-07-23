@@ -22,9 +22,50 @@ Zero FastAPI imports, per the working rules for ``packages/core``.
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from typing import Callable, TypeVar
 
 import litellm
+
+_T = TypeVar("_T")
+
+# For a model string LiteLLM has no static entry for, some of its lookups
+# (get_model_info/supports_function_calling for ollama/vllm in particular -
+# see litellm.llms.ollama.common_utils.OllamaModelInfo) fall back to a live
+# HTTP probe of a local server (default http://localhost:11434) to fetch
+# model info dynamically. When no such server is running - the normal case
+# for this registry, which is asked "what does this model string support"
+# long before anyone has actually called it - that probe hangs for several
+# seconds per call instead of failing fast, which is fatal for an endpoint
+# that loops over a whole curated model list synchronously (observed:
+# ollama/qwen2.5:14b alone added ~8s to GET /settings/models, from two
+# separate slow calls). This module's whole contract is "coarse, cheap
+# static facts" (see module docstring), never "reach out over the network",
+# so any lookup that takes longer than this is treated the same as one that
+# raised: conservative default, not a crash, not a multi-second stall.
+_LOOKUP_TIMEOUT_SECONDS = 0.5
+
+# Module-level (not per-call) so a slow lookup's abandoned thread can finish
+# on its own time in the background without the *caller* waiting for it -
+# a per-call ``with ThreadPoolExecutor(...)`` would still block on exit
+# until the thread completes, defeating the point of the timeout.
+_lookup_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="reprompt-model-lookup")
+
+
+def _with_timeout(fn: Callable[[], _T], default: _T) -> _T:
+    """Runs ``fn`` with a hard wall-clock budget, falling back to ``default``
+    on either an exception or a timeout (see the module-level comment above
+    for why a timeout, not just try/except, is needed here)."""
+    future = _lookup_pool.submit(fn)
+    try:
+        return future.result(timeout=_LOOKUP_TIMEOUT_SECONDS)
+    except Exception:
+        # Covers both a raised exception from fn() and concurrent.futures'
+        # TimeoutError (a builtin TimeoutError subclass as of Python 3.8+,
+        # so already caught by this one clause).
+        return default
+
 
 __all__ = [
     "ModelCapabilities",
@@ -153,25 +194,24 @@ def get_model_capabilities(model: str) -> ModelCapabilities:
     """
     provider = _provider_name(model)
 
-    try:
-        supports_tools = bool(litellm.supports_function_calling(model=model))
-    except Exception:
-        supports_tools = False
+    supports_tools = bool(
+        _with_timeout(lambda: litellm.supports_function_calling(model=model), default=False)
+    )
 
     max_input_tokens: int | None = None
     max_output_tokens: int | None = None
     input_cost_per_token: float | None = None
     output_cost_per_token: float | None = None
     reasoning: bool = False
-    try:
-        info = litellm.get_model_info(model)
+    info = _with_timeout(lambda: litellm.get_model_info(model), default=None)
+    if info is not None:
         max_input_tokens = info.get("max_input_tokens")
         max_output_tokens = info.get("max_output_tokens")
         input_cost_per_token = info.get("input_cost_per_token")
         output_cost_per_token = info.get("output_cost_per_token")
         reasoning = bool(info.get("supports_reasoning"))
-    except Exception:
-        pass  # unrecognized model: leave the cost/context/reasoning fields at defaults
+    # else: unrecognized model (or the lookup timed out - see module-level
+    # comment), leave the cost/context/reasoning fields at defaults
 
     # See ModelCapabilities.supports_reasoning's docstring: LiteLLM's raw
     # flag for local providers is param-passthrough leniency, not a real

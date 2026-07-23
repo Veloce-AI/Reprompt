@@ -90,6 +90,8 @@ function baseConfiguredModel(overrides: Partial<ConfiguredModel> = {}): Configur
           will_apply: false,
         },
       ],
+      supports_reasoning: false,
+      code_sample: 'complete(model="ollama/llama3.1", messages=[...])',
     },
     ...overrides,
   };
@@ -303,6 +305,8 @@ describe("Settings", () => {
           description: "GPT-family models.",
           is_small_variant: false,
           rules: [],
+          supports_reasoning: true,
+          code_sample: 'complete(model="gpt-4o", messages=[...], reasoning_effort="medium")',
         },
       }),
     ]);
@@ -315,6 +319,47 @@ describe("Settings", () => {
     expect(screen.getByText("ollama")).toBeInTheDocument();
     expect(screen.getByText("openai", { selector: "h3" })).toBeInTheDocument();
     expect(screen.getByText(/Free \(local\)/)).toBeInTheDocument();
+  });
+
+  it("shows a thinking-mode badge and a copyable code sample for a reasoning-capable model", async () => {
+    Object.assign(navigator, { clipboard: { writeText: vi.fn().mockResolvedValue(undefined) } });
+
+    vi.mocked(getSessionToken).mockReturnValue("session-token");
+    vi.mocked(getWorkspaceSettings).mockResolvedValue(baseWorkspace());
+    vi.mocked(listApiKeys).mockResolvedValue([baseKey()]);
+    vi.mocked(listConfiguredModels).mockResolvedValue([
+      baseConfiguredModel({
+        model: "gpt-4o",
+        provider: "openai",
+        requires_api_key: true,
+        model_card: {
+          family: "openai",
+          version: 1,
+          description: "GPT-family models.",
+          is_small_variant: false,
+          rules: [],
+          supports_reasoning: true,
+          code_sample: 'complete(model="gpt-4o", messages=[...], reasoning_effort="medium")',
+        },
+      }),
+    ]);
+
+    renderSettings();
+
+    expect(await screen.findByText("Thinking mode")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByText("Code sample"));
+    expect(
+      screen.getByText('complete(model="gpt-4o", messages=[...], reasoning_effort="medium")')
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Copy code" }));
+    await waitFor(() => {
+      expect(navigator.clipboard.writeText).toHaveBeenCalledWith(
+        'complete(model="gpt-4o", messages=[...], reasoning_effort="medium")'
+      );
+    });
+    expect(await screen.findByRole("button", { name: "Copied" })).toBeInTheDocument();
   });
 
   it("shows only no-key-required models when no BYOK key is configured", async () => {

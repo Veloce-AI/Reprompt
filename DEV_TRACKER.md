@@ -3928,3 +3928,88 @@ regressed. `parity-beam.test.tsx` (14) and `landing.test.tsx` (5) still
 pass — neither asserted the old (buggy) positioning classes, so no test
 needed updating alongside the fix. Full `apps/web` suite 175/175,
 `tsc --noEmit` clean.
+
+## Verification pass: model cards, result download, Prism flow [DONE — 2026-07-23]
+
+Requested spot-check on three specific claims - "is this actually done
+right" - covering areas that hadn't been independently re-verified since
+they were originally built. Dispatched a research-only pass first (no
+edits) to establish ground truth before touching anything; three real
+issues came out of it, all fixed and verified below.
+
+**1. Result download** — verified correct, no changes needed.
+`GET /pipelines/{id}/migrations/{id}/export` (`apps/api/src/reprompt_api/
+migrations.py`) returns a JSON config of winning model/prompt/params per
+stage; `apps/web/src/lib/api.ts`'s `downloadMigrationExport` Blob-downloads
+it; triggered from `migration-detail.tsx`'s "Download winning config"
+button once a migration has results.
+
+**2. Prism flow — landing page overstated it** [fix]. The actual optimizer
+(`packages/core/.../optimizer/loop.py`) mutates once, then cycles
+cheap-score → critique → refine for up to 3 rounds, then a full sweep +
+select — this matches `DEV_TRACKER.md`'s own top-level Prism summary
+exactly. But the landing page's animated `Mutate → Score → Critique →
+Refine` loop (added in "Landing page Phase 1/2" above) visually implied
+Mutate re-runs every round, which it doesn't. Fixed: `landing.tsx` now
+renders Mutate as a fixed first step outside the cycling group; only
+Score/Critique/Refine loop (each gets a trailing loop icon now, not just
+the first two — accurately implying Refine loops back to Score). Badge
+text changed from the inaccurate "up to 3 rounds, looping back to Mutate"
+to "up to 3 refine rounds". `landing.test.tsx` updated to match.
+
+**3. Model cards — Phase 4 (deferred piece) built.** Per this file's
+"Per-model cards" section above, the backend already computed
+`supports_reasoning`/`code_sample` correctly but nothing in the frontend
+displayed either. Built: `apps/web/src/lib/api.ts`'s `ModelCardInfo` type
+gains both fields; `settings.tsx`'s Configured Models card gets a
+"Thinking mode" `Badge` when `supports_reasoning` is true, and a native
+`<details>` disclosure ("Code sample") revealing the real generated
+`complete()` call plus a new `CopyCodeButton` (first clipboard-copy
+affordance in this codebase — `navigator.clipboard.writeText`, "Copied"
+confirmation for 1.5s). New test in `settings.test.tsx` exercises the
+full flow: badge visible, disclosure expands, copy button calls
+`clipboard.writeText` with the exact code string, confirmation text
+appears.
+
+**Two more real bugs found while verifying #3 against the live app (not
+from reading the diff)**:
+
+- **`/settings/models` was taking 8+ seconds.** Root cause:
+  `registry.py`'s `get_model_capabilities()` calls
+  `litellm.get_model_info()`/`litellm.supports_function_calling()`, and
+  for a model string LiteLLM has no static entry for on a local-provider
+  model (`ollama`/`vllm`), LiteLLM's own `OllamaModelInfo` falls back to a
+  live HTTP probe of `http://localhost:11434` to fetch the info
+  dynamically. With no Ollama server running (the normal case for this
+  registry — it answers "what does this model string support" long before
+  anyone has called it), that probe hung ~4s per call, twice, for the
+  curated `ollama/qwen2.5:14b` entry alone (confirmed via direct timing:
+  `ollama/llama3.1` is in LiteLLM's static table and resolves in ~4ms;
+  `ollama/qwen2.5:14b` is not, and cost the full ~8s). This predates this
+  session's curated-model additions — not something the 9 new NVIDIA/
+  OpenRouter entries caused (all 9 resolve in 0-5ms, confirmed instant).
+  Fixed with a hard wall-clock budget around both calls
+  (`_with_timeout()`, a module-level `ThreadPoolExecutor` so a timed-out
+  lookup's thread finishes in the background instead of the caller
+  blocking on it anyway) — falls back to the same conservative defaults
+  the existing try/except already used for an outright exception. Tuned to
+  0.5s (generous for a real local server, which would answer in
+  low-single-digit ms; tight enough that an absent one barely registers).
+  Measured end-to-end via the real endpoint: 8.2s → 2.2s.
+- **Adding/deleting a BYOK key never refreshed the models it unlocked.**
+  `ApiKeysCard`'s add/delete mutations only invalidated
+  `["settings-api-keys"]` — never `["settings-configured-models"]` or
+  `["settings-system-models"]`, so both cards silently stayed stale
+  (showing pre-key state) until a full page reload. Confirmed live: added
+  a key, watched the network tab, the `/settings/models` refetch never
+  fired at all before the fix. Fixed by invalidating both additional query
+  keys in both mutations' `onSuccess`.
+
+**Verified**: `packages/core` full suite 361/361 passed, 2 skipped.
+`apps/api` full suite 204/204. `apps/web` `tsc --noEmit` clean, full unit
+suite 176/176. Live end-to-end check against the real dev server + a
+fresh API instance: signed in, added an OpenAI key, confirmed the
+Configured Models card refetches automatically and renders gpt-4o's real
+cost/family/rules/code-sample, expanded the code sample and used the copy
+button, confirmed `ollama/qwen2.5:14b` (the pathological case) now loads
+in the same page load instead of stalling it.

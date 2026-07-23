@@ -46,7 +46,14 @@ const FLOW_STEPS = [
   },
 ];
 
-const PRISM_STEPS = ["Mutate", "Score", "Critique", "Refine"];
+// "Mutate" runs once, up front - only Score/Critique/Refine actually repeat
+// per round (see packages/core/src/reprompt_core/optimizer/loop.py's
+// _optimize_stage_prism: one generate_prompt_mutations call before the
+// round loop, then cheap_scoring -> critiquing -> refining each round).
+// Kept as two separate constants so the landing page doesn't visually claim
+// Mutate re-runs every round, which it doesn't.
+const PRISM_FIRST_STEP = "Mutate";
+const PRISM_LOOP_STEPS = ["Score", "Critique", "Refine"];
 
 /** Mirrors tokens.css's own `prefers-reduced-motion` handling for the one
  * animation on this page driven from JS rather than pure CSS (the step
@@ -195,7 +202,7 @@ function SectionHeading({ eyebrow, title }: { eyebrow: string; title: string }) 
 
 export default function Landing() {
   const activeTraceStage = useCycle(TRACE_STAGES.length, 1000);
-  const activePrismStep = useCycle(PRISM_STEPS.length, 1100);
+  const activePrismStep = useCycle(PRISM_LOOP_STEPS.length, 1100);
 
   return (
     <div className="flex min-h-screen flex-col bg-paper">
@@ -314,7 +321,14 @@ export default function Landing() {
               </p>
               <div className="flex flex-1 flex-col gap-4">
                 <div className="flex flex-wrap items-center gap-2">
-                  {PRISM_STEPS.map((step, i) => (
+                  {/* Mutate runs once, up front - shown as a fixed step, not
+                      part of the cycling highlight below (see PRISM_FIRST_STEP's
+                      comment for why: it doesn't actually repeat per round). */}
+                  <div className="rounded-card border border-line bg-paper px-3 py-1.5 text-13 font-medium text-ink">
+                    {PRISM_FIRST_STEP}
+                  </div>
+                  <ArrowRight className="h-3.5 w-3.5 shrink-0 text-ink-soft" aria-hidden="true" />
+                  {PRISM_LOOP_STEPS.map((step, i) => (
                     <div key={step} className="flex items-center gap-2">
                       <div
                         className={cn(
@@ -326,13 +340,11 @@ export default function Landing() {
                       >
                         {step}
                       </div>
-                      {i < PRISM_STEPS.length - 1 && (
-                        <RefreshCw className="h-3.5 w-3.5 shrink-0 text-ink-soft" aria-hidden="true" />
-                      )}
+                      <RefreshCw className="h-3.5 w-3.5 shrink-0 text-ink-soft" aria-hidden="true" />
                     </div>
                   ))}
                   <span className="rounded-full border border-line bg-paper px-3 py-1 text-12 font-medium text-ink-soft">
-                    up to 3 rounds, looping back to Mutate
+                    up to 3 refine rounds
                   </span>
                 </div>
                 <div className="flex flex-col gap-3 text-13 text-ink-soft">

@@ -350,6 +350,8 @@ export interface ModelCardInfo {
   description: string;
   is_small_variant: boolean;
   rules: TransformRuleInfo[];
+  supports_reasoning: boolean;
+  code_sample: string;
 }
 
 export function getModelCard(model: string): Promise<ModelCardInfo> {

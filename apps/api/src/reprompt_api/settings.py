@@ -67,6 +67,7 @@ from reprompt_api.migrations import (
     get_available_models,
     list_curated_models_with_lock_state,
 )
+from reprompt_api.system_models import system_model_env_var_name, system_model_override
 from reprompt_api.model_cards import FamilyCardOut, build_family_card
 
 router = APIRouter(prefix="/settings", tags=["settings"])
@@ -472,18 +473,29 @@ _SYSTEM_MODEL_PURPOSES: tuple[Purpose, ...] = ("rubric_generation", "judge", "mu
 def list_system_models(
     current_user: models.User = Depends(get_current_user), db: Session = Depends(get_db)
 ) -> list[SystemModelOut]:
-    """Which model Reprompt's own harness currently auto-selects for each
-    purpose, given this workspace's configured providers - the exact same
-    reprompt_core.llm.model_select.select_model() call apps/api's
-    rubrics.py/optimizer_runner.py make for a real run, with no override
-    applied (see module-level note above for why this is workspace-scoped
-    rather than migration-scoped).
+    """Which model Reprompt's own harness currently uses for each purpose,
+    given this workspace's configured providers - the exact same priority
+    order (per-migration override, not shown here since this is workspace-
+    not migration-scoped -> operator-set env var -> auto-select) apps/api's
+    rubrics.py/optimizer_runner.py actually use for a real run (see
+    reprompt_api.system_models and module-level note above for why this is
+    workspace-scoped rather than migration-scoped).
     """
     workspace = _get_workspace_or_500(db, current_user)
     available = [option.model for option in get_available_models(db, workspace)]
 
     results: list[SystemModelOut] = []
     for purpose in _SYSTEM_MODEL_PURPOSES:
+        override = system_model_override(purpose)
+        if override is not None:
+            results.append(
+                SystemModelOut(
+                    purpose=purpose,
+                    selected_model=override,
+                    reason=f"pinned via {system_model_env_var_name(purpose)}",
+                )
+            )
+            continue
         try:
             selected = select_model(purpose, available)
         except NoAvailableModelError as exc:

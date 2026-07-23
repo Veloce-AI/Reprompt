@@ -511,6 +511,23 @@ def test_list_system_models_covers_all_three_purposes(client: TestClient) -> Non
     assert all(entry["reason"] for entry in body)
 
 
+def test_list_system_models_reflects_an_operator_env_var_override(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("REPROMPT_JUDGE_MODEL", "nvidia_nim/deepseek-ai/deepseek-v4-flash")
+    token, _ = _sign_in(client, "systemmodels-override@example.com")
+
+    response = client.get("/settings/system-models", headers=_auth_headers(token))
+    assert response.status_code == 200, response.text
+    judge = next(entry for entry in response.json() if entry["purpose"] == "judge")
+    assert judge["selected_model"] == "nvidia_nim/deepseek-ai/deepseek-v4-flash"
+    assert judge["reason"] == "pinned via REPROMPT_JUDGE_MODEL"
+
+    # Unaffected purposes still auto-select as normal.
+    mutator = next(entry for entry in response.json() if entry["purpose"] == "mutator")
+    assert mutator["reason"] == "best available"
+
+
 def test_list_system_models_selects_a_stronger_model_once_a_byok_key_is_added(
     client: TestClient,
 ) -> None:

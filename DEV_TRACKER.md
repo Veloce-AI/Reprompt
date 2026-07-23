@@ -4371,3 +4371,54 @@ test: dropdown offers unlocked models, omits locked ones; existing
 mock added, no behavior changes to other tests). Screenshotted the real
 dev server: dropdown renders correctly with a real BYOK-backed model
 list, empty-state copy reads correctly.
+
+## System model config: operator-pinned rubric/judge/mutator models [DONE — 2026-07-23]
+
+User asked directly whether rubric-generation/judge/mutator model
+selection was actually driven by a real config surface — it wasn't; all
+three purposes fell through to `select_model()`'s auto-select (best
+available tier-1 model given whatever BYOK keys a workspace happens to
+have configured), which is fine for a workspace's own target models but
+wrong for Reprompt's own harness: the operator running the product should
+be able to pin exactly which model judges and mutates, not have it drift
+per-workspace based on whoever added which key.
+
+New `reprompt_api.system_models` module: three env vars, one per purpose
+— `REPROMPT_RUBRIC_MODEL`, `REPROMPT_JUDGE_MODEL`, `REPROMPT_MUTATOR_MODEL`.
+When set, hard requirement — always used, no validation against a
+workspace's configured keys (same "explicit always wins" contract
+`select_model(..., explicit=...)` already had; this reuses that contract
+rather than changing it). If the pinned model's provider needs a BYOK key
+and the workspace doesn't have one, the LLM call fails loudly with the
+provider's real error at call time — no silent fallback to auto-select.
+Priority chain end to end: per-migration override
+(`target_model_config.judge_model`/`mutator_model`, pre-existing, previously
+invisible in the wizard UI — still not exposed there, tracked separately)
+→ env var override (new) → auto-select (unchanged, still the behavior when
+nothing is pinned).
+
+Wired into all three call sites: `rubrics.py`'s generate-rubric endpoint,
+`optimizer_runner.py`'s judge/mutator selection, and `settings.py`'s
+`/settings/system-models` status endpoint (now reports
+`reason: "pinned via REPROMPT_JUDGE_MODEL"` etc. instead of `"best
+available"` when a purpose is pinned, so operators can see the override
+took effect without reading server config directly).
+
+Default chosen: `nvidia_nim/deepseek-ai/deepseek-v4-flash` for all three
+purposes — NVIDIA NIM's free tier, ~1M token context. Documented in
+`apps/api/.env.example` under a new "System harness models" section, with
+commented-out ready alternatives for Anthropic/OpenAI/Gemini so switching
+providers later is a one-line env change, not new code.
+
+**Verified**: new `test_system_models.py` (5 unit tests on the override
+function itself) + new integration tests in `test_settings.py`,
+`test_rubrics_generate.py` (override wins when `model` omitted; explicit
+`body.model` still outranks the override), and `test_optimizer_runner.py`
+(override wins over auto-select; migration-level override still outranks
+the env var) — 62/62 passing across those four files. Also added an
+autouse `monkeypatch.delenv(...)` fixture to `conftest.py`: `uv run`
+auto-loads `apps/api/.env` into every subprocess including test runs, so
+without this fix the operator's own real local `.env` values leaked into
+6 unrelated tests that assumed pure auto-select behavior (this was caught
+live — those 6 broke the moment the real `.env` was set — not anticipated
+in advance). Full `apps/api` suite: 224/224 passing.

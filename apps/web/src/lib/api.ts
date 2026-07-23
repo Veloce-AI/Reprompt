@@ -256,6 +256,17 @@ export function lookupModelOption(pipelineId: number, model: string): Promise<Mo
   );
 }
 
+/** Every OpenRouter model string LiteLLM's bundled registry knows about
+ * (~96), for the wizard's searchable OpenRouter dropdown - a much wider
+ * set than the handful of OpenRouter families in `listModelOptions`'s
+ * curated list. Fetched once and filtered client-side (see
+ * new-migration-wizard.tsx's OpenRouterModelPicker) rather than per
+ * keystroke - the full catalog is small enough (~96 entries) that a
+ * search-as-you-type round trip would only add latency. */
+export function listOpenRouterCatalog(pipelineId: number): Promise<ModelOption[]> {
+  return request<ModelOption[]>(`/pipelines/${pipelineId}/models/catalog/openrouter`);
+}
+
 export function createMigration(
   pipelineId: number,
   migration: MigrationCreate

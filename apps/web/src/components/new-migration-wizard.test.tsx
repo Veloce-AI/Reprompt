@@ -11,6 +11,7 @@ vi.mock("@/lib/api", async () => {
     ...actual,
     getPipelineDag: vi.fn(),
     listModelOptions: vi.fn(),
+    listOpenRouterCatalog: vi.fn(),
     createMigration: vi.fn(),
     getModelCard: vi.fn(),
     listApiKeys: vi.fn(),
@@ -24,6 +25,7 @@ import {
   getPipelineDag,
   listApiKeys,
   listModelOptions,
+  listOpenRouterCatalog,
   getModelCard,
 } from "@/lib/api";
 import type { ApiKeyOut } from "@/lib/api";
@@ -126,6 +128,7 @@ function renderWizard(onCreated: (m: unknown) => void) {
 beforeEach(() => {
   vi.mocked(getPipelineDag).mockReset();
   vi.mocked(listModelOptions).mockReset();
+  vi.mocked(listOpenRouterCatalog).mockReset();
   vi.mocked(createMigration).mockReset();
   vi.mocked(getModelCard).mockReset();
   vi.mocked(listApiKeys).mockReset();
@@ -134,6 +137,9 @@ beforeEach(() => {
   // pre-existing test sees the wizard exactly as it behaved before the
   // locked-model states existed. Lock-specific tests override this.
   vi.mocked(listApiKeys).mockResolvedValue([keyFor("openai", 1), keyFor("anthropic", 2)]);
+  // Default: empty catalog - only the new OpenRouter-picker-specific test
+  // below needs a populated one.
+  vi.mocked(listOpenRouterCatalog).mockResolvedValue([]);
 });
 
 describe("NewMigrationWizard — pre-start Prism reference", () => {
@@ -489,5 +495,60 @@ describe("NewMigrationWizard", () => {
     await waitFor(() => expect(screen.getByLabelText("claude-haiku-4-5")).toBeEnabled());
     fireEvent.click(screen.getByLabelText("claude-haiku-4-5"));
     expect(screen.getByLabelText("claude-haiku-4-5")).toBeChecked();
+  });
+
+  it("searches the OpenRouter catalog and adds a selected model", async () => {
+    vi.mocked(getPipelineDag).mockResolvedValue(baseDag());
+    vi.mocked(listModelOptions).mockResolvedValue(baseModels());
+    vi.mocked(getModelCard).mockRejectedValue(new Error("skip"));
+    vi.mocked(listOpenRouterCatalog).mockResolvedValue([
+      {
+        model: "openrouter/anthropic/claude-3.7-sonnet",
+        provider: "openrouter",
+        input_cost_per_1m: 3,
+        output_cost_per_1m: 15,
+        max_input_tokens: 200000,
+        max_output_tokens: 64000,
+        supports_json_mode: true,
+        supports_function_calling: true,
+        requires_api_key: true,
+        family: "anthropic",
+        transform_descriptions: [],
+      },
+      {
+        model: "openrouter/openai/gpt-4o",
+        provider: "openrouter",
+        input_cost_per_1m: 2.5,
+        output_cost_per_1m: 10,
+        max_input_tokens: 128000,
+        max_output_tokens: 16384,
+        supports_json_mode: true,
+        supports_function_calling: true,
+        requires_api_key: true,
+        family: "openai",
+        transform_descriptions: [],
+      },
+    ]);
+
+    renderWizard(vi.fn());
+
+    await screen.findByLabelText("gpt-4o-mini");
+    const search = await screen.findByLabelText("Search OpenRouter models");
+    await waitFor(() => expect(search).not.toBeDisabled());
+
+    fireEvent.focus(search);
+    fireEvent.change(search, { target: { value: "claude" } });
+
+    const result = await screen.findByRole("option", {
+      name: "openrouter/anthropic/claude-3.7-sonnet",
+    });
+    expect(
+      screen.queryByRole("option", { name: "openrouter/openai/gpt-4o" })
+    ).not.toBeInTheDocument();
+
+    fireEvent.click(result);
+
+    expect(await screen.findByLabelText("openrouter/anthropic/claude-3.7-sonnet")).toBeInTheDocument();
+    expect(search).toHaveValue("");
   });
 });

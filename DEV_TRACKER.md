@@ -4422,3 +4422,48 @@ without this fix the operator's own real local `.env` values leaked into
 6 unrelated tests that assumed pure auto-select behavior (this was caught
 live — those 6 broke the moment the real `.env` was set — not anticipated
 in advance). Full `apps/api` suite: 224/224 passing.
+
+## OpenRouter searchable dropdown: the full ~96-model catalog, not just the curated 5 [DONE — 2026-07-23]
+
+User's complaint: "still i cannot see all the models from nvidia and open
+router" — `CURATED_MODELS` only hand-picks 5 OpenRouter families
+(z-ai/minimax/mistral/grok/kimi); OpenRouter itself has no public catalog
+API to browse against, but LiteLLM's own bundled
+`model_prices_and_context_window.json` already lists every OpenRouter
+model string it recognizes (`litellm.models_by_provider["openrouter"]` —
+confirmed exactly 96 entries against the currently pinned LiteLLM
+version). NVIDIA NIM has no equivalent bundled or public catalog to
+enumerate, so it's unchanged: still curated-plus-manual-lookup only
+(`/models/lookup`, pre-existing).
+
+New `GET /pipelines/{id}/models/catalog/openrouter` (`migrations.py`)
+returns every one of those ~96 model strings run through the same
+`_to_option` capability/pricing enrichment every other model picker
+endpoint uses. Timed at 48ms for all 96 lookups (LiteLLM's static JSON
+lookups, not a network call) — no caching needed, no per-keystroke
+round trip either: the wizard fetches the whole catalog once and filters
+client-side as the user types.
+
+`new-migration-wizard.tsx`: new `OpenRouterModelPicker` — a type-to-filter
+text input + dropdown list (visible entries capped at 50 with a "+N more,
+keep typing" hint), standard mousedown-preventDefault-before-blur pattern
+so a click on a result registers before the input's blur handler closes
+the list. Selecting a result hands its already-complete `ModelOption`
+straight into the existing `customModels` state (same list the free-text
+"Look up" flow already populated) — no extra lookup call needed since the
+catalog fetch already carries full cost/capability data. The old "Add a
+custom model" free-text box is kept alongside it, relabeled "Any other
+model string", for NVIDIA NIM and anything else not in a browsable
+catalog.
+
+**Verified**: `tsc --noEmit` clean. New backend tests
+(`test_migrations.py`): catalog endpoint returns >50 entries, every one
+openrouter-prefixed, sorted; 404s for an unknown pipeline. New frontend
+test: search "claude" shows only matching results, selecting one adds it
+to the picker list and clears the search box. Full suites: apps/api
+226/226, apps/web 190/190. Screenshotted the real dev server end-to-end
+(a genuine Playwright run against the live API's real catalog endpoint,
+not a mock): typing "claude" live-filters to
+`openrouter/anthropic/claude-3-haiku` / `-3.5-sonnet` / `-3.7-sonnet`,
+placeholder reads "Search 96 OpenRouter models…", selecting one adds a
+full model card with real cost/context data.

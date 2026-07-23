@@ -8,6 +8,7 @@ import {
   getPipelineDag,
   listApiKeys,
   listModelOptions,
+  listOpenRouterCatalog,
   lookupModelOption,
   type MigrationOut,
   type ModelCardInfo,
@@ -166,6 +167,85 @@ function ModelOptionCard({
 }
 
 /**
+ * Type-to-filter dropdown over the full OpenRouter model catalog (~96
+ * entries, fetched once - see `listOpenRouterCatalog`), not just the
+ * handful of OpenRouter families in the curated grid above. Selecting a
+ * result hands its already-complete `ModelOption` straight to `onSelect`;
+ * no per-model lookup round trip is needed since the catalog fetch already
+ * carries full cost/capability data for every entry.
+ */
+function OpenRouterModelPicker({
+  catalog,
+  isLoading,
+  onSelect,
+}: {
+  catalog: ModelOption[];
+  isLoading: boolean;
+  onSelect: (option: ModelOption) => void;
+}) {
+  const [query, setQuery] = useState("");
+  const [open, setOpen] = useState(false);
+  const trimmed = query.trim().toLowerCase();
+  const filtered = trimmed === "" ? catalog : catalog.filter((option) => option.model.toLowerCase().includes(trimmed));
+  const visible = filtered.slice(0, 50);
+
+  return (
+    <div className="relative">
+      <Input
+        aria-label="Search OpenRouter models"
+        placeholder={isLoading ? "Loading OpenRouter catalog…" : `Search ${catalog.length} OpenRouter models…`}
+        value={query}
+        disabled={isLoading}
+        onChange={(event) => {
+          setQuery(event.target.value);
+          setOpen(true);
+        }}
+        onFocus={() => setOpen(true)}
+        onBlur={() => setOpen(false)}
+        className="font-mono"
+      />
+      {open && !isLoading && (
+        <ul
+          role="listbox"
+          aria-label="OpenRouter model results"
+          className="absolute z-10 mt-1 max-h-64 w-full overflow-auto rounded-control border border-line bg-paper shadow-lg"
+        >
+          {visible.length === 0 ? (
+            <li className="px-3 py-2 text-13 text-ink-soft">No matches</li>
+          ) : (
+            visible.map((option) => (
+              <li key={option.model}>
+                <button
+                  type="button"
+                  role="option"
+                  aria-selected="false"
+                  className="block w-full px-3 py-2 text-left text-13 font-mono text-ink hover:bg-beam-soft/40"
+                  // Fires before the input's onBlur closes the list, so the
+                  // click still registers on this button.
+                  onMouseDown={(event) => event.preventDefault()}
+                  onClick={() => {
+                    onSelect(option);
+                    setQuery("");
+                    setOpen(false);
+                  }}
+                >
+                  {option.model}
+                </button>
+              </li>
+            ))
+          )}
+          {filtered.length > visible.length && (
+            <li className="px-3 py-2 text-11 text-ink-soft">
+              +{filtered.length - visible.length} more — keep typing to narrow down
+            </li>
+          )}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+/**
  * The migration wizard's create-a-migration half, extracted from the old
  * standalone `/pipelines/$pipelineId/migrations/new` route (see
  * DEV_TRACKER.md's "Phase 1 — Unified pipeline workspace") so it can be
@@ -213,6 +293,10 @@ export function NewMigrationWizard({
     queryKey: ["model-options", pipelineId],
     queryFn: () => listModelOptions(pipelineId),
   });
+  const openRouterCatalogQuery = useQuery({
+    queryKey: ["openrouter-catalog", pipelineId],
+    queryFn: () => listOpenRouterCatalog(pipelineId),
+  });
   // Same query key as Settings' ApiKeysCard, so adding a key from either
   // place updates both. `retry: false` + the isSuccess guard below mean an
   // unauthenticated session (401 here) simply shows every model unlocked -
@@ -259,10 +343,14 @@ export function NewMigrationWizard({
     fetchCards();
   }, [modelsQuery.data, customModels]);
 
+  function addCustomModel(option: ModelOption) {
+    setCustomModels((prev) => [...prev.filter((m) => m.model !== option.model), option]);
+  }
+
   const lookupMutation = useMutation({
     mutationFn: () => lookupModelOption(pipelineId, customModelInput.trim()),
     onSuccess: (option) => {
-      setCustomModels((prev) => [...prev.filter((m) => m.model !== option.model), option]);
+      addCustomModel(option);
       setCustomModelInput("");
     },
   });
@@ -457,31 +545,48 @@ export function NewMigrationWizard({
                   is this project's own stated design goal (see
                   WorkspaceApiKey's docstring in apps/api/models.py). */}
               <div className="mt-4 border-t border-line pt-4">
-                <p className="mb-2 text-13 font-medium text-ink">Add a custom model</p>
+                <p className="mb-2 text-13 font-medium text-ink">Add another model</p>
                 <p className="mb-3 text-12 text-ink-soft">
-                  Any LiteLLM model string, e.g.{" "}
-                  <code className="font-mono text-11">nvidia_nim/meta/llama-3.1-8b-instruct</code> or{" "}
-                  <code className="font-mono text-11">openrouter/anthropic/claude-3.7-sonnet</code>.
+                  Search OpenRouter's full model catalog, or look up any other LiteLLM model
+                  string directly, e.g.{" "}
+                  <code className="font-mono text-11">nvidia_nim/meta/llama-3.1-8b-instruct</code>.
                 </p>
-                <form
-                  className="flex items-start gap-2"
-                  onSubmit={(event) => {
-                    event.preventDefault();
-                    if (!customModelInput.trim() || lookupMutation.isPending) return;
-                    lookupMutation.mutate();
-                  }}
-                >
-                  <Input
-                    aria-label="Custom model string"
-                    placeholder="provider/org/model-name"
-                    value={customModelInput}
-                    onChange={(event) => setCustomModelInput(event.target.value)}
-                    className="font-mono"
-                  />
-                  <Button type="submit" variant="secondary" disabled={!customModelInput.trim() || lookupMutation.isPending}>
-                    {lookupMutation.isPending ? "Looking up…" : "Look up"}
-                  </Button>
-                </form>
+                <div className="space-y-3">
+                  <div>
+                    <p className="mb-1 text-11 font-medium uppercase tracking-wide text-ink-soft">
+                      OpenRouter
+                    </p>
+                    <OpenRouterModelPicker
+                      catalog={openRouterCatalogQuery.data ?? []}
+                      isLoading={openRouterCatalogQuery.isLoading}
+                      onSelect={addCustomModel}
+                    />
+                  </div>
+                  <div>
+                    <p className="mb-1 text-11 font-medium uppercase tracking-wide text-ink-soft">
+                      Any other model string
+                    </p>
+                    <form
+                      className="flex items-start gap-2"
+                      onSubmit={(event) => {
+                        event.preventDefault();
+                        if (!customModelInput.trim() || lookupMutation.isPending) return;
+                        lookupMutation.mutate();
+                      }}
+                    >
+                      <Input
+                        aria-label="Custom model string"
+                        placeholder="provider/org/model-name"
+                        value={customModelInput}
+                        onChange={(event) => setCustomModelInput(event.target.value)}
+                        className="font-mono"
+                      />
+                      <Button type="submit" variant="secondary" disabled={!customModelInput.trim() || lookupMutation.isPending}>
+                        {lookupMutation.isPending ? "Looking up…" : "Look up"}
+                      </Button>
+                    </form>
+                  </div>
+                </div>
                 {lookupMutation.isError && (
                   <p className="mt-2 text-13 text-parity-fail" role="alert">
                     {lookupMutation.error instanceof ApiError

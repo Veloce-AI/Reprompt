@@ -52,6 +52,7 @@ from __future__ import annotations
 
 import datetime
 
+import litellm
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, field_validator
@@ -467,6 +468,25 @@ def lookup_model_option(pipeline_id: int, model: str, db: Session = Depends(get_
     if not model.strip():
         raise HTTPException(status_code=422, detail="model must not be empty")
     return _to_option(model.strip())
+
+
+@router.get("/{pipeline_id}/models/catalog/openrouter", response_model=list[ModelOption])
+def list_openrouter_catalog(pipeline_id: int, db: Session = Depends(get_db)) -> list[ModelOption]:
+    """Every OpenRouter model string LiteLLM's own bundled model registry
+    knows about (~96 as of this LiteLLM version) — not just the handful of
+    families hand-picked into `CURATED_MODELS`. Backs the wizard's
+    searchable OpenRouter dropdown (see DEV_TRACKER.md's "OpenRouter
+    searchable dropdown" entry): OpenRouter itself has no public catalog
+    API to browse against, so this reuses LiteLLM's static
+    `model_prices_and_context_window.json` data instead — the same source
+    `get_model_capabilities` already leans on for every other model string
+    in this module, just enumerated instead of looked up one at a time.
+    NVIDIA NIM has no equivalent public/LiteLLM-bundled catalog to
+    enumerate, so it stays curated-plus-manual-lookup only.
+    """
+    _get_pipeline_or_404(db, pipeline_id)
+    catalog = sorted(litellm.models_by_provider.get("openrouter", []))
+    return [_to_option(model) for model in catalog]
 
 
 @router.post("/{pipeline_id}/migrations", response_model=MigrationOut, status_code=201)

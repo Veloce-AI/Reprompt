@@ -121,16 +121,23 @@ export default function PipelineWorkspace() {
 
   return (
     <AppShell>
-      {/* h-[calc(100vh-1px)], not min-h - AppShell's <main> wrapper
-          ("mx-auto max-w-[1440px]") has no explicit height of its own, so
-          only an explicit (not min-) height here is a "definite size" per
-          the flexbox spec for percentage/flex-basis resolution to propagate
-          down through the Canvas tab's nested flex-item chain to
+      {/* h-full, not min-h - AppShell's <main> wrapper ("mx-auto
+          max-w-[1440px]") now gives this a definite height (100% of the
+          viewport space below the theme toggle bar - see app-shell.tsx),
+          so only an explicit (not min-) height here is a "definite size"
+          per the flexbox spec for percentage/flex-basis resolution to
+          propagate down through the Canvas tab's nested flex-item chain to
           react-flow's own height:100% root - min-height alone produced a
           real pixel value at each layer but never a spec-definite one, so
           react-flow's DAG silently rendered in a 0-height viewport (see the
-          Canvas tab wrapper below for the fuller trace). */}
-      <div className="flex h-[calc(100vh-1px)] flex-col">
+          Canvas tab wrapper below for the fuller trace). This used to be a
+          hardcoded h-[calc(100vh-1px)], which assumed this div got the
+          *entire* viewport height - true before the theme toggle bar
+          existed as its own reserved row above it, and off by exactly that
+          row's height afterwards, which is what re-introduced a page-level
+          scrollbar on Canvas (React Flow's own pan/zoom, not page scroll,
+          is supposed to be the only way to navigate a large DAG). */}
+      <div className="flex h-full flex-col">
         <div className="border-b border-line px-8 py-4">
           <Link
             to="/pipelines"

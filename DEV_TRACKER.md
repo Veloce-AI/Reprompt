@@ -4546,3 +4546,49 @@ as a fresh user: Rubrics dropdown reads "Auto —
 nvidia_nim/deepseek-ai/dee…" with the Settings chip beneath it; the
 wizard's advanced section shows "Same as global: nvidia_nim/…" for both
 Judge and Mutator before any override is picked.
+
+## Canvas scroll regression fix + visible test errors + test-any-model [DONE — 2026-07-23]
+
+User reported Canvas still had a page-level scrollbar, correctly guessing
+the cause: "likely because of the theme button above." Confirmed —
+`pipeline-workspace.tsx` hardcoded its own wrapper to
+`h-[calc(100vh-1px)]`, sized as if it alone owned the entire viewport.
+That was true before this session's theme-toggle-bar fix moved the
+toggle into its own reserved row inside `AppShell`'s `<main>`; afterwards,
+the workspace's `100vh` claim overflowed by exactly that row's height,
+and `AppShell`'s outer `overflow-y-auto` wrapper picked up the difference
+as a scrollbar - defeating the point of Canvas having its own React Flow
+pan/zoom instead of page scroll. Fixed by making the whole chain relative
+instead of an absolute viewport guess: `app-shell.tsx`'s
+`mx-auto max-w-[1440px]` wrapper now carries `h-full` (a definite height,
+not just auto-sized to content), so `pipeline-workspace.tsx` can size
+itself against `h-full` instead of `100vh` and automatically account for
+whatever chrome sits above it, now or in the future.
+
+Separately, while investigating a user-reported "Test failed" on a
+curated NVIDIA model with no visible reason: the actual error was only
+ever attached as a `<Badge title="...">` hover tooltip - unreadable from
+a screenshot or bug report. `settings.tsx` now renders it as plain text
+under the badge instead. Root-caused the specific failure this surfaced
+(`nvidia_nim/nvidia/llama-3.1-nemotron-ultra-253b-v1`): confirmed via
+`litellm.get_llm_provider` that it resolves through the exact same
+code path as a model the user verified works directly against NVIDIA's
+API (`z-ai/glm-5.2`, same `nvidia_nim` provider, same
+`integrate.api.nvidia.com` base URL) - so this isn't an integration bug,
+the specific 253B model just isn't available/enabled for their key. User
+asked to verify a replacement through Reprompt's own test path before
+swapping the curated list entry, which surfaced a real gap: `POST
+/settings/models/test` already accepted any LiteLLM model string
+server-side, but the only UI entry point was per-curated-model "Test"
+buttons - no way to test an arbitrary string. Added a "Test any model"
+free-text box + Test button to `ConfiguredModelsCard`, reusing the same
+`testModel` mutation the curated rows already share.
+
+**Verified**: Playwright against the real dev server, signed in fresh -
+`document.documentElement.scrollHeight === clientHeight` exactly on the
+Canvas tab (previously taller). New/updated vitest coverage in
+`settings.test.tsx` (visible failure-reason text; free-text tester
+resolves and calls `testModel` with the typed string). Full apps/web
+suite: 195/195. Sanity-checked Data/Settings/Pipelines-list still render
+and scroll correctly after the `app-shell.tsx` height change (no
+regression from making the wrapper `h-full` instead of auto-height).

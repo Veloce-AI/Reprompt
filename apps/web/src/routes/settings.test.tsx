@@ -380,7 +380,10 @@ describe("Settings", () => {
     renderSettings();
 
     await screen.findByText("ollama/llama3.1");
-    fireEvent.click(screen.getByRole("button", { name: "Test" }));
+    // Scoped to index 0: the curated model's own "Test" button renders
+    // before the "Test any model" free-text section's identically-labeled
+    // submit button further down the card.
+    fireEvent.click(screen.getAllByRole("button", { name: "Test" })[0]);
 
     expect(await screen.findByText("Works — 342ms")).toBeInTheDocument();
     expect(testModel).toHaveBeenCalledWith("ollama/llama3.1");
@@ -396,9 +399,42 @@ describe("Settings", () => {
     renderSettings();
 
     await screen.findByText("ollama/llama3.1");
-    fireEvent.click(screen.getByRole("button", { name: "Test" }));
+    // Scoped to index 0: the curated model's own "Test" button renders
+    // before the "Test any model" free-text section's identically-labeled
+    // submit button further down the card.
+    fireEvent.click(screen.getAllByRole("button", { name: "Test" })[0]);
 
     expect(await screen.findByText("Test failed")).toBeInTheDocument();
+    // The failure reason is visible text now, not just a hover tooltip -
+    // a screenshot/report of a failed test used to be undiagnosable
+    // without knowing to hover over the badge.
+    expect(
+      await screen.findByText("Test failed — check your connection and try again.")
+    ).toBeInTheDocument();
+  });
+
+  it("lets a user test any model string, not just ones in the curated list", async () => {
+    vi.mocked(getSessionToken).mockReturnValue("session-token");
+    vi.mocked(getWorkspaceSettings).mockResolvedValue(baseWorkspace());
+    vi.mocked(listApiKeys).mockResolvedValue([baseKey()]);
+    vi.mocked(listConfiguredModels).mockResolvedValue([baseConfiguredModel()]);
+    vi.mocked(testModel).mockResolvedValue({
+      model: "nvidia_nim/z-ai/glm-5.2",
+      provider: "nvidia_nim",
+      latency_ms: 512,
+      content_preview: "ok",
+    });
+
+    renderSettings();
+
+    await screen.findByText("ollama/llama3.1");
+    fireEvent.change(screen.getByLabelText("Model string to test"), {
+      target: { value: "nvidia_nim/z-ai/glm-5.2" },
+    });
+    fireEvent.click(screen.getAllByRole("button", { name: "Test" })[1]);
+
+    expect(await screen.findByText("Works — 512ms")).toBeInTheDocument();
+    expect(testModel).toHaveBeenCalledWith("nvidia_nim/z-ai/glm-5.2");
   });
 
   it("shows a locked curated model (e.g. NVIDIA NIM) with an inline unlock, not hidden", async () => {

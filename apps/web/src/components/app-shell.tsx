@@ -100,7 +100,15 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             become horizontally scrollable, only vertically for genuinely
             tall (not wide) screens. */}
         <div className="flex-1 overflow-y-auto overflow-x-hidden">
-          <div className="mx-auto max-w-[1440px]">{children}</div>
+          {/* h-full: gives a definite height for routes (pipeline-workspace)
+              that need to size themselves against "the remaining viewport
+              below the theme toggle bar" rather than guessing 100vh - a
+              plain height:auto block here has no bearing on whether this
+              parent's own overflow-y-auto still works for tall content
+              (that only depends on this parent having a bounded height,
+              which it already does via `flex-1` above), so this is safe
+              for every other route too. */}
+          <div className="mx-auto h-full max-w-[1440px]">{children}</div>
         </div>
       </main>
     </div>

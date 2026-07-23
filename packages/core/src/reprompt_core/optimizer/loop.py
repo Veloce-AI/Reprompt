@@ -86,7 +86,9 @@ from typing import Any, Literal, NamedTuple, TypeVar
 from pydantic import BaseModel, ConfigDict, Field
 
 from reprompt_core.budget import BudgetTracker
-from reprompt_core.deterministic import DeterministicCheck, evaluate_deterministic_checks, parse_deterministic_checks
+from reprompt_core.contract.mine import AssertionSpec
+from reprompt_core.deterministic import CheckResult, DeterministicCheck, EvaluationResult, evaluate_deterministic_checks, parse_deterministic_checks
+from reprompt_core.optimizer.assertions import AssertionFailure, run_assertions
 from reprompt_core.embedding import embedding_similarity
 from reprompt_core.judge import JudgeResponseError, JudgeResult, judge_pairwise, judge_single_pass
 from reprompt_core.llm.client import LLMResponse
@@ -188,6 +190,12 @@ class StageOptimizationInput(BaseModel):
         default_factory=dict,
         description='{"deterministic_checks": [...], "judge_criteria": [...]} — same shape as Rubric rows.',
     )
+    assertion_specs: list[AssertionSpec] = Field(
+        default_factory=list,
+        description="Approved Phase 5 assertion specs to enforce after the sweep. "
+        "Each spec's .id field carries the DB assertion row's primary key for "
+        "counterexample persistence. Empty list = no assertion enforcement (default).",
+    )
     examples: list[MutationExample | dict[str, Any]] = Field(
         min_length=1,
         description="Real benchmark input/output pairs for this stage. The first is used as the "
@@ -220,6 +228,12 @@ class StageAttempt(BaseModel):
     )
     cost_usd: float
     latency_ms: float
+    candidate_output: str | None = Field(
+        default=None,
+        description="The raw output text produced by this attempt. Populated in "
+        "run_sweep_for_stage for use by Phase 8 assertion enforcement — not persisted "
+        "to the Candidate DB row (which has no output column).",
+    )
     few_shot_examples: list[dict[str, Any]] | None = Field(
         default=None,
         description="Set only when Prism's include_few_shot=True and this attempt is the stage's "
@@ -276,6 +290,12 @@ class StageResult(BaseModel):
     met_threshold: bool
     selection_reason: str
     error: str | None = Field(default=None, description="Set if this stage failed unexpectedly (caught, not propagated).")
+    assertion_counterexamples: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="Phase 8: (input, output, assertion_id, kind, reason) tuples collected when "
+        "the winning candidate violated an approved assertion. Persisted by apps/api onto the "
+        "Assertion.counterexamples JSON column for HITL review and future few-shot context.",
+    )
     holdout_score: float | None = Field(
         default=None,
         description="Mean composite score (deterministic + embedding, no judge) of the winning "
@@ -543,6 +563,7 @@ def run_sweep_for_stage(
                 },
                 cost_usd=total_cost,
                 latency_ms=total_latency,
+                candidate_output=candidate_output,
             )
             stage_attempts.append((scored_candidate, attempt))
             if on_attempt is not None:
@@ -944,6 +965,94 @@ def _evaluate_holdout(
 
 
 # ---------------------------------------------------------------------------
+# Phase 8 — assertion-guided backtrack
+# ---------------------------------------------------------------------------
+
+
+def _assertion_backtrack(
+    stage_input: StageOptimizationInput,
+    best: StageAttempt,
+    failures: list[AssertionFailure],
+    *,
+    call: Callable[..., LLMResponse],
+    budget: BudgetTracker,
+    judge_model: str,
+    mutator_model: str | None,
+    parity_threshold: float,
+    max_sweep_candidates_per_prompt: int,
+    on_attempt: Callable[[StageAttempt], None] | None,
+) -> StageResult | None:
+    """One assertion-guided critique/refine round followed by a mini re-sweep.
+
+    Called when the stage's winning candidate fails at least one approved
+    assertion. Builds a :class:`~reprompt_core.scoring.CompositeScore` whose
+    ``deterministic`` field carries the assertion failures (as
+    :class:`~reprompt_core.deterministic.CheckResult` entries with ``passed=False``)
+    and passes it to :func:`~reprompt_core.optimizer.mutator.critique_and_refine`
+    so the critique step reasons directly against the assertion violations.
+
+    The refined prompt and the original winner are then re-swept via
+    :func:`run_sweep_for_stage` (one mini pass) and the better result is
+    returned. Returns ``None`` when the budget is exhausted, the
+    critique/refine call fails, or the refined prompt is a near-duplicate
+    of the original — the caller keeps the original winner in all those
+    cases.
+    """
+    if budget.is_exhausted:
+        return None
+
+    # Build an EvaluationResult from the assertion failures so that
+    # _format_score_feedback (inside critique_and_refine) names the
+    # specific assertions that broke, not generic score info.
+    check_results = [
+        CheckResult(id=None, type=f.kind, label=f.kind, passed=False, reason=f.reason)
+        for f in failures
+    ]
+    eval_result = EvaluationResult(results=check_results)
+
+    embedding_score = float(best.scores.get("embedding_sim") or 0.0)
+    judge_val = best.scores.get("judge")
+    judge_score = float(judge_val) if isinstance(judge_val, (int, float)) else None
+    composite = compute_composite_score(eval_result, embedding_score, judge_score)
+
+    try:
+        refinement = critique_and_refine(
+            best.prompt_variant,
+            composite,
+            stage_input.examples,
+            stage_input.rubric,
+            stage_input.target_model,
+            call=call,
+            mutator_model=mutator_model,
+        )
+        budget.record_spend(
+            refinement.cost_usd or 0.0,
+            candidate_id=f"stage-{stage_input.stage_id}-assertion-backtrack",
+        )
+    except PromptMutationError as exc:
+        logger.warning(
+            "Assertion backtrack refine failed for stage %s: %s — keeping the original winner.",
+            stage_input.stage_id, exc,
+        )
+        return None
+
+    refined = refinement.variants[0]
+    if refined == best.prompt_variant or _is_near_duplicate(refined, [best.prompt_variant]):
+        return None  # no meaningful change from the refinement
+
+    return run_sweep_for_stage(
+        stage_input,
+        [best.prompt_variant, refined],
+        call=call,
+        budget=budget,
+        judge_model=judge_model,
+        parity_threshold=parity_threshold,
+        max_sweep_candidates_per_prompt=max_sweep_candidates_per_prompt,
+        on_attempt=on_attempt,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
@@ -1064,6 +1173,45 @@ def run_optimizer(
                 selection_reason="",
                 error=str(exc),
             )
+        # Phase 8: assertion enforcement — run approved assertions against the
+        # winner's output. On failure: record counterexamples for HITL review,
+        # then attempt one assertion-guided backtrack (critique → refine → re-sweep).
+        # Bounded to one round per stage; budget checks prevent runaway cost.
+        if result.best is not None and stage_input.assertion_specs and not budget.is_exhausted:
+            example = _example_dict(stage_input.examples[0])
+            example_input = example.get("input", {})
+            assertion_result = run_assertions(
+                result.best.candidate_output or "",
+                stage_input.assertion_specs,
+                input=example_input,
+            )
+            if not assertion_result.passed:
+                for f in assertion_result.failures:
+                    result.assertion_counterexamples.append({
+                        "input": example_input,
+                        "output": result.best.candidate_output or "",
+                        "assertion_id": f.assertion_id,
+                        "kind": f.kind,
+                        "reason": f.reason,
+                    })
+                backtrack = _assertion_backtrack(
+                    stage_input, result.best, assertion_result.failures,
+                    call=call,
+                    budget=budget,
+                    judge_model=judge_model,
+                    mutator_model=mutator_model,
+                    parity_threshold=parity_threshold,
+                    max_sweep_candidates_per_prompt=max_sweep_candidates_per_prompt,
+                    on_attempt=on_attempt,
+                )
+                if (
+                    backtrack is not None
+                    and backtrack.best is not None
+                    and (backtrack.best.scores.get("final") or 0.0) > (result.best.scores.get("final") or 0.0)
+                ):
+                    result.best = backtrack.best
+                    result.attempts_tried += backtrack.attempts_tried
+
         # M4 holdout: score the winner on examples it was never optimized on.
         # Skipped silently if no holdout examples were provided or the budget
         # is already exhausted — never fails the stage.

@@ -24,6 +24,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, joinedload
 
 from reprompt_core.budget import BudgetTracker
+from reprompt_core.contract.mine import AssertionSpec as CoreAssertionSpec
 from reprompt_core.llm.model_select import select_model
 from reprompt_core.optimizer.loop import (
     OptimizationResult,
@@ -262,6 +263,7 @@ def _run(db: Session, migration_id: int) -> None:  # noqa: C901
                     on_phase=on_phase,
                 )
                 _persist_holdout_scores(db, migration.id, result.stage_results, target_model)
+                _persist_assertion_counterexamples(db, result.stage_results)
 
                 total_cost += result.total_cost_usd
                 if result.stopped_early:
@@ -311,6 +313,7 @@ def _run(db: Session, migration_id: int) -> None:  # noqa: C901
                     on_phase=on_phase,
                 )
                 _persist_holdout_scores(db, migration.id, result.stage_results, override_model)
+                _persist_assertion_counterexamples(db, result.stage_results)
 
                 total_cost += result.total_cost_usd
                 if result.stopped_early:
@@ -480,6 +483,39 @@ def _run_seam_regression(
                 )
 
 
+def _persist_assertion_counterexamples(
+    db: Session,
+    stage_results: list[StageResult],
+) -> None:
+    """Append Phase 8 counterexamples onto the relevant Assertion rows.
+
+    Each entry in ``stage_result.assertion_counterexamples`` carries an
+    ``assertion_id`` (the DB primary key, threaded through from
+    ``AssertionSpec.id``). We append the counterexample to that row's
+    ``counterexamples`` JSON column so the contract-review UI can show
+    concrete cases where the winning prompt violated an approved assertion.
+    """
+    for sr in stage_results:
+        if not sr.assertion_counterexamples:
+            continue
+        for cx in sr.assertion_counterexamples:
+            assertion_id = cx.get("assertion_id")
+            if assertion_id is None:
+                continue
+            row = db.scalar(select(models.Assertion).where(models.Assertion.id == assertion_id))
+            if row is None:
+                continue
+            existing = list(row.counterexamples or [])
+            existing.append({
+                "input": cx.get("input"),
+                "output": cx.get("output"),
+                "kind": cx.get("kind"),
+                "reason": cx.get("reason"),
+            })
+            row.counterexamples = existing
+    db.commit()
+
+
 def _persist_holdout_scores(
     db: Session,
     migration_id: int,
@@ -555,6 +591,25 @@ def _build_stage_inputs(
             # Automatic split: last record withheld, rest used for training.
             train_records, explicit_holdout = list(records[:-1]), [records[-1]]
 
+        # Phase 8: load approved assertions for this stage so the optimizer
+        # can enforce them after the sweep and backtrack if they fail.
+        approved_assertions = db.scalars(
+            select(models.Assertion).where(
+                models.Assertion.stage_id == stage.id,
+                models.Assertion.status == "approved",
+            )
+        ).all()
+        assertion_specs = [
+            CoreAssertionSpec(
+                kind=a.kind,
+                spec=a.spec,
+                description=a.description,
+                confidence=a.confidence or 1.0,
+                id=a.id,
+            )
+            for a in approved_assertions
+        ]
+
         result.append(
             StageOptimizationInput(
                 stage_id=stage.id,
@@ -565,6 +620,7 @@ def _build_stage_inputs(
                     "deterministic_checks": rubric.deterministic_checks if rubric else [],
                     "judge_criteria": rubric.judge_criteria if rubric else [],
                 },
+                assertion_specs=assertion_specs,
                 examples=[{"input": r.input, "output": r.output} for r in train_records],
                 holdout_examples=[{"input": r.input, "output": r.output} for r in explicit_holdout],
             )

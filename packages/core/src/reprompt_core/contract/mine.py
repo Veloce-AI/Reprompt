@@ -58,6 +58,7 @@ class AssertionSpec(BaseModel):
     spec: dict[str, Any] = Field(description="predicate parameters matching the check type")
     description: str = ""
     confidence: float = Field(default=1.0, ge=0.0, le=1.0)
+    id: int | None = Field(default=None, description="DB assertion row id, set by the API layer for counterexample tracking. Ignored by mining logic.")
 
 
 class MineExample(BaseModel):

@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  type AssertionCounterexample,
   type AssertionOut,
   type DagResponse,
   approveAssertion,
@@ -109,47 +110,65 @@ function StageAssertions({
             </TableHeader>
             <TableBody>
               {assertions.map((a) => (
-                <TableRow key={a.id}>
-                  <TableCell className="align-top font-mono text-12">{a.kind}</TableCell>
-                  <TableCell className="align-top text-13 text-ink max-w-xs">
-                    {a.description || JSON.stringify(a.spec)}
-                    {a.noise_floor != null && (
-                      <span className="ml-2 text-12 text-ink-muted">
-                        noise {Math.round(a.noise_floor * 100)}%
-                      </span>
-                    )}
-                  </TableCell>
-                  <TableCell className="align-top font-mono text-12">
-                    {a.confidence != null ? `${Math.round(a.confidence * 100)}%` : "—"}
-                  </TableCell>
-                  <TableCell className="align-top">
-                    <Badge variant={statusVariant(a.status)}>{a.status}</Badge>
-                  </TableCell>
-                  <TableCell className="align-top">
-                    <div className="flex gap-2">
-                      {a.status !== "approved" && (
-                        <Button
-                          variant="secondary"
-                          size="sm"
-                          disabled={approveMut.isPending}
-                          onClick={() => approveMut.mutate(a.id)}
-                        >
-                          Approve
-                        </Button>
+                <>
+                  <TableRow key={a.id}>
+                    <TableCell className="align-top font-mono text-12">{a.kind}</TableCell>
+                    <TableCell className="align-top text-13 text-ink max-w-xs">
+                      {a.description || JSON.stringify(a.spec)}
+                      {a.noise_floor != null && (
+                        <span className="ml-2 text-12 text-ink-muted">
+                          noise {Math.round(a.noise_floor * 100)}%
+                        </span>
                       )}
-                      {a.status !== "retired" && (
-                        <Button
-                          variant="secondary"
-                          size="sm"
-                          disabled={retireMut.isPending}
-                          onClick={() => retireMut.mutate(a.id)}
-                        >
-                          Retire
-                        </Button>
-                      )}
-                    </div>
-                  </TableCell>
-                </TableRow>
+                    </TableCell>
+                    <TableCell className="align-top font-mono text-12">
+                      {a.confidence != null ? `${Math.round(a.confidence * 100)}%` : "—"}
+                    </TableCell>
+                    <TableCell className="align-top">
+                      <Badge variant={statusVariant(a.status)}>{a.status}</Badge>
+                    </TableCell>
+                    <TableCell className="align-top">
+                      <div className="flex gap-2">
+                        {a.status !== "approved" && (
+                          <Button
+                            variant="secondary"
+                            size="sm"
+                            disabled={approveMut.isPending}
+                            onClick={() => approveMut.mutate(a.id)}
+                          >
+                            Approve
+                          </Button>
+                        )}
+                        {a.status !== "retired" && (
+                          <Button
+                            variant="secondary"
+                            size="sm"
+                            disabled={retireMut.isPending}
+                            onClick={() => retireMut.mutate(a.id)}
+                          >
+                            Retire
+                          </Button>
+                        )}
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                  {a.counterexamples.length > 0 && (
+                    <TableRow key={`${a.id}-cx`} className="bg-surface-subtle">
+                      <TableCell colSpan={5} className="py-2 px-4">
+                        <p className="text-12 font-medium text-ink-soft mb-1">
+                          {a.counterexamples.length} counterexample{a.counterexamples.length !== 1 ? "s" : ""} from migration runs
+                        </p>
+                        <div className="space-y-1">
+                          {a.counterexamples.map((cx: AssertionCounterexample, i: number) => (
+                            <p key={i} className="text-12 text-parity-fail font-mono truncate">
+                              {cx.reason}
+                            </p>
+                          ))}
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  )}
+                </>
               ))}
             </TableBody>
           </Table>

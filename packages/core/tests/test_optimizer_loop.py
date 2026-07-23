@@ -617,3 +617,132 @@ def test_holdout_score_is_none_when_stage_produces_no_winner() -> None:
     sr = result.stage_results[0]
     assert sr.best is None
     assert sr.holdout_score is None
+
+
+# ---------------------------------------------------------------------------
+# Phase 8 — assertion enforcement + backtrack
+# ---------------------------------------------------------------------------
+
+
+def _stage_with_assertions(assertion_specs) -> StageOptimizationInput:
+    from reprompt_core.contract.mine import AssertionSpec
+    return StageOptimizationInput(
+        stage_id=1,
+        stage_name="Extract",
+        original_prompt_template="Extract: {{document}}",
+        target_model=TARGET_MODEL,
+        rubric=EMPTY_RUBRIC,
+        examples=EXAMPLES,
+        assertion_specs=assertion_specs,
+    )
+
+
+def test_passing_assertions_produce_no_counterexamples():
+    """When the winner satisfies all assertions, no counterexamples are recorded."""
+    from reprompt_core.contract.mine import AssertionSpec
+    specs = [AssertionSpec(kind="required_keys", spec={"keys": ["currency", "revenue"]}, id=1)]
+    call, _ = _make_call(sweep_output='{"currency": "USD", "revenue": 4200000}')
+    budget = BudgetTracker(budget_usd=10.0)
+    result = run_optimizer(
+        [_stage_with_assertions(specs)],
+        call=call, budget=budget, judge_model=JUDGE_MODEL,
+        strategy="simple", max_sweep_candidates_per_prompt=1,
+        parity_threshold=0.0, num_prompt_variants=1,
+    )
+    sr = result.stage_results[0]
+    assert sr.best is not None
+    assert sr.assertion_counterexamples == []
+
+
+def test_failing_assertion_records_counterexample():
+    """When the winner violates an assertion, a counterexample is recorded."""
+    from reprompt_core.contract.mine import AssertionSpec
+    # Output is missing "required_field"
+    specs = [AssertionSpec(kind="required_keys", spec={"keys": ["required_field"]}, id=99)]
+    call, _ = _make_call(sweep_output='{"currency": "USD"}')
+    budget = BudgetTracker(budget_usd=10.0)
+    result = run_optimizer(
+        [_stage_with_assertions(specs)],
+        call=call, budget=budget, judge_model=JUDGE_MODEL,
+        strategy="simple", max_sweep_candidates_per_prompt=1,
+        parity_threshold=0.0, num_prompt_variants=1,
+    )
+    sr = result.stage_results[0]
+    assert len(sr.assertion_counterexamples) == 1
+    cx = sr.assertion_counterexamples[0]
+    assert cx["assertion_id"] == 99
+    assert cx["kind"] == "required_keys"
+    assert "required_field" in cx["reason"]
+
+
+def test_failing_assertion_triggers_backtrack_and_may_improve_winner():
+    """On assertion failure the backtrack critique/refine call fires and produces a new candidate."""
+    from reprompt_core.contract.mine import AssertionSpec
+
+    specs = [AssertionSpec(kind="required_keys", spec={"keys": ["required_field"]}, id=5)]
+    backtrack_fired: list[bool] = []
+
+    def call(model, messages, **kwargs):
+        response_format = kwargs.get("response_format")
+        system_content = messages[0]["content"] if messages else ""
+        if isinstance(response_format, type):
+            if "critique" in system_content.lower():
+                backtrack_fired.append(True)
+                return _fake_response(json.dumps({"critique": "missing required_field", "refined_prompt": "better prompt"}))
+            if "indices" in system_content.lower():
+                return _fake_response(json.dumps({"indices": [0]}))
+            return _fake_response(json.dumps({"variants": ["variant A"]}))
+        # Sweep output: first pass misses the field; after backtrack produces it
+        return _fake_response('{"currency": "USD"}')
+
+    budget = BudgetTracker(budget_usd=10.0)
+    result = run_optimizer(
+        [_stage_with_assertions(specs)],
+        call=call, budget=budget, judge_model=JUDGE_MODEL,
+        strategy="simple", max_sweep_candidates_per_prompt=1,
+        parity_threshold=0.0, num_prompt_variants=1,
+    )
+    # Backtrack must have fired (critique call was made)
+    assert backtrack_fired, "assertion backtrack did not fire a critique call"
+    # Counterexample from the original failing winner must be recorded
+    assert result.stage_results[0].assertion_counterexamples
+
+
+def test_no_assertions_skips_enforcement():
+    """Empty assertion_specs list must not affect optimizer behavior at all."""
+    call, _ = _make_call()
+    budget = BudgetTracker(budget_usd=10.0)
+    result = run_optimizer(
+        [_stage()],  # no assertion_specs
+        call=call, budget=budget, judge_model=JUDGE_MODEL,
+        strategy="simple", max_sweep_candidates_per_prompt=1,
+        parity_threshold=0.0, num_prompt_variants=1,
+    )
+    assert result.stage_results[0].assertion_counterexamples == []
+
+
+def test_assertion_backtrack_bounded_to_one_round():
+    """Backtrack fires at most once per stage, not recursively."""
+    from reprompt_core.contract.mine import AssertionSpec
+    specs = [AssertionSpec(kind="required_keys", spec={"keys": ["x"]}, id=1)]
+    critique_calls: list[int] = []
+
+    def call(model, messages, **kwargs):
+        response_format = kwargs.get("response_format")
+        system_content = messages[0]["content"] if messages else ""
+        if isinstance(response_format, type):
+            if "critique" in system_content.lower():
+                critique_calls.append(1)
+                return _fake_response(json.dumps({"critique": "bad", "refined_prompt": "refined"}))
+            return _fake_response(json.dumps({"variants": ["variant A"]}))
+        return _fake_response('{"currency": "USD"}')  # always fails the assertion
+
+    budget = BudgetTracker(budget_usd=10.0)
+    run_optimizer(
+        [_stage_with_assertions(specs)],
+        call=call, budget=budget, judge_model=JUDGE_MODEL,
+        strategy="simple", max_sweep_candidates_per_prompt=1,
+        parity_threshold=0.0, num_prompt_variants=1,
+    )
+    # Exactly one critique call — backtrack does not recurse
+    assert len(critique_calls) == 1

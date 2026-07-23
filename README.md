@@ -6,7 +6,6 @@
 **Change the AI model behind your product without breaking it — and prove it.**
 
 *by [Veloce AI](https://veloceai.in/)*
-Markdown Preview Mermaid Support"
 ![Status](https://img.shields.io/badge/status-in%20development-4C5FE8)
 ![License](https://img.shields.io/badge/license-proprietary-8B5CF6)
 ![Python](https://img.shields.io/badge/python-3.12-14B8A6)

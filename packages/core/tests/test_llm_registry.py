@@ -128,6 +128,24 @@ def test_get_model_capabilities_degrades_gracefully_for_unknown_model() -> None:
     assert caps.requires_api_key is True
 
 
+def test_get_model_capabilities_reasoning_true_for_claude_sonnet() -> None:
+    caps = get_model_capabilities("claude-sonnet-4-5")
+    assert caps.supports_reasoning is True
+
+
+def test_get_model_capabilities_reasoning_false_for_gpt4o() -> None:
+    # gpt-4o is not a reasoning-tier model (that's o1/o3/gpt-5-class).
+    caps = get_model_capabilities("gpt-4o")
+    assert caps.supports_reasoning is False
+
+
+def test_get_model_capabilities_reasoning_overridden_false_for_ollama() -> None:
+    # LiteLLM permissively forwards reasoning_effort to Ollama's API even
+    # though it has no real reasoning-mode concept - hand-overridden.
+    caps = get_model_capabilities("ollama/llama3.1")
+    assert caps.supports_reasoning is False
+
+
 def test_get_model_capabilities_provider_agnostic_across_families() -> None:
     """No provider is special-cased — the same function works uniformly
     across OpenAI/Anthropic/Gemini-style model strings, per the explicit

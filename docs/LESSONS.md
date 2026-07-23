@@ -63,3 +63,53 @@ production impact) rather than working around a library-level interaction
 bug indefinitely - but the ref-guard pattern is worth keeping as the
 default for any future effect with a mutating side effect, StrictMode or
 not.
+
+## Dev DB silently drifted 4 migrations behind its own `alembic_version` stamp (2026-07-22)
+
+**Symptom**: Migrations tab stuck on "Loading migrations…" forever; a real
+screenshot from the product owner. `GET /pipelines/{id}/migrations`
+actually 500'd with `sqlalchemy.exc.OperationalError: no such column:
+migrations.activity_log` — confirmed by calling the endpoint directly via
+`TestClient(app, raise_server_exceptions=True)` to get the real traceback
+(the live server only returned a bare "Internal Server Error", no detail).
+
+**Root cause**: `apps/api/src/reprompt_api/main.py`'s dev-convenience
+auto-create (`Base.metadata.create_all()`) creates any table *missing
+entirely* to match current `models.py` — but it cannot add a *column* to
+a table that already exists. At some point this session, the dev DB
+(`apps/api/test.db`) had `seam_check_results` and `assertions` (two brand
+new tables from later migrations) auto-created this way, which silently
+made the app *look* healthy — but `activity_log` (on the pre-existing
+`migrations` table) and `holdout_score` (on the pre-existing `candidates`
+table) never got added, because auto-create only handles missing tables,
+not missing columns. `alembic_version` stayed stamped at `450ae8aefaa7`
+(a merge point from early in the session) the entire time — 4 real
+migrations behind `alembic heads`' actual `b2c3d4e5f6a7` — with nothing
+forcing a mismatch check, so the drift was invisible until a query
+happened to touch one of the two missing columns.
+
+**Fix, applied directly to the real dev DB** (not a code change — the
+migrations themselves were always correct): added the two missing
+columns by hand (`ALTER TABLE migrations ADD COLUMN activity_log JSON`,
+`ALTER TABLE candidates ADD COLUMN holdout_score FLOAT`), confirmed the
+two auto-created tables' schemas already matched their migrations exactly
+(they did), then `alembic stamp head` to make the version pointer honest
+again — deliberately not a blind `alembic upgrade head` or a DB
+delete-and-recreate, since either risks either an "already exists" error
+on the two tables that were already fine, or losing 19MB of real seeded
+pipeline/trace data for no reason.
+
+**Lesson**: `main.py`'s auto-create fallback is a documented gotcha
+already (see `docs/TESTING.md`'s "Database" step), but this is a sharper
+version of it than previously written down — it doesn't just risk a
+*later* `alembic upgrade head` failing outright (the previously-documented
+case), it can also leave the DB in a **mixed, partially-migrated state**
+that looks completely healthy until a request happens to touch the one
+column that's actually missing, with no error anywhere until that exact
+moment. `alembic current` vs `alembic heads` disagreeing is a real,
+checkable health signal that nothing in this project currently checks
+automatically. Worth adding to `scripts/dev-restart.ps1`'s existing
+"refuse to declare success until proven serving current code" check — it
+already tests one class of staleness (a ghost process serving old code),
+this is a second, different class (a live, current-code process serving
+against a stale schema) that the same script should also catch.

@@ -125,9 +125,16 @@ export function MigrationSuccessScreen({
 
         {!started && (
           <>
-            <p className="mb-6 max-w-[640px] text-14 text-ink-soft">
+            <p className="mb-2 max-w-[640px] text-14 text-ink-soft">
               Migration saved. Make sure all rubrics are approved, then start the optimizer below.
             </p>
+            <div className="mb-6 flex items-center gap-2">
+              <p className="text-12 text-ink-soft">
+                Starting this runs <span className="font-medium text-ink">Prism</span> — a
+                self-evolving prompt optimizer
+              </p>
+              <PrismExplainer />
+            </div>
             {startMutation.isError && (
               <p className="mb-4 text-13 text-parity-fail" role="alert">
                 {startMutation.error instanceof ApiError

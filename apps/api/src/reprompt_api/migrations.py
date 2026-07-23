@@ -52,6 +52,7 @@ from __future__ import annotations
 
 import datetime
 
+import litellm
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, field_validator
@@ -71,6 +72,20 @@ router = APIRouter(prefix="/pipelines", tags=["migrations"])
 # the picker — not an attempt to enumerate every model LiteLLM knows about.
 # Spans the major hosted providers plus a couple of local/open options (no
 # API key required), per the task's own examples.
+#
+# The nvidia_nim/openrouter entries below are each aggregators that route
+# many unrelated open-weight families through one LiteLLM provider string
+# (see model_card.py's resolve_family docstring) — added specifically to
+# cover the model families the product plan called out (Llama, DeepSeek,
+# Qwen, GLM, MiniMax) without hand-building a direct integration for each
+# one. Slugs verified against litellm.model_cost/models_by_provider (the
+# openrouter ones) or a maintainer-documented NIM catalog (the nvidia_nim
+# ones — litellm's own pricing table only knows NIM's rerank models, not
+# its chat models, so there's no litellm-side cost data for those four; the
+# capability registry already degrades gracefully to cost=None for that
+# case, same as any other model it can't price). Requires NVIDIA_NIM_API_KEY
+# / OPENROUTER_API_KEY respectively — both listed in Settings' BYOK provider
+# suggestions.
 CURATED_MODELS: list[str] = [
     "gpt-4o",
     "gpt-4o-mini",
@@ -80,6 +95,17 @@ CURATED_MODELS: list[str] = [
     "gemini/gemini-2.0-flash-lite",
     "ollama/llama3.1",
     "ollama/qwen2.5:14b",
+    # NVIDIA NIM (build.nvidia.com) — free-tier friendly, OpenAI-compatible.
+    "nvidia_nim/meta/llama-3.1-405b-instruct",
+    "nvidia_nim/deepseek-ai/deepseek-v3.2",
+    "nvidia_nim/qwen/qwen3-235b-a22b",
+    "nvidia_nim/nvidia/llama-3.1-nemotron-ultra-253b-v1",
+    # OpenRouter — one key, many families not otherwise directly integrated.
+    "openrouter/z-ai/glm-4.7",
+    "openrouter/minimax/minimax-m2.1",
+    "openrouter/mistralai/mistral-large-2512",
+    "openrouter/x-ai/grok-4",
+    "openrouter/moonshotai/kimi-k2.5",
 ]
 
 
@@ -236,6 +262,15 @@ def _to_option(model: str) -> ModelOption:
     )
 
 
+def _configured_providers(db: Session, workspace: models.Workspace) -> set[str | None]:
+    return {
+        row.provider
+        for row in db.scalars(
+            select(models.WorkspaceApiKey).where(models.WorkspaceApiKey.workspace_id == workspace.id)
+        ).all()
+    }
+
+
 def get_available_models(db: Session, workspace: models.Workspace) -> list[ModelOption]:
     """Every curated model ``workspace`` can actually target right now:
     every model that needs no API key (local/self-hosted, e.g. Ollama) plus
@@ -245,19 +280,36 @@ def get_available_models(db: Session, workspace: models.Workspace) -> list[Model
     now calls this) so a second caller — ``reprompt_api.rubrics``'s
     auto-select-a-model-when-none-given path — can compute the same
     "what can this workspace actually use" set without duplicating the
-    BYOK-provider-intersection logic or importing a route handler.
+    BYOK-provider-intersection logic or importing a route handler. Used
+    anywhere a *locked* model must not be selectable (migration wizard's
+    picker, rubric auto-select) — see
+    :func:`list_curated_models_with_lock_state` for the visibility-only
+    counterpart that shows locked models too.
     """
-    configured_providers = {
-        row.provider
-        for row in db.scalars(
-            select(models.WorkspaceApiKey).where(models.WorkspaceApiKey.workspace_id == workspace.id)
-        ).all()
-    }
+    configured_providers = _configured_providers(db, workspace)
     options = [_to_option(model) for model in CURATED_MODELS]
     return [
         option
         for option in options
         if not option.requires_api_key or option.provider in configured_providers
+    ]
+
+
+def list_curated_models_with_lock_state(
+    db: Session, workspace: models.Workspace
+) -> list[tuple[ModelOption, bool]]:
+    """Every curated model, paired with whether ``workspace`` can use it
+    right now — unlike :func:`get_available_models` (which drops locked
+    models entirely, correct for a picker where a locked model must not be
+    selectable), this is for a *visibility* surface: Settings' "Configured
+    models" card, where the whole point is showing a curated-but-locked
+    model (e.g. an NVIDIA NIM or OpenRouter entry with no key added yet)
+    and what unlocks it, instead of making it look like it doesn't exist.
+    """
+    configured_providers = _configured_providers(db, workspace)
+    return [
+        (option, not option.requires_api_key or option.provider in configured_providers)
+        for option in (_to_option(model) for model in CURATED_MODELS)
     ]
 
 
@@ -393,6 +445,48 @@ def list_model_options(pipeline_id: int, db: Session = Depends(get_db)) -> list[
     """Model picker data source for the migration wizard's target-model step."""
     _get_pipeline_or_404(db, pipeline_id)
     return [_to_option(model) for model in CURATED_MODELS]
+
+
+@router.get("/{pipeline_id}/models/lookup", response_model=ModelOption)
+def lookup_model_option(pipeline_id: int, model: str, db: Session = Depends(get_db)) -> ModelOption:
+    """Same shape as a `list_model_options` entry, for one arbitrary LiteLLM
+    model string instead of the curated list — lets a user target any
+    model an aggregator provider (NVIDIA NIM, OpenRouter, ...) actually
+    offers, not just what's hand-curated in `CURATED_MODELS`. "Any
+    provider" is already this project's stated design goal (see
+    `models.py`'s `WorkspaceApiKey` docstring) — `get_model_capabilities`
+    already works for any string LiteLLM recognizes, this just exposes
+    that generically instead of only for the curated subset.
+
+    Never 404s on an unrecognized model string: `_to_option` (like
+    `get_model_capabilities` underneath it) degrades to conservative
+    defaults rather than raising, so a user can preview a typo'd or
+    genuinely-unknown string and see *why* it looks wrong (e.g. no
+    provider resolved, no cost data) instead of a dead-end error.
+    """
+    _get_pipeline_or_404(db, pipeline_id)
+    if not model.strip():
+        raise HTTPException(status_code=422, detail="model must not be empty")
+    return _to_option(model.strip())
+
+
+@router.get("/{pipeline_id}/models/catalog/openrouter", response_model=list[ModelOption])
+def list_openrouter_catalog(pipeline_id: int, db: Session = Depends(get_db)) -> list[ModelOption]:
+    """Every OpenRouter model string LiteLLM's own bundled model registry
+    knows about (~96 as of this LiteLLM version) — not just the handful of
+    families hand-picked into `CURATED_MODELS`. Backs the wizard's
+    searchable OpenRouter dropdown (see DEV_TRACKER.md's "OpenRouter
+    searchable dropdown" entry): OpenRouter itself has no public catalog
+    API to browse against, so this reuses LiteLLM's static
+    `model_prices_and_context_window.json` data instead — the same source
+    `get_model_capabilities` already leans on for every other model string
+    in this module, just enumerated instead of looked up one at a time.
+    NVIDIA NIM has no equivalent public/LiteLLM-bundled catalog to
+    enumerate, so it stays curated-plus-manual-lookup only.
+    """
+    _get_pipeline_or_404(db, pipeline_id)
+    catalog = sorted(litellm.models_by_provider.get("openrouter", []))
+    return [_to_option(model) for model in catalog]
 
 
 @router.post("/{pipeline_id}/migrations", response_model=MigrationOut, status_code=201)

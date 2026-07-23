@@ -23,7 +23,7 @@ function renderAt(path: string) {
   const rootRoute = createRootRoute();
   const homeRoute = createRoute({
     getParentRoute: () => rootRoute,
-    path: "/",
+    path: "/pipelines",
     component: () => <div>Pipelines home</div>,
   });
   const authVerifyRoute = createRoute({

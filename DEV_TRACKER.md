@@ -12,6 +12,42 @@ Last updated: 2026-07-23.
 
 **Phase 8 — Executable Assertions + Backtracking [DONE — 2026-07-23]**: `AssertionSpec.id` pass-through field added to `contract/mine.py` for DB-row tracking. New `packages/core/src/reprompt_core/optimizer/assertions.py`: `run_assertions()` translates approved `AssertionSpec` rows (`required_keys`, `regex`, `enum_values`) into `DeterministicCheck` predicates via `evaluate_deterministic_checks`, returns `AssertionRunResult` with typed `AssertionFailure` list. `StageOptimizationInput` gains `assertion_specs: list[AssertionSpec] = []`; `StageAttempt` gains `candidate_output: str | None` (in-memory only, not persisted); `StageResult` gains `assertion_counterexamples: list[dict]`. `run_sweep_for_stage` sets `candidate_output` on each attempt. `_assertion_backtrack()` private function: builds a `CompositeScore` from assertion failures as fake `CheckResult` rows, calls `critique_and_refine`, re-sweeps with original + refined prompt. Wired into `run_optimizer` after each strategy — one bounded backtrack round per stage on failure. `optimizer_runner.py`: loads approved `Assertion` rows per stage in `_build_stage_inputs`, new `_persist_assertion_counterexamples()` writes counterexamples to `assertions.counterexamples` JSON column after each `run_optimizer` call. `AssertionCounterexample` typed interface in `api.ts`. `contract-review-panel.tsx` renders counterexample rows under each assertion. Tests: `test_assertions.py` (13 new), `test_optimizer_loop.py` (5 new Phase 8 tests). `packages/core`: **340 passed, 21 skipped** (326 → 340 — 13 assertions + 5 loop). `apps/api`: **201 passed** unchanged. `apps/web`: **153 passed** unchanged.
 
+**Fix: Data tab table cell text overlap [DONE — 2026-07-22]**: Product owner
+reported the Data tab's `DataTable` (`apps/web/src/components/data-table.tsx`,
+"Phase 3 — Data dashboard tab" below) rendering stage names, input JSON
+previews, and rendered-prompt text visually smashed together in cells,
+illegible with real (long, dense) data. Root cause: the "Stage" column's
+`<Badge variant="outline">` had no width constraint, truncation, or
+`overflow-hidden` of its own, nor did its wrapping grid-cell `<div>`. CSS
+Grid items default to `min-width: auto`, so a long, space-free stage name
+(e.g. `extract_entities_and_classify_intent` — underscores aren't wrap
+points) rendered at its full intrinsic width, overflowing the Stage
+column's grid track directly into the Input column; since the `outline`
+badge variant has no background fill, the overflow text painted right on
+top of the Input cell's text instead of being clipped. The other cells
+(Input/Rendered prompt/Output) already had Tailwind's `truncate` applied
+directly and were unaffected — confirmed by reproducing with a real
+Playwright render before touching any code (dense mock data modeled on the
+screenshot: 30 rows, underscore-joined stage names, long prompts/JSON
+input) and measuring the badge's bounding box extending ~140px past the
+Input column's start. Fix (`data-table.tsx`): wrapping `<div>` gets
+`min-w-0 overflow-hidden`; `Badge` gets `max-w-full truncate` — single-line
+ellipsis within its own cell, row height (fixed 56px) unaffected since
+everything now genuinely single-lines. Click-to-expand into the drawer for
+full untruncated content (existing Phase 3 design) still works, re-verified
+in the same spec. New permanent regression test:
+`apps/web/e2e/data-table-density.spec.ts` (4 cases: no cell-to-cell overlap
+with dense long-content data, consistent row height, drawer still shows
+full content on click, no overlap at a narrow 900px viewport) — a real
+Playwright/Chromium render, deliberately not a jsdom unit test, since jsdom
+has no real layout engine and cannot reproduce CSS Grid track overflow (see
+`saas-product-design` skill's precedent: a passing jsdom suite missed a
+CSS flex-height bug the same way). Confirmed the new spec actually catches
+the regression by reverting the fix and re-running (2 of 4 cases fail
+without it, all 4 pass with it). `apps/web`: `tsc --noEmit` clean, `pnpm
+test` **153 passed** (unchanged — no vitest-level behavior change), new
+Playwright spec **4 passed**. No changes to `packages/core` or `apps/api`.
+
 **Phase 5 — Contract Mining [DONE — 2026-07-22]**: NLI cross-encoder module (`packages/core/src/reprompt_core/nli.py`, lazy-load `cross-encoder/nli-deberta-v3-base` via `@lru_cache`, exact-match fallback when `sentence_transformers` absent). Bidirectional entailment clustering + Shannon entropy (`contract/cluster.py`). Two-axis contract mining (`contract/mine.py`): Axis A = existing trace outputs (no LLM calls), Axis B = K repeats at temperature 0.7 to measure noise floor. Structural invariant extraction: `required_keys` (key intersection), `enum_values` (cardinality ≤5), `regex` (common prefix ≥3 chars). `assertions` DB table + Alembic migration `b2c3d4e5f6a7`. Four API endpoints (list/mine/approve/retire) in `contracts.py` + router wired into `main.py`. `AssertionOut` + 4 client functions in `apps/web/src/lib/api.ts`. `ContractReviewPanel` component + "Contracts" workspace tab. Tests: `test_nli.py` (7), `test_contract_cluster.py` (14), `test_contract_mine.py` (10), `test_contracts.py` (10). `apps/api`: **201 passed** (191 → 201). `packages/core`: **326 passed, 21 skipped** (297 → 326). `apps/web`: **153 passed** unchanged.
 
 **Fix 2 failing web tests [DONE — 2026-07-22]**: `migration-success-screen.test.tsx`'s
@@ -3458,3 +3494,1215 @@ uncaught by the existing suite. Worth a dedicated follow-up: seed a real
 migration fixture, run the actual orchestration function, assert the
 persisted `SeamCheckResult`/`holdout_score` rows are correct — not done
 here to keep this fix pass narrow and mergeable quickly.
+
+## Per-model cards: thinking-mode + tool-calling + code samples [Phases 1-3 DONE — 2026-07-22, Phase 4 not started]
+
+Research pass completed (re-dispatched after a first attempt died in
+early data-gathering with nothing to salvage). Full findings, condensed:
+
+**Audit confirmed via grep**: cost/context/JSON-mode/function-calling-
+boolean already existed (`registry.py`), preferred prompt style already
+existed (`model_card.py`), but working invocation code, tool-calling
+*shape*, and thinking-mode support were genuinely absent anywhere in the
+codebase — not something a prior pass missed, a real gap.
+
+**LiteLLM-first research (per the owner's own correction — "couldn't we
+get this from LiteLLM?" — confirmed correct)**: queried this repo's own
+installed LiteLLM against all 8 `CURATED_MODELS` directly. Only
+`claude-sonnet-4-5`/`claude-haiku-4-5` are genuine reasoning-tier models
+among the 8 (GPT-4o/Gemini-2.0-Flash are not — that's o-series/gpt-5 and
+Gemini's `-thinking-exp`/3.x lines respectively, none curated here).
+Tool-calling is one fixed LiteLLM-normalized shape across every provider
+(`tools=[{"type":"function","function":{...}}]`), not per-model data.
+Ollama's raw `reasoning_effort`/`tools` flags were found internally
+inconsistent (permissive param-passthrough, not real capability) — hand-
+overridden to `False` rather than trusted.
+
+**Architecture decided and built** (not a hand-curated table — both new
+facts are already live LiteLLM data, so live-derivation was simpler than
+maintaining a table, per this project's own `ponytail` discipline):
+
+- **Phase 1** [DONE]: `packages/core/src/reprompt_core/llm/registry.py` —
+  `ModelCapabilities` gained `supports_reasoning: bool`, sourced from
+  `litellm.get_model_info()["supports_reasoning"]` the same way
+  `max_input_tokens`/cost already are, with the Ollama override applied
+  in `get_model_capabilities()`. 3 new tests
+  (`test_llm_registry.py`).
+- **Phase 2** [DONE]: new `packages/core/src/reprompt_core/llm/code_sample.py`
+  — pure function `generate_code_sample(caps: ModelCapabilities) -> str`,
+  renders a real `reprompt_core.llm.client.complete()` call including
+  `tools=`/`thinking=` only when the model actually supports them. Same
+  "never imports/calls `complete`" purity discipline and test pattern as
+  `model_card.py`. 8 new tests (`test_code_sample.py`).
+- **Phase 3** [DONE]: `apps/api/src/reprompt_api/model_cards.py` —
+  `FamilyCardOut` gained `supports_reasoning`/`code_sample` fields,
+  `build_family_card()` populates both. `settings.py`'s
+  `ConfiguredModelOut.model_card` already embeds `FamilyCardOut` directly
+  (confirmed: zero changes needed there, the new fields propagate for
+  free). 3 new tests (`test_model_cards.py`) — one initial test assertion
+  bug found and fixed during verification (checked for the substring
+  `"thinking="` which false-matched its own "omitted" comment line; fixed
+  to check the real invocation vs. the comment specifically).
+
+**Verified**: `packages/core` 361 passed (350 + 11 new), 2 skipped.
+`apps/api` 204 passed (201 + 3 new). Both suites confirmed fully green,
+not just the new test files in isolation.
+
+**Phase 4 — NOT STARTED, deliberately deferred**: a "copy code" affordance
+in `ConfiguredModelsCard` (`apps/web/src/routes/settings.tsx`) surfacing
+`code_sample` — frontend-only, depends on Phase 3's response shape (now
+live), kept separate per this project's standing small-task discipline.
+
+**Separate follow-up, still queued, not started**: expand `CURATED_MODELS`
+(`apps/api/src/reprompt_api/migrations.py`) with the new provider families
+explicitly requested — Gemini (latest), Llama, DeepSeek, GLM, MiniMax,
+Qwen, whatever else is genuinely best-in-class at the time. Each needs its
+own real provider-family research (new API conventions, not more
+instances of an already-researched family) — deliberately not started
+alongside Phases 1-3.
+
+## Canvas/Graph tab merge [DONE — 2026-07-22]
+
+Implements ADR-001 (`docs/architecture/adr-001-merge-canvas-and-graph-tabs.md`).
+The standalone "Graph" tab is gone — `pipeline-graph.tsx` deleted, `"graph"`
+removed from `WORKSPACE_TABS`. Its capabilities (model nodes, per-stage
+call drill-down) are folded into `pipeline-canvas.tsx` as an
+`analytics`/`live` mode, toggled via a segmented control in the same
+toolbar as Spacing/Orientation. Auto-selects `live` while a migration is
+running for the pipeline, `analytics` otherwise; manual override holds
+for the session only (deliberately not persisted to `localStorage`, unlike
+Spacing/Orientation — a stale saved preference must never suppress
+auto-switching to Live when a run starts). One shared dagre layout engine,
+one zoom floor, one `localStorage` key, one `["pipeline-dag", id]` query
+cache for both modes — the old Graph tab's separate, laxer `minZoom: 0.25`
+(the actual root cause of the illegibility bug reported this session) no
+longer exists anywhere in the codebase.
+
+**Note on how this landed**: the implementing agent hit a session-limit
+termination after completing the actual code (confirmed: clean `tsc
+--noEmit`, all 153 `apps/web` unit tests passing unchanged) but before
+writing its final report or updating `docs/TESTING.md` — the doc update
+above (§3.3d rewrite) and this entry were completed directly rather than
+via the agent's own report. Verified independently before writing this:
+`WORKSPACE_TABS` confirmed graph-free, `pipeline-graph.tsx` confirmed
+deleted, mode-toggle state (`modeOverride`, `PipelineCanvasMode`) and the
+Live/Analytics segmented control confirmed present and wired to the
+`runningMigration` auto-select signal.
+
+**Update**: `cd apps/web && npx playwright test canvas-modes minimap` run
+directly — **6/6 passed** (Analytics model nodes + call drill-down, Live
+mode coloring/substep/beam/minimap unchanged, mode auto-select/manual
+override/reload-refresh, minimap markers on a 50-stage pipeline, Map
+toggle). Fully verified, closed.
+
+## Dark theme (system/light/dark) [DONE — 2026-07-22]
+
+Product owner asked for light/dark following the device's OS preference by
+default. `apps/web/src/styles/tokens.css` had zero dark-theme values
+before this — genuinely new work, not a bug fix.
+
+- **`apps/web/src/lib/theme.ts`** (new) — a small Zustand store,
+  `ThemeMode = "system" | "light" | "dark"`, persisted to `localStorage`.
+  "System" (default) removes any `data-theme` attribute so the browser's
+  own `prefers-color-scheme` media query decides — zero JS listener
+  needed, a live OS theme change is picked up for free. An explicit
+  override sets `data-theme="light"`/`"dark"` on `<html>`, which wins over
+  the OS setting via `tokens.css`'s paired
+  `@media(prefers-color-scheme:dark) :root:not([data-theme="light"])` /
+  `:root[data-theme="dark"]` blocks. `apps/web/index.html` carries a small
+  inline script mirroring the same read-and-apply logic so an explicit
+  override paints correctly on the very first frame, before React loads —
+  keep both in sync if this logic ever changes.
+- **`apps/web/src/components/theme-toggle.tsx`** (new) — three-way
+  segmented control (System/Light/Dark), same visual pattern as the Canvas
+  tab's Spacing/Orientation toggles. Wired into Settings
+  (`apps/web/src/routes/settings.tsx`).
+- **`tokens.css`**: every `:root` color token gets a direct dark-mode
+  counterpart — same "Instrument Grade" identity (cool blue-tinted
+  neutrals, `--beam` accent), stepped for a dark surface, no new token
+  names introduced. Validated with the `dataviz` skill's real
+  `validate_palette.js`, not by eye — `--parity-pass`/`--parity-fail`'s
+  existing hexes already cleared every check unchanged;
+  `--parity-near` needed a new dark-tuned step (`#D07C0C` in place of
+  `#D97706`) to clear the normal-vision-floor check against
+  `--parity-fail` in dark mode — full trio confirmed passing Lightness
+  band, Chroma floor, CVD separation (worst adjacent ΔE 8.3),
+  Normal-vision floor (worst adjacent ΔE 15.6), Contrast vs surface (all
+  ≥3:1). `--spectrum-violet`/`--spectrum-teal` (ParityBeam's gradient)
+  deliberately left unchanged — checked against the dark `--paper` and
+  read at equal-or-better contrast than against light `--paper`, so the
+  brand's spectrum signature stays one fixed identity across both themes
+  rather than shifting per-theme.
+
+**Note on how this landed**: this agent and the Canvas wide-pipeline fix
+below were both interrupted by a process-level session boundary before
+either could write its own final report or tests — recovered directly by
+inspecting the actual diff (both were code-complete and high quality;
+the dark-theme work even left its own validator results documented in
+`tokens.css`'s own comments) rather than re-dispatching from scratch. 4
+new tests added directly (`apps/web/src/lib/theme.test.ts`) covering
+default/persist/DOM-attribute/corrupted-storage-fallback behavior.
+
+**Verified**: `apps/web` **170 passed** (161 + 9 net new across both
+recovered features), clean `tsc --noEmit`. `packages/core`/`apps/api`
+untouched.
+
+## Canvas: adaptive minimap sizing for wide/tall single-rank graphs [DONE — 2026-07-22]
+
+Fixes the specific shape the product owner's screenshot showed: a wide
+single dagre rank (many `generate_final_response_*`-style stages side by
+side, few ranks deep) rendered in the minimap as, in their own words, "a
+single flat horizontal line of dashes" — no per-node markers
+distinguishable. Root cause, confirmed against a real Playwright render
+before the agent was interrupted (documented in the code's own comments,
+not reconstructed after the fact): the minimap's box was a fixed 160×120
+(a ~4:3 ratio), forcing React Flow's `<MiniMap>` to letterbox any graph
+whose real aspect ratio doesn't match — a wide graph's height goes almost
+entirely unused, shrinking node markers into an indistinguishable sliver.
+The same letterboxing happens for a tall narrow chain in the other axis
+(the shape the "Fix illegible canvas layout" entry above already fixed on
+the *main* canvas, not the minimap).
+
+**Fix**: `apps/web/src/components/pipeline-canvas.tsx`'s new
+`computeMinimapSize()` (exported specifically for direct unit testing —
+the interrupted agent had already added that export before being cut off,
+the test itself just hadn't been written yet, added directly here) sizes
+the minimap box to *contain* the real node bounding box (same idea as CSS
+`background-size: contain`) instead of forcing a fixed box and letting
+React Flow's internal letterboxing shrink whichever axis loses. `
+MINIMAP_MAX_W/H` (300×170) cap how large the corner fixture can get,
+`MINIMAP_MIN_W/H` (100×60) keep the minor axis from shrinking to a sliver
+at an extreme aspect ratio, `MINIMAP_MAX_SCALE` (0.5) stops a tiny 1-2
+node graph from being blown up past a sensible overview size.
+
+**Tests added** (`apps/web/src/components/pipeline-canvas.test.tsx`, new
+file — none existed for this component before): empty graph, wide
+single-rank (height stays usable), tall single-column (width stays
+usable), aspect-ratio preservation (contain, not stretch), tiny-graph
+scale cap. 5 tests.
+
+**Verified**: `apps/web` 170 passed total (shared count with the dark
+theme entry above — both landed in the same recovery pass). `tsc
+--noEmit` clean. `packages/core`/`apps/api` untouched.
+
+**e2e re-verification**: ran the existing `canvas-layout`/`canvas-modes`/
+`minimap` Playwright specs directly — 11/12 passed on the first run, one
+real finding: `minimap.spec.ts`'s 50-stage test had a hardcoded
+"minimap is always ≤180×140" assertion left over from the old fixed-box
+sizing. A 50-node LINEAR chain in the default horizontal orientation is
+actually wide/shallow (one node's height, ~50 nodes' worth of width), so
+adaptive sizing correctly hits the new 300px width cap while height stays
+near the 60px floor — exactly the intended behavior, not a regression.
+Updated the assertion to match the new adaptive caps (`≤300×170`, height
+`≥60`) rather than the stale fixed-box assumption. **12/12 passing after
+the fix.**
+
+## Landing page Phase 0 — routing plumbing [DONE — 2026-07-23]
+
+First slice of the marketing landing page work: move the existing
+Pipelines list off of `/` so a real landing page can live there. This
+phase is routing only — no landing-page copy, visuals, or animation yet
+(that's Phase 1+, not started). A first attempt at this phase was
+dispatched to an agent that stalled ("no progress for 600s, stream
+watchdog did not recover") and left only a placeholder `landing.tsx`
+component; that placeholder was kept (it's reasonable minimal content —
+title, one line of copy) and the routing changes around it were done
+directly instead of re-dispatching.
+
+**Changes**:
+- `apps/web/src/router.tsx`: Pipelines list route moved from `path: "/"`
+  to `path: "/pipelines"`. New `landingRoute` mounted at `path: "/"` with
+  a `beforeLoad` that redirects a signed-in visitor (`getSessionToken()`
+  truthy) straight to `/pipelines` — same pattern already used elsewhere
+  in this router for auth-gated redirects. A signed-out visitor sees the
+  `Landing` placeholder component.
+- `apps/web/src/components/app-shell.tsx`: nav's "Pipelines" item and the
+  logo/brand link both point at `/pipelines` now; `isActive` no longer
+  needs the old `=== "/"` special case since `/pipelines` isn't a prefix
+  of anything else.
+- Every other hardcoded `to: "/"` / `window.location.assign("/")` found
+  via grep now points at `/pipelines`: `auth-verify.tsx` (post-magic-link
+  redirect), `login.tsx` (post-sign-in redirect), `pipelines-import.tsx`
+  ("Back to pipelines" link), `schema.tsx` ("← Pipelines" link),
+  `route-error-fallback.tsx` ("Go to Pipelines" error-boundary button).
+- Test files with their own synthetic/stub routers updated to mount
+  `homeRoute` at `/pipelines` instead of `/`: `home.test.tsx` (also its
+  `initialEntries` and a pathname assertion), `schema.test.tsx`,
+  `settings.test.tsx`, `auth-verify.test.tsx`.
+- `docs/TESTING.md`'s route map (§3) documents the new split: `/`
+  (landing, marketing/first-visit only) and `/pipelines` (moved home).
+
+**Verified**: `pnpm exec tsc --noEmit` clean. `pnpm test` — 170 passed,
+22 test files (same total as before this phase, since it only redirects
+existing test targets rather than adding new ones — new tests land in
+Phase 1 alongside real landing-page content).
+
+**Next**: Phase 1 (real landing-page copy/sections, simple CSS/SVG
+motion reusing the Logo/ParityBeam visual language) — not started, needs
+its own pass rather than being bundled with this one.
+
+## Landing page Phase 1 — real content + CSS/SVG motion [DONE — 2026-07-23]
+
+Replaces the Phase 0 placeholder with the actual marketing page, sourced
+directly from README's own plain-English product description (problem →
+what Reprompt does → Prism → how it stays reliable → proof) so the copy
+doesn't drift from what the product actually does. Six sections in
+`apps/web/src/routes/landing.tsx`: Hero, "what is a trace" (4-stage trace
+example), "the flow" (5-step Learn/Search/Check/Prove/Hand-back track),
+Prism spotlight (Mutate→Score→Critique→Refine, "up to 3 rounds", budget
+ceiling + plateau detection), proof/scorecard (a real `ParityBeam`
+instance, `score=97`, `animateIn`), and a closing CTA + footer.
+
+**Visual identity**: reuses existing tokens/components rather than
+inventing new ones (per the frontend-design skill) — `Logo` and
+`ParityBeam` directly, `--spectrum-violet`/`--spectrum-teal`/
+`--parity-pass` for the hero graphic's candidate/winner beams, serif
+`font-display` for headings next to sans body text, `bg-beam-soft/40` for
+the Prism section wash (an already-established pattern, see
+`data-table.tsx`/`dropzone.tsx`).
+
+**Motion** (`apps/web/src/styles/globals.css`, new `landing-flow-dot`
+keyframe + `HeroBeam`'s stroke-dashoffset draw-in inside `landing.tsx`):
+a one-time beam draw-in on the hero mark (same clip-path/rAF technique
+`ParityBeam` already uses, not a new approach) and a looping dot along
+the "how it works" step track. Both are explicitly exempt from the
+frontend-design skill's "motion must map to a real state" rule (there's
+no live run behind a marketing page — it's illustrative), but both still
+honor `prefers-reduced-motion`: the hero draw-in rides `--duration-base`/
+`--ease-out`, which tokens.css already zeroes under reduced motion, and
+the flow-dot gets its own explicit reduced-motion override that freezes
+it at 0%.
+
+**Regression found and fixed while verifying**: Phase 0's routing move
+broke two Playwright e2e specs that predated it -
+`apps/web/e2e/settings.spec.ts` asserted the post-sign-in redirect landed
+on `"/"` (now `"/pipelines"`), and `import-flow.spec.ts` opened `"/"`
+expecting the Pipelines-list empty state (now the Landing placeholder for
+a signed-out visitor). Both fixed to target `/pipelines`. While fixing
+`import-flow.spec.ts`, found a second, unrelated pre-existing staleness
+from the earlier Canvas/Graph tab merge (`DEV_TRACKER.md`'s "Phase 1 —
+Unified pipeline workspace" / "Canvas/Graph tab merge", both already
+landed before this session): the test still expected a standalone
+"Pipeline canvas" heading and a "← Pipelines" back-link, neither of which
+exist anymore in the unified workspace, and it counted `.react-flow__node`
+assuming the old single-mode canvas rather than the new default
+Analytics mode (which adds per-model summary nodes on top of the 5 raw
+stages). Fixed to check for the workspace's `"Canvas layout"` toolbar
+instead of the old heading, switch to Live mode before counting nodes
+(5, matching the raw stage DAG), and use the persistent nav rail's
+"Pipelines" link instead of the removed back-link.
+
+**Verified**: `tsc --noEmit` clean. `pnpm test` 170/170 (unchanged — this
+phase's new coverage is e2e, not unit). Full affected e2e set re-run
+against a fresh throwaway DB per `docs/DEVELOPMENT.md`'s gotcha:
+`auth.spec.ts` (2), `settings.spec.ts` (1), `import-flow.spec.ts` (2) —
+5/5 passing after the fixes above.
+
+**Next**: Phase 2 (richer flow animation) and Phase 3 (responsive/a11y
+polish) — not started.
+
+## Landing page Phase 2 — richer animation [DONE — 2026-07-23]
+
+Adds two more motion layers on top of Phase 1's hero draw-in and flow-dot,
+both aimed at making the "data moving through a sequence" idea land
+without reading it — plus a scroll-triggered entrance for every section
+below the hero, so the page doesn't dump all its content statically on
+load.
+
+**Cycling highlight** (`useCycle` in `landing.tsx`): sweeps an active
+index 0..N-1 on a `setInterval`, used to highlight one trace stage
+(Classify → Search → Summarize → Answer) and one Prism step (Mutate →
+Score → Critique → Refine) at a time, looping — the Prism row wrapping
+back to Mutate after Refine doubles as the visual for "loops for up to 3
+rounds" without a separate loop-back arrow graphic. This is the one
+animation on the page driven from JS state rather than pure CSS, so unlike
+Phase 1's motion (which rides `--duration-base`/`--ease-out` and gets
+reduced-motion handling for free from tokens.css), it needed its own
+`useReducedMotion` hook backed by `matchMedia` — the first JS use of
+`matchMedia` in this codebase (`theme.ts` deliberately avoids it, relying
+on CSS's own `prefers-color-scheme` cascade instead, per that file's own
+comment — but there's no CSS-only way to gate a JS interval).
+
+**Scroll reveal** (`Reveal` component, `.landing-reveal`/
+`-visible` in `globals.css`): fades + slides each section's content in the
+first time it enters the viewport via `IntersectionObserver`, disconnecting
+after the first trigger (no repeated fire on scroll-back). Reduced motion
+skips straight to the visible end state.
+
+**Tests**: `apps/web/src/routes/landing.test.tsx` (new, 5 tests) — hero
+headline + sign-in CTA, trace stage sequence, Prism step sequence + round
+cap, the scorecard's ParityBeam renders, footer schema link. Needed local
+`matchMedia`/`IntersectionObserver` stubs (jsdom implements neither) —
+same per-file-stub convention this suite already uses for `window.scrollTo`.
+
+**Verified**: `tsc --noEmit` clean. `pnpm test` 175/175 (170 + 5 new).
+
+**Next**: Phase 3 (responsive/a11y polish, prefers-reduced-motion audit
+beyond what's already built in) — not started.
+
+## Model catalog: NVIDIA NIM + OpenRouter curated entries [DONE — 2026-07-23]
+
+Extends `apps/api/src/reprompt_api/migrations.py`'s `CURATED_MODELS` with
+nine entries across two aggregator providers, closing out the
+previously-deferred "new model family research" (Gemini/OpenAI/Anthropic
+were already curated; Llama/DeepSeek/Qwen/GLM/MiniMax were not) by routing
+through two providers that each carry many families under one API key,
+rather than hand-integrating each family directly.
+
+**NVIDIA NIM** (`nvidia_nim/...`, build.nvidia.com, free-tier
+OpenAI-compatible): `meta/llama-3.1-405b-instruct`,
+`deepseek-ai/deepseek-v3.2`, `qwen/qwen3-235b-a22b`,
+`nvidia/llama-3.1-nemotron-ultra-253b-v1`. Slugs sourced from a
+maintainer-documented NIM API catalog (litellm's own pricing table only
+carries NIM's rerank models, not chat — confirmed via
+`litellm.models_by_provider["nvidia_nim"]`, 3 entries, all rerank), so
+these four have no litellm-side cost data; `get_model_capabilities()`
+already degrades to `cost=None` gracefully for any model it can't price,
+same as an unrecognized model string generally.
+
+**OpenRouter** (`openrouter/...`): `z-ai/glm-4.7`, `minimax/minimax-m2.1`,
+`mistralai/mistral-large-2512`, `x-ai/grok-4`, `moonshotai/kimi-k2.5`.
+Sourced directly from the installed litellm's own
+`litellm.model_cost`/`models_by_provider` (96 known `openrouter/` entries)
+rather than scraping openrouter.ai — ground truth in what litellm actually
+routes, same principle as the earlier model-card research pass. All nine
+verified to resolve through `get_model_capabilities()` without error
+before landing (provider correctly identified, `requires_api_key=True`,
+OpenRouter entries carry real cost data, NIM entries degrade to `None` as
+expected).
+
+**Discoverability**: `apps/web/src/routes/settings.tsx`'s
+`SUGGESTED_PROVIDERS` dropdown gets `"nvidia_nim"`/`"openrouter"` added
+(env vars confirmed via `litellm.validate_environment()`:
+`NVIDIA_NIM_API_KEY`/`OPENROUTER_API_KEY`) — both were already reachable
+via the existing "Other" free-text fallback, this just makes them visible
+without needing to already know the exact internal provider slug.
+
+**Not changed**: `model_card.py`'s `resolve_family()` open-weight name
+markers — GLM/MiniMax/Grok/Kimi aren't added to the `_OPEN_WEIGHT_MARKERS`
+tuple that buckets a model into the `"llama"` prompt-family. Whether each
+of those is genuinely open-weight wasn't confirmed with the same
+confidence as the already-listed families, and misclassifying one would
+silently apply the wrong prompt-transform assumption — left to fall
+through to `resolve_family`'s documented `"generic"` fallback instead,
+which is correct-by-default rather than a guess.
+
+**Verified**: `apps/api` full suite 204/204 (no test hardcodes
+`CURATED_MODELS`'s size/contents). `apps/web` `tsc --noEmit` clean,
+`pnpm test` 175/175 (frontend tests mock the models API response
+directly, unaffected by the backend list changing).
+
+## Fixed: two label/beam text overlaps found via real screenshots [DONE — 2026-07-23]
+
+Caught by actually driving the dev server and screenshotting the landing
+page (light + dark, real incremental scroll — a `fullPage: true`
+Playwright screenshot on its own turned out to be a false negative here:
+it renders content beyond the current viewport without triggering the
+page's scroll-based `IntersectionObserver` reveals, so a first pass
+looked like the Prism/Proof sections were missing entirely; a real
+scroll — `window.scrollTo` and incremental `mouse.wheel` alike — proved
+that part was working correctly all along), not from reading the diff.
+
+**1. `ParityBeam`'s `cost` label sat on top of the beam itself.**
+`apps/web/src/components/parity-beam.tsx`: the `cost` span was
+`absolute right-0 top-1/2 -translate-y-1/2` — vertically centered on the
+same axis as the beam track, so its text always rendered struck through
+by the beam's own color fill. Pre-existing, not introduced by the
+landing page: `dev-kit.tsx`'s own `<ParityBeam score={96.4} showLabel
+cost="$0.42/1k" />` kit entry has the identical bug, just less visible
+with a short cost string — the landing page's longer
+`"$0.004 → $0.0006 / call"` made it obvious. Fixed by moving the cost
+label to `-bottom-5 right-0`, mirroring how the score label already sits
+clear of the beam at `-top-5`.
+
+**2. Hero SVG's "verified match out" label sat on the curve it labels.**
+`apps/web/src/routes/landing.tsx`'s `HeroBeam`: the label was at
+`y="112"`, almost exactly on the teal candidate-arc's lowest point
+(`y≈116` at the curve's midpoint, per the quadratic Bézier control point
+math) — same underlying mistake as the ParityBeam bug, a label placed
+directly on the line it annotates instead of clear of it. Moved to
+`y="140"`.
+
+**Verified**: re-screenshotted both fixes in isolation (cropped to just
+the scorecard / just the hero graphic) to confirm legibility, then
+re-ran full light+dark real-scroll passes to confirm no other section
+regressed. `parity-beam.test.tsx` (14) and `landing.test.tsx` (5) still
+pass — neither asserted the old (buggy) positioning classes, so no test
+needed updating alongside the fix. Full `apps/web` suite 175/175,
+`tsc --noEmit` clean.
+
+## Verification pass: model cards, result download, Prism flow [DONE — 2026-07-23]
+
+Requested spot-check on three specific claims - "is this actually done
+right" - covering areas that hadn't been independently re-verified since
+they were originally built. Dispatched a research-only pass first (no
+edits) to establish ground truth before touching anything; three real
+issues came out of it, all fixed and verified below.
+
+**1. Result download** — verified correct, no changes needed.
+`GET /pipelines/{id}/migrations/{id}/export` (`apps/api/src/reprompt_api/
+migrations.py`) returns a JSON config of winning model/prompt/params per
+stage; `apps/web/src/lib/api.ts`'s `downloadMigrationExport` Blob-downloads
+it; triggered from `migration-detail.tsx`'s "Download winning config"
+button once a migration has results.
+
+**2. Prism flow — landing page overstated it** [fix]. The actual optimizer
+(`packages/core/.../optimizer/loop.py`) mutates once, then cycles
+cheap-score → critique → refine for up to 3 rounds, then a full sweep +
+select — this matches `DEV_TRACKER.md`'s own top-level Prism summary
+exactly. But the landing page's animated `Mutate → Score → Critique →
+Refine` loop (added in "Landing page Phase 1/2" above) visually implied
+Mutate re-runs every round, which it doesn't. Fixed: `landing.tsx` now
+renders Mutate as a fixed first step outside the cycling group; only
+Score/Critique/Refine loop (each gets a trailing loop icon now, not just
+the first two — accurately implying Refine loops back to Score). Badge
+text changed from the inaccurate "up to 3 rounds, looping back to Mutate"
+to "up to 3 refine rounds". `landing.test.tsx` updated to match.
+
+**3. Model cards — Phase 4 (deferred piece) built.** Per this file's
+"Per-model cards" section above, the backend already computed
+`supports_reasoning`/`code_sample` correctly but nothing in the frontend
+displayed either. Built: `apps/web/src/lib/api.ts`'s `ModelCardInfo` type
+gains both fields; `settings.tsx`'s Configured Models card gets a
+"Thinking mode" `Badge` when `supports_reasoning` is true, and a native
+`<details>` disclosure ("Code sample") revealing the real generated
+`complete()` call plus a new `CopyCodeButton` (first clipboard-copy
+affordance in this codebase — `navigator.clipboard.writeText`, "Copied"
+confirmation for 1.5s). New test in `settings.test.tsx` exercises the
+full flow: badge visible, disclosure expands, copy button calls
+`clipboard.writeText` with the exact code string, confirmation text
+appears.
+
+**Two more real bugs found while verifying #3 against the live app (not
+from reading the diff)**:
+
+- **`/settings/models` was taking 8+ seconds.** Root cause:
+  `registry.py`'s `get_model_capabilities()` calls
+  `litellm.get_model_info()`/`litellm.supports_function_calling()`, and
+  for a model string LiteLLM has no static entry for on a local-provider
+  model (`ollama`/`vllm`), LiteLLM's own `OllamaModelInfo` falls back to a
+  live HTTP probe of `http://localhost:11434` to fetch the info
+  dynamically. With no Ollama server running (the normal case for this
+  registry — it answers "what does this model string support" long before
+  anyone has called it), that probe hung ~4s per call, twice, for the
+  curated `ollama/qwen2.5:14b` entry alone (confirmed via direct timing:
+  `ollama/llama3.1` is in LiteLLM's static table and resolves in ~4ms;
+  `ollama/qwen2.5:14b` is not, and cost the full ~8s). This predates this
+  session's curated-model additions — not something the 9 new NVIDIA/
+  OpenRouter entries caused (all 9 resolve in 0-5ms, confirmed instant).
+  Fixed with a hard wall-clock budget around both calls
+  (`_with_timeout()`, a module-level `ThreadPoolExecutor` so a timed-out
+  lookup's thread finishes in the background instead of the caller
+  blocking on it anyway) — falls back to the same conservative defaults
+  the existing try/except already used for an outright exception. Tuned to
+  0.5s (generous for a real local server, which would answer in
+  low-single-digit ms; tight enough that an absent one barely registers).
+  Measured end-to-end via the real endpoint: 8.2s → 2.2s.
+- **Adding/deleting a BYOK key never refreshed the models it unlocked.**
+  `ApiKeysCard`'s add/delete mutations only invalidated
+  `["settings-api-keys"]` — never `["settings-configured-models"]` or
+  `["settings-system-models"]`, so both cards silently stayed stale
+  (showing pre-key state) until a full page reload. Confirmed live: added
+  a key, watched the network tab, the `/settings/models` refetch never
+  fired at all before the fix. Fixed by invalidating both additional query
+  keys in both mutations' `onSuccess`.
+
+**Verified**: `packages/core` full suite 361/361 passed, 2 skipped.
+`apps/api` full suite 204/204. `apps/web` `tsc --noEmit` clean, full unit
+suite 176/176. Live end-to-end check against the real dev server + a
+fresh API instance: signed in, added an OpenAI key, confirmed the
+Configured Models card refetches automatically and renders gpt-4o's real
+cost/family/rules/code-sample, expanded the code sample and used the copy
+button, confirmed `ollama/qwen2.5:14b` (the pathological case) now loads
+in the same page load instead of stalling it.
+
+## Real-usage fixes: navigation, theme placement, sample code, locked models [DONE — 2026-07-23]
+
+A round of concrete issues found by actually using the running app (not
+reading a diff), across several screens at once.
+
+**Overflow bug in the wizard's model picker.** `new-migration-wizard.tsx`'s
+transform-rule `<li>` was `flex items-start gap-1` with a plain `<span>`
+holding the (sometimes long) rule description — no `min-w-0`/`flex-1` on
+that span, so a flex child with no width constraint doesn't wrap, it
+overflows past the grid cell instead. Same class of bug as the ParityBeam/
+hero-label overlaps fixed earlier this session (something rendered on/past
+its container instead of clear of it). Fixed by giving the description
+span `min-w-0 flex-1`.
+
+**Theme toggle relocated out of Settings.** Was buried in a Settings >
+Appearance card; moved to a persistent bar at the top of every screen
+(`app-shell.tsx`). First attempt used `fixed right-4 top-4` (a floating
+overlay) — this visibly collided with a screen's own top-right controls
+(e.g. Contracts' "Mine contract" button), since a fixed element doesn't
+reserve layout space, it just paints over whatever's there. Fixed by
+giving `main` a real `flex flex-col` structure: a shrink-0 bar (border-b,
+justify-end) holding `ThemeToggle`, then the actual scrollable content
+below it — every screen's content now starts below the bar, not
+underneath it. `AppearanceCard` removed from `settings.tsx` entirely
+(the toggle itself, `theme-toggle.tsx`, is unchanged — only where it's
+mounted moved).
+
+**Landing page unreachable once signed in.** `router.tsx`'s `landingRoute`
+had a `beforeLoad` that redirected any signed-in visitor straight to
+`/pipelines` — by design originally, but in practice there was then no way
+to see marketing content, or get back to it, without signing out.
+Redirect removed entirely: `/` always renders `Landing` regardless of
+session state. `landing.tsx`'s CTAs (header, hero, closing section) now
+swap to "Go to Pipelines" → `/pipelines` when `getSessionToken()` is
+truthy, instead of always pointing at `/login`. `app-shell.tsx`'s logo
+link changed from `/pipelines` to `/` — it's now the one way back to the
+landing page from inside the signed-in app (the "Pipelines" nav item
+stays the actual in-app home).
+
+**Code sample referenced our own internal package.** `code_sample.py`
+generated `from reprompt_core.llm.client import complete` —
+`reprompt_core` is this project's own internal package; a Reprompt user's
+codebase has no reason to have it installed and no way to actually run
+that sample. Changed to generate plain `import litellm` /
+`litellm.completion(...)` — the exact library `complete()` is itself a
+thin wrapper around, and installable with nothing more than
+`pip install litellm`. Every curated model is reachable this way.
+
+**Settings hid locked models entirely — now shows them, matching the
+wizard's own pattern.** `GET /settings/models` used to call
+`get_available_models()`, which filters a locked model out completely —
+so a user with no BYOK keys configured couldn't tell NVIDIA NIM/OpenRouter
+(or any other curated provider) were supported at all. The migration
+wizard's picker (`GET /pipelines/{id}/models`) never had this problem —
+it always returned every curated model and computed lock state
+client-side against `listApiKeys`. Rather than duplicate that logic,
+added `list_curated_models_with_lock_state()` (`migrations.py`, shares
+`_configured_providers()` with `get_available_models` rather than
+recomputing it) and a new `unlocked: bool` field on `ConfiguredModelOut`.
+`get_available_models`/`GET /pipelines/{id}/models` are deliberately
+unchanged — a locked model must still never be *selectable* as a
+migration target, that endpoint's whole job is "usable models only".
+`settings.tsx`'s Configured Models card now renders every curated model
+(dimmed + "API key required" + inline "Add API key" when locked, reusing
+`AddApiKeyDrawer` — the exact same component/queries the wizard already
+uses, so unlocking from Settings updates the wizard and vice versa).
+
+**Verified**: `apps/web` `tsc --noEmit` clean, full suite 178/178 (new:
+locked-model-with-inline-unlock test in `settings.test.tsx`, signed-in-CTA
+test in `landing.test.tsx`). `apps/api` full suite 204/204 (two
+`test_settings.py` tests updated from "locked models are absent" to
+"locked models are present with `unlocked: false`"). `packages/core` full
+suite 361/361, 2 skipped (`test_code_sample.py` updated: asserts plain
+`litellm.completion()` output instead of the old internal-package import,
+purity check now verifies via AST imports rather than a raw substring
+search now that the generated *text* legitimately contains the string
+"litellm.completion").
+
+## Custom model lookup + a real credential bug [DONE — 2026-07-23]
+
+**Custom model lookup**: the migration wizard's target-model step was
+limited to `CURATED_MODELS` (~17 hand-picked strings) — no way to target
+any *other* NVIDIA NIM/OpenRouter model those providers actually offer.
+New `GET /pipelines/{id}/models/lookup?model=<string>` (`migrations.py`)
+resolves any LiteLLM model string the same way the curated list already
+does (`_to_option`), degrading to conservative/empty fields rather than
+404ing on an unrecognized string — "any provider" is already this
+project's stated design goal (`models.py`'s `WorkspaceApiKey` docstring).
+Frontend: `new-migration-wizard.tsx` gets an "Add a custom model" input +
+lookup button below the curated grid; successful lookups render with the
+exact same locked/unlocked treatment (including the inline
+`AddApiKeyDrawer` unlock) as curated ones. Extracted the curated grid's
+per-model card markup into a shared `ModelOptionCard` component so the
+curated grid and the custom-lookup list render identically instead of
+duplicating ~130 lines of JSX twice.
+
+**Real bug found investigating a live report** ("no API key configured
+for provider 'ollama'" shown while generating a rubric — an Ollama model
+has never needed a key anywhere else in this codebase): `llm_context.py`'s
+`complete_with_workspace_credentials` — the actual call path behind
+*every* real LLM call in the product (contracts, rubrics, judge, mutator,
+test-prompt) — unconditionally required a saved `WorkspaceApiKey` row for
+every model's provider, including Ollama/vLLM, which
+`reprompt_core.llm.registry`'s own `requires_api_key` already correctly
+reports as `False`. Every other surface (the registry, `CURATED_MODELS`
+filtering, Settings, the wizard) already agreed local models need no
+key — this one function hadn't been told. Fixed: `requires_api_key` is
+checked first; a `False` model skips the "must have a saved row"
+requirement entirely (never raises `ProviderKeyNotConfigured`), while
+still picking up an optional saved row's `base_url` if one exists (e.g. a
+workspace pointing at a remote Ollama instance) — its *absence* just
+stops being an error. This bug affected every product surface that calls
+an Ollama/vLLM model through the standard credential-scoping path, not
+just rubrics.
+
+**Verified**: `apps/api` full suite 210/210 (6 new: 2 lookup-endpoint
+happy/degrade-gracefully tests + 2 404/422 edge cases in
+`test_migrations.py`, 2 regression tests in `test_llm_context.py` — one
+proving a zero-keys workspace can still call `ollama/llama3.1`, one
+proving an optional `base_url` override still gets picked up). `apps/web`
+`tsc --noEmit` clean, full suite 178/178 (wizard's existing 11 tests still
+pass unchanged after the `ModelOptionCard` extraction — confirms it's a
+pure refactor, not a behavior change).
+
+## Landing page joins the persistent nav rail; explicit Home item [DONE — 2026-07-23]
+
+Landing had its own standalone header (logo + a single CTA button) instead
+of `AppShell`'s nav rail every other screen uses - inconsistent, and the
+only way back to it was clicking the logo (not very discoverable). Fixed:
+
+- `app-shell.tsx`'s `NAV_ITEMS` gains a `Home` entry (lucide `Home` icon)
+  pointing at `/`, first in the list. `isActive`'s `pathname.startsWith()`
+  check needed a special case for this one: every path starts with `"/"`,
+  so without an exact-match carve-out, "Home" would show as active on
+  every single screen, not just the landing page itself.
+- `landing.tsx` now renders inside `<AppShell>` like every other route,
+  its own redundant header (logo + duplicate CTA button) removed
+  entirely — the hero's own CTA already covers what that button did. Its
+  outer `min-h-screen` wrapper div was also redundant once `AppShell`
+  owns the outer frame, so that came out too.
+
+**Verified**: `tsc --noEmit` clean, full `apps/web` suite 178/178
+(`landing.test.tsx`'s existing 6 tests needed no changes - both still
+pass because a `<Link to="/schema">`/`<Link to="/pipelines">` render fine
+against a test router stub that has those routes registered, which
+`landing.test.tsx`'s already did). Screenshotted the real dev server:
+"Home" correctly highlighted only on `/`, nav rail/theme-toggle bar
+identical to every other screen, hero/rest of the page unaffected.
+
+## Fixed: whole page scrolled instead of just the content area [DONE — 2026-07-23]
+
+Most visible on the Canvas tab (reported as "still not good, has scrolling
+on that page, ideally that shouldn't") - React Flow's own pan/zoom expects
+a viewport-bounded container, not page-level scroll, but this actually
+affected every screen with content taller than the viewport, introduced
+by this session's own theme-toggle-bar restructuring of `app-shell.tsx`.
+
+Root cause: the outer shell was `min-h-screen` (a *floor* — allowed to
+grow taller than the viewport) rather than `h-screen` (a hard cap). With
+only a floor, a tall child (like Canvas's DAG) makes the whole flex row
+grow past 100vh; `main`'s flex-stretched height grows right along with
+it, so its own `overflow-y-auto` region never actually has anything to
+clip — there's nothing to scroll *inside*, so the browser scrolls the
+*whole page* instead, nav rail and theme-toggle bar included. Changed to
+`h-screen`: the app frame is always exactly one viewport tall, so any
+overflow is forced into the inner scrollable region instead of the page.
+
+**Verified**: full `apps/web` suite 178/178, `tsc --noEmit` clean (no
+test asserted the specific `min-h-screen` class). Live check: imported a
+real 5-stage fixture pipeline, opened its Canvas tab,
+`document.body.scrollHeight === window.innerHeight` exactly (no
+page-level scroll), nav rail/theme bar stayed fixed while the canvas
+itself handled pan/zoom internally, screenshotted to confirm.
+
+## Contracts tab: "Mine all" + explicit stage order; workspace back link [DONE — 2026-07-23]
+
+Three concrete asks: mine every stage at once instead of clicking each
+one individually, guarantee stages render in actual pipeline flow order
+(not incidental object-key order), and a way back to the pipelines list
+that isn't just the nav rail.
+
+**"Mine all"** (`contract-review-panel.tsx`): each `StageAssertions`
+registers its own `handleMine` into a ref-keyed map the parent
+`ContractReviewPanel` owns (`registerMiner`); a new "Mine all" button
+(shown only once there's more than one stage) awaits each stage's miner
+*sequentially*, not `Promise.all` — mining calls an LLM per stage, and
+firing every stage's call at once would make one failure hard to
+attribute and burst-load whatever provider is configured. Each stage
+still surfaces its own error inline via its own existing `mineError`
+state if it fails.
+
+**Stage order**: `stages` is now explicitly `.sort((a, b) => a.id - b.id)`
+instead of trusting `Object.values()`'s ordering to happen to match
+pipeline flow — same convention `new-migration-wizard.tsx`'s own stage
+list already uses. (In practice `Object.values()` on integer-keyed data
+already iterates ascending per the JS spec, so this doesn't change actual
+behavior — the sort is about not depending on that being understood
+correctly by whoever touches this next, not fixing an observed ordering
+bug.)
+
+**Back link**: `pipeline-workspace.tsx` gets a small "← Pipelines" link
+above the pipeline name — the old standalone screens had one before the
+"Phase 1 — Unified pipeline workspace" merge removed it in favor of
+relying solely on the nav rail's own "Pipelines" item. Both now coexist:
+the nav rail for general navigation, this for the common
+"I'm-done-with-this-pipeline" case without eye travel to the far-left rail.
+
+**Verified**: `tsc --noEmit` clean, full `apps/web` suite 180/180 (2 new
+Contracts tests: "Mine all" fires `mineContract` for both stages in order
+10→11, and is hidden entirely for a single-stage pipeline).
+Screenshotted the real dev server against an imported 5-stage fixture:
+back link and "Mine all" both present and correctly positioned, all 5
+stages listed in their real pipeline order.
+
+## Canvas visual identity pass [DONE — 2026-07-23]
+
+Consulted Fable (model="fable" via the Agent tool) for a design critique
+of everything built this session before touching Canvas further — see
+that discussion's own summary in the conversation. Verdict: the product
+reads unevenly ("a beautifully designed lobby attached to a
+functional-but-generic office") because Canvas — the flagship screen —
+had a scroll bug fixed but no actual visual pass. His concrete direction:
+state should be carried by fill, not just border; add a status chip +
+live duration on running nodes; animate/weight edges so "this is
+happening now" and "this stage is a bottleneck" are visible without
+reading a stats line. All three built:
+
+**Fill + status chip** (`stage-node.tsx`): `STATE_FILL` (a new
+`Record<StageRunState, string>`, `bg-beam-soft/40` running /
+`bg-parity-pass/10` done / `bg-parity-fail/10` failed / `bg-paper` idle —
+same opacity-tinted convention `Badge`'s own pass/near/fail variants
+already use, not a new color idea) replaces the old plain `role="img"`
+dot with a real `Badge` chip carrying the state label. `STATE_DOT` (the
+old dot-only styling) removed, superseded by the badge.
+
+**Live duration** (`pipeline-canvas.tsx` tracks it, `stage-node.tsx`
+displays it): no server-side per-stage start timestamp exists, so the
+first moment a browser session observes a stage as `"running"` is
+recorded client-side in a `runningSinceRef` map; a 1s `setInterval`
+(only running while at least one stage is actually running) forces the
+node-building `useMemo` to recompute `elapsedMs`, which the badge renders
+as `formatElapsed()` ("12s" / "2m 05s") in place of the plain "Running"
+label once known, next to the existing pulsing beam dot.
+
+**Duration-scaled edge thickness** (`computeEdgeStrokeWidth`, new
+exported pure function, same pattern as `computeMinimapSize`): a
+dependency edge's `strokeWidth` now scales 1.5px→4px with its *source*
+stage's own `avg_latency_ms`, relative to this pipeline's own min/max
+known latency (a per-pipeline relative scale, not absolute — "slow" only
+means anything next to this pipeline's other stages). Data was already
+being collected per stage and simply wasn't used for anything visual
+before this — a slow stage's bottleneck is now visible on the canvas
+itself.
+
+**Verified**: `tsc --noEmit` clean, full `apps/web` suite 186/186 (3
+`stage-node.test.tsx` tests updated from dot-based to badge-based
+assertions, 1 new test for the elapsed-time readout; 5 new
+`computeEdgeStrokeWidth` unit tests covering the null/equal-latency/min/
+max/midpoint cases). Screenshotted the real dev server against a mocked
+*running* migration (intercepted the migrations-list and status-poll
+endpoints via Playwright route mocking to show done/running/idle/failed
+states simultaneously without needing a real LLM call): fill, badge,
+pulsing dot, live "● 3s" duration, and visibly varying edge thickness
+all render correctly together.
+
+## "Test model" button — real connectivity check, not just a saved row [DONE — 2026-07-23]
+
+Requested earlier this session: "have a test button that tests if the
+model is operational and working." Settings' Configured Models card gets
+a "Test" button per *unlocked* model (locked ones have nothing to test
+yet — they already get "Add API key" instead).
+
+**Backend**: `POST /settings/models/test` (`settings.py`) — makes one
+real, minimal call (`"Reply with exactly one word: ok"`, `max_tokens=5`)
+via the same `complete_with_workspace_credentials` path every other real
+LLM call in the product already uses (contracts, rubrics, the wizard's
+own stage-level `/pipelines/{id}/stages/{id}/test-prompt`, now also the
+subject of this session's Ollama credential-bug fix above). Same error
+handling as that existing endpoint (`ProviderKeyNotConfigured` → 422,
+encryption/transient/permanent LLM errors → 500/502/422). Workspace-
+scoped, not pipeline-scoped — this is a "does this key work at all"
+check, meant to run right after adding a key, before any pipeline is
+even involved.
+
+**Frontend**: one shared `useMutation` across every model's "Test"
+button (`testMutation.variables` tells each row whether *it's* the one
+pending/just resolved) rather than one mutation per row. Success shows
+"Works — Xms"; failure shows "Test failed" with the real error as a
+title/tooltip.
+
+**Verified**: `apps/api` full suite 214/214 (4 new tests: real scoped
+call reaches LiteLLM with the workspace's actual decrypted key, no-key
+workspace gets a clear 422, a no-key-required local model never asks for
+one, a long response gets truncated to an 80-char preview). `apps/web`
+`tsc --noEmit` clean, full suite 188/188 (2 new: success shows real
+latency, failure shows "Test failed").
+
+## Fixed: wide Canvas pushed the whole app shell wider than the viewport [DONE — 2026-07-23]
+
+Reported directly against the real dev server, after the earlier
+vertical-scroll fix: "the scroll is still there, see right corner" — a
+screenshot showed the nav rail scrolled partially out of view on the
+left with a vertical scrollbar on the right, on a wide single-rank
+Canvas (many `generate_final_response_*`-style stages side by side, the
+same shape from an earlier, already-fixed minimap bug). Different bug
+from the earlier one (that was vertical, `min-h-screen` vs `h-screen`) —
+this was horizontal.
+
+Root cause: `app-shell.tsx`'s `<main>` is a flex item of the outer
+`flex` row (nav + main), but had no `min-w-0`. A flex item's default
+`min-width` is its own content's intrinsic minimum, not 0 — a wide
+Canvas child could force `main` wider than its `flex-1` share, growing
+the whole row (nav rail included) past the viewport and scrolling the
+*document* horizontally instead of being contained. Exact same
+root-cause pattern as the migration wizard's transform-rule text
+overflow fixed earlier this session (a flex/grid child with no width
+floor blows out its container instead of wrapping/clipping), just one
+level higher in the tree this time. Fixed: `min-w-0` added to `main`,
+plus `overflow-x-hidden` on the inner scrollable content region (Canvas
+has its own pan/zoom for wide content — this level should never itself
+need to scroll horizontally).
+
+**Verified**: `tsc --noEmit` clean, full `apps/web` suite 188/188 (no
+existing test asserted the missing classes). Live check: a fully
+network-mocked 9-stage single-rank DAG (the reported shape) in Analytics
+mode — `document.documentElement.scrollWidth <=
+document.documentElement.clientWidth` exactly (previously would have
+exceeded it), nav rail's "Home" link stays in viewport, screenshotted to
+confirm.
+
+## Cross-screen consistency: Rubrics tab's model picker [DONE — 2026-07-23]
+
+First finding from the broader consistency pass Fable recommended
+(#2/#3 in that discussion). Rubrics was the one remaining model-selection
+surface never upgraded to the picker pattern Settings/the wizard already
+use — a bare free-text `<Input>` a reviewer had to already know the exact
+LiteLLM model string to fill in correctly, with no visibility into what
+was actually usable. (This is also the screen the earlier "No API key
+configured for provider 'ollama'" false-error report came from - that
+part was already fixed at the credential layer; this is the matching
+UI-side fix.)
+
+`rubric-review-panel.tsx` now fetches the same `listConfiguredModels`
+data Settings/the wizard already use and renders a `<Select>` — "Auto-
+select a model" plus every currently-*unlocked* model — instead of a
+plain text field. Locked models don't appear as choosable options (same
+reasoning as `get_available_models` server-side: a model without a
+working key shouldn't be selectable). The stale "or enter one above to
+choose yourself" empty-state copy (a holdover from when it really was a
+free-text field) updated to "or choose one above yourself".
+
+**Verified**: `tsc --noEmit` clean, full `apps/web` suite 189/189 (1 new
+test: dropdown offers unlocked models, omits locked ones; existing
+`rubric-review-panel.test.tsx` suite needed only a `listConfiguredModels`
+mock added, no behavior changes to other tests). Screenshotted the real
+dev server: dropdown renders correctly with a real BYOK-backed model
+list, empty-state copy reads correctly.
+
+## System model config: operator-pinned rubric/judge/mutator models [DONE — 2026-07-23]
+
+User asked directly whether rubric-generation/judge/mutator model
+selection was actually driven by a real config surface — it wasn't; all
+three purposes fell through to `select_model()`'s auto-select (best
+available tier-1 model given whatever BYOK keys a workspace happens to
+have configured), which is fine for a workspace's own target models but
+wrong for Reprompt's own harness: the operator running the product should
+be able to pin exactly which model judges and mutates, not have it drift
+per-workspace based on whoever added which key.
+
+New `reprompt_api.system_models` module: three env vars, one per purpose
+— `REPROMPT_RUBRIC_MODEL`, `REPROMPT_JUDGE_MODEL`, `REPROMPT_MUTATOR_MODEL`.
+When set, hard requirement — always used, no validation against a
+workspace's configured keys (same "explicit always wins" contract
+`select_model(..., explicit=...)` already had; this reuses that contract
+rather than changing it). If the pinned model's provider needs a BYOK key
+and the workspace doesn't have one, the LLM call fails loudly with the
+provider's real error at call time — no silent fallback to auto-select.
+Priority chain end to end: per-migration override
+(`target_model_config.judge_model`/`mutator_model`, pre-existing, previously
+invisible in the wizard UI — still not exposed there, tracked separately)
+→ env var override (new) → auto-select (unchanged, still the behavior when
+nothing is pinned).
+
+Wired into all three call sites: `rubrics.py`'s generate-rubric endpoint,
+`optimizer_runner.py`'s judge/mutator selection, and `settings.py`'s
+`/settings/system-models` status endpoint (now reports
+`reason: "pinned via REPROMPT_JUDGE_MODEL"` etc. instead of `"best
+available"` when a purpose is pinned, so operators can see the override
+took effect without reading server config directly).
+
+Default chosen: `nvidia_nim/deepseek-ai/deepseek-v4-flash` for all three
+purposes — NVIDIA NIM's free tier, ~1M token context. Documented in
+`apps/api/.env.example` under a new "System harness models" section, with
+commented-out ready alternatives for Anthropic/OpenAI/Gemini so switching
+providers later is a one-line env change, not new code.
+
+**Verified**: new `test_system_models.py` (5 unit tests on the override
+function itself) + new integration tests in `test_settings.py`,
+`test_rubrics_generate.py` (override wins when `model` omitted; explicit
+`body.model` still outranks the override), and `test_optimizer_runner.py`
+(override wins over auto-select; migration-level override still outranks
+the env var) — 62/62 passing across those four files. Also added an
+autouse `monkeypatch.delenv(...)` fixture to `conftest.py`: `uv run`
+auto-loads `apps/api/.env` into every subprocess including test runs, so
+without this fix the operator's own real local `.env` values leaked into
+6 unrelated tests that assumed pure auto-select behavior (this was caught
+live — those 6 broke the moment the real `.env` was set — not anticipated
+in advance). Full `apps/api` suite: 224/224 passing.
+
+## OpenRouter searchable dropdown: the full ~96-model catalog, not just the curated 5 [DONE — 2026-07-23]
+
+User's complaint: "still i cannot see all the models from nvidia and open
+router" — `CURATED_MODELS` only hand-picks 5 OpenRouter families
+(z-ai/minimax/mistral/grok/kimi); OpenRouter itself has no public catalog
+API to browse against, but LiteLLM's own bundled
+`model_prices_and_context_window.json` already lists every OpenRouter
+model string it recognizes (`litellm.models_by_provider["openrouter"]` —
+confirmed exactly 96 entries against the currently pinned LiteLLM
+version). NVIDIA NIM has no equivalent bundled or public catalog to
+enumerate, so it's unchanged: still curated-plus-manual-lookup only
+(`/models/lookup`, pre-existing).
+
+New `GET /pipelines/{id}/models/catalog/openrouter` (`migrations.py`)
+returns every one of those ~96 model strings run through the same
+`_to_option` capability/pricing enrichment every other model picker
+endpoint uses. Timed at 48ms for all 96 lookups (LiteLLM's static JSON
+lookups, not a network call) — no caching needed, no per-keystroke
+round trip either: the wizard fetches the whole catalog once and filters
+client-side as the user types.
+
+`new-migration-wizard.tsx`: new `OpenRouterModelPicker` — a type-to-filter
+text input + dropdown list (visible entries capped at 50 with a "+N more,
+keep typing" hint), standard mousedown-preventDefault-before-blur pattern
+so a click on a result registers before the input's blur handler closes
+the list. Selecting a result hands its already-complete `ModelOption`
+straight into the existing `customModels` state (same list the free-text
+"Look up" flow already populated) — no extra lookup call needed since the
+catalog fetch already carries full cost/capability data. The old "Add a
+custom model" free-text box is kept alongside it, relabeled "Any other
+model string", for NVIDIA NIM and anything else not in a browsable
+catalog.
+
+**Verified**: `tsc --noEmit` clean. New backend tests
+(`test_migrations.py`): catalog endpoint returns >50 entries, every one
+openrouter-prefixed, sorted; 404s for an unknown pipeline. New frontend
+test: search "claude" shows only matching results, selecting one adds it
+to the picker list and clears the search box. Full suites: apps/api
+226/226, apps/web 190/190. Screenshotted the real dev server end-to-end
+(a genuine Playwright run against the live API's real catalog endpoint,
+not a mock): typing "claude" live-filters to
+`openrouter/anthropic/claude-3-haiku` / `-3.5-sonnet` / `-3.7-sonnet`,
+placeholder reads "Search 96 OpenRouter models…", selecting one adds a
+full model card with real cost/context data.
+
+## Clarified: a non-applying transform rule isn't struck through anymore [DONE — 2026-07-23]
+
+User flagged (screenshot of the Migrations tab's model cards): a
+non-applying model-card rule (e.g. `terseify_if_small` shown against
+`gpt-4o`, which isn't a small/cheap variant) rendered with `line-through`
+styling — this was always intentional (see model_card.py's `applies_to:
+"small_only"`), but strikethrough reads as "removed"/"cancelled"/"this
+is broken", not "not currently relevant". Settings already sidesteps
+this by only listing rules that *do* apply; the wizard's `ModelOptionCard`
+deliberately shows the full rule set (applying and not) so a reviewer
+can see the whole family's behavior while comparing models, which is
+exactly where the confusing styling showed up.
+
+`new-migration-wizard.tsx`: dropped `line-through` entirely, swapped the
+"—" glyph for "○" (reads as "inactive", not "cancelled"), and appended an
+explicit reason instead of leaving it to the reader to guess — "— only
+applies to small/cheap model variants" for an `applies_to: "small_only"`
+rule that isn't currently active (the only real case today, per
+model_card.py: an `"all"` rule is never absent from a family card it's
+listed on).
+
+**Verified**: new frontend test (non-applying rule renders its
+explanation text). Full apps/web suite: 191/191. Screenshotted the real
+dev server: gpt-4o's `terseify_if_small` line now reads "○
+terseify_if_small: ... — only applies to small/cheap model variants" in
+plain muted text, no strikethrough.
+
+## Model-selection UX: make "Auto" mean something, surface judge/mutator overrides [DONE — 2026-07-23]
+
+User's complaint, verbatim: seeing the same NVIDIA model repeated three
+times in Settings' System models table, then landing on the Rubrics tab
+and seeing an unrelated "Auto-select a model" dropdown that only offered
+Ollama models — asked "how am I supposed to define LLM for my judge and
+all and then target model," and to consult Fable again rather than patch
+this piecemeal a third time.
+
+Consulted Fable (discussion-only agent) on the underlying information
+architecture. His diagnosis: the three surfaces (env-var-pinned harness
+defaults, per-call override dropdowns, target-model picker) are correctly
+scoped by *who can change them and when* — the actual bug is that
+"Auto-select a model" is opaque, never showing what it resolves to, so
+identical-by-design defaults read as broken. His ordered fix list (cost
+low to high), all built this pass:
+
+1. **Rubrics' "Auto-select a model" now shows the resolved model** —
+   `rubric-review-panel.tsx` fetches the same `/settings/system-models`
+   data Settings already reads and renders `Auto — nvidia_nim/…` instead
+   of a blind "Auto-select a model". Falls back to the old plain label if
+   that lookup fails, never blocks the dropdown.
+2. **A one-line chip explains "why is it the same everywhere"** — "Judge
+   and Mutator default to this same model too — see Settings", linking
+   back to the System models table, right under the same dropdown.
+3. **Judge/mutator override promoted from an invisible API field to a
+   real wizard section** — `target_model_config.judge_model`/
+   `mutator_model` already existed server-side (per-migration override,
+   outranks the env var) but had no UI at all. New collapsed-by-default
+   "Advanced: override judge/mutator for this migration" section in
+   `new-migration-wizard.tsx`, each select defaulting to "Same as global:
+   nvidia_nim/…" (same resolved-default pattern as #1), populated from the
+   same unlocked-model set the target-model grid already uses. Only sent
+   in the create-migration payload when actually changed — an untouched
+   selection stays omitted, same convention as `stage_overrides`. Echoed
+   in the wizard's confirm/review step when set.
+
+Deliberately left alone per Fable's recommendation: the target-model
+grid/search/lookup picker (already good, a harness-role picker would only
+make it worse) and making the env vars UI-editable (single operator,
+still building — not worth the auth/audit surface it would drag in yet).
+
+**Verified**: new/updated tests across `rubric-review-panel.test.tsx`
+(resolved-label rendering, fallback-on-failure, Settings chip) and
+`new-migration-wizard.test.tsx` (defaults shown for both selects, only
+the actually-changed one sent in the payload, confirm-step summary).
+Full apps/web suite: 194/194. Screenshotted the real dev server signed in
+as a fresh user: Rubrics dropdown reads "Auto —
+nvidia_nim/deepseek-ai/dee…" with the Settings chip beneath it; the
+wizard's advanced section shows "Same as global: nvidia_nim/…" for both
+Judge and Mutator before any override is picked.
+
+## Canvas scroll regression fix + visible test errors + test-any-model [DONE — 2026-07-23]
+
+User reported Canvas still had a page-level scrollbar, correctly guessing
+the cause: "likely because of the theme button above." Confirmed —
+`pipeline-workspace.tsx` hardcoded its own wrapper to
+`h-[calc(100vh-1px)]`, sized as if it alone owned the entire viewport.
+That was true before this session's theme-toggle-bar fix moved the
+toggle into its own reserved row inside `AppShell`'s `<main>`; afterwards,
+the workspace's `100vh` claim overflowed by exactly that row's height,
+and `AppShell`'s outer `overflow-y-auto` wrapper picked up the difference
+as a scrollbar - defeating the point of Canvas having its own React Flow
+pan/zoom instead of page scroll. Fixed by making the whole chain relative
+instead of an absolute viewport guess: `app-shell.tsx`'s
+`mx-auto max-w-[1440px]` wrapper now carries `h-full` (a definite height,
+not just auto-sized to content), so `pipeline-workspace.tsx` can size
+itself against `h-full` instead of `100vh` and automatically account for
+whatever chrome sits above it, now or in the future.
+
+Separately, while investigating a user-reported "Test failed" on a
+curated NVIDIA model with no visible reason: the actual error was only
+ever attached as a `<Badge title="...">` hover tooltip - unreadable from
+a screenshot or bug report. `settings.tsx` now renders it as plain text
+under the badge instead. Root-caused the specific failure this surfaced
+(`nvidia_nim/nvidia/llama-3.1-nemotron-ultra-253b-v1`): confirmed via
+`litellm.get_llm_provider` that it resolves through the exact same
+code path as a model the user verified works directly against NVIDIA's
+API (`z-ai/glm-5.2`, same `nvidia_nim` provider, same
+`integrate.api.nvidia.com` base URL) - so this isn't an integration bug,
+the specific 253B model just isn't available/enabled for their key. User
+asked to verify a replacement through Reprompt's own test path before
+swapping the curated list entry, which surfaced a real gap: `POST
+/settings/models/test` already accepted any LiteLLM model string
+server-side, but the only UI entry point was per-curated-model "Test"
+buttons - no way to test an arbitrary string. Added a "Test any model"
+free-text box + Test button to `ConfiguredModelsCard`, reusing the same
+`testModel` mutation the curated rows already share.
+
+**Verified**: Playwright against the real dev server, signed in fresh -
+`document.documentElement.scrollHeight === clientHeight` exactly on the
+Canvas tab (previously taller). New/updated vitest coverage in
+`settings.test.tsx` (visible failure-reason text; free-text tester
+resolves and calls `testModel` with the typed string). Full apps/web
+suite: 195/195. Sanity-checked Data/Settings/Pipelines-list still render
+and scroll correctly after the `app-shell.tsx` height change (no
+regression from making the wrapper `h-full` instead of auto-height).
+
+## Model test: fixed the real hang, moved the tester next to "Add API key" [DONE — 2026-07-23]
+
+Follow-up to the NVIDIA test-failure investigation above. Two more real
+issues surfaced:
+
+1. **The connectivity check could hang indefinitely.** `POST
+   /settings/models/test` never passed a `timeout` to `complete_with_
+   workspace_credentials` - a provider that stalls instead of rejecting
+   the request (observed live: `nvidia_nim/z-ai/glm-5.2` sat on
+   "Testing…" with no resolution) left the button spinning forever, no
+   error, no way to tell it had failed vs. was just slow. Fixed: `settings.py`'s
+   `test_model()` now passes `timeout=20.0` - generous for a 5-token
+   reply, but bounded. `litellm.exceptions.Timeout` was already mapped to
+   `TransientLLMError` (502) by `reprompt_core.llm.client`, so this was a
+   one-line fix, not new error-handling.
+2. **"Test any model" was in the wrong place.** User asked for it right
+   where a key gets added, not in a separate card further down the page -
+   the natural next step after "Add API key" is "does it work," not a
+   scroll away. Extracted into its own `TestAnyModelForm` component (own
+   mutation instance, independent of the curated rows' shared one) and
+   moved from `ConfiguredModelsCard` into `ApiKeysCard`, directly under
+   the add-key form.
+
+**Verified**: new backend test simulates a `litellm.exceptions.Timeout`
+and confirms a clean 502 instead of a hang; existing test asserts
+`timeout=20.0` actually reaches the LiteLLM call. Frontend tests
+re-scoped from fragile button-index assumptions to querying by the
+specific row/form each button belongs to (order-independent, won't break
+the next time a "Test" button gets added elsewhere). Full suites:
+apps/api 227/227, apps/web 195/195. Screenshotted the real dev server:
+"Test any model" now renders directly beneath "Add API key," above
+"Configured models."
+
+## Canvas scroll, round 2: PipelineCanvas's own min-h floor, not the theme bar [DONE — 2026-07-23]
+
+User reported the Canvas scrollbar was still there after the earlier
+theme-bar fix, on a real pipeline ("Renamed via curl test" — 31 layers,
+mostly one node wide). That fix was real but incomplete: it addressed
+the *document-level* scroll (AppShell's outer wrapper), but a second,
+narrower scrollbar lived one level deeper, on `pipeline-workspace.tsx`'s
+own tab-content wrapper (`overflow-y-auto`, shared by every tab).
+
+Root cause, found by inspecting every scrollable element in the live DOM
+rather than guessing: `PipelineCanvas`'s default wrapper carries `h-full
+min-h-[480px] flex-1` — a hard 480px floor. At a 660px-tall window, the
+actual space left for that wrapper after the pipeline header/tabs/theme
+bar was 462px - 18px under the floor, so the wrapper's own
+`overflow-y-auto` kicked in for that difference. Confirmed directly:
+`scrollHeight: 480` vs `clientHeight: 462` on that exact element, and
+that no amount of the earlier theme-bar fix could touch it, since it's a
+different container.
+
+Fix, same principle as the earlier horizontal-overflow fix (Canvas must
+never trigger a page/container-level scrollbar — React Flow's own
+pan/zoom is the only intended way to reach content beyond the viewport):
+`pipeline-workspace.tsx`'s tab-content wrapper is now
+`overflow-hidden` specifically on the Canvas tab, `overflow-y-auto` on
+every other tab (Data/Rubrics/Contracts/Migrations still need and get
+real scrolling for genuinely tall content). The `min-h-[480px]` floor
+itself was left in place — it guards against react-flow measuring a
+near-zero height during the same "definite ancestor height" propagation
+chain documented on `pipeline-workspace.tsx`'s outer wrapper — so on a
+window this tight, the excess ~18px is simply clipped (a barely-visible
+sliver at the very bottom of the minimap) instead of producing a
+scrollbar.
+
+**Verified**: new permanent Playwright regression test in
+`e2e/canvas-layout.spec.ts` at a 660px-tall viewport, using the existing
+`buildTallNarrowDag()` shape (the closest synthetic analog to the real
+reported pipeline) - asserts the Canvas wrapper is never scrollable.
+Full `canvas-layout.spec.ts` suite: 6/7 (the 7th, an unrelated
+"colors a running migration" test, was confirmed failing identically on
+`master` *before* this change via `git stash` - a pre-existing flake,
+not a regression from this fix). `pipeline-workspace.test.tsx` +
+`pipeline-workspace.canvas-live.test.tsx`: 15/15. Reproduced and fixed
+against the exact real pipeline from the report (dev DB pipeline id 1,
+"Renamed via curl test"), not just a synthetic shape.
+
+## Canvas scroll, round 3: dropped the min-h floor instead of clipping it [DONE — 2026-07-23]
+
+Round 2's `overflow-hidden` fix removed the scrollbar but traded it for a
+different visible defect the user caught immediately on the same tight
+window: the bottom of the minimap was clipped. That's exactly what
+`overflow-hidden` does to the ~18px excess `min-h-[480px]` used to force
+past the actually-available space - correct in that a scrollbar is gone,
+but still cutting off real content instead of ever asking "does Canvas
+need that floor at all."
+
+It doesn't. The floor's real job (documented in DEV_TRACKER.md's "canvas
+and all, nothing is there" entry) was guarding against `react-flow`
+measuring a near-zero height while the ancestor chain lacked a *definite*
+size anywhere - `min-height` never produces a spec-definite size, so a
+descendant's `height:100%` had nothing real to resolve against and
+collapsed to 0. That chain is now definite end-to-end (`h-screen` →
+`h-full` → `h-full` → `flex-1`, following this session's earlier two
+Canvas-scroll fixes), so the floor's original purpose is already covered
+by the chain itself. Removed `min-h-[480px]` from `pipeline-canvas.tsx`'s
+default wrapper entirely - `h-full flex-1` now sizes Canvas to exactly
+whatever its container actually has, never more. `overflow-hidden` on
+the tab wrapper (round 2's fix) stays as belt-and-braces, but there's
+nothing left for it to clip.
+
+**Verified**: strengthened the round-2 regression test in
+`e2e/canvas-layout.spec.ts` from "not scrollable" to the stronger
+`scrollHeight === clientHeight` (proves nothing is being silently
+clipped, not just that there's no scrollbar) - passes at the same 660px
+repro height. Full `canvas-layout.spec.ts`: 6/7 (same pre-existing,
+unrelated flake as round 2, confirmed via `git stash` again). Full
+apps/web suite: 195/195. Re-verified against the real reported pipeline
+at an even tighter 620px window: full minimap visible, no clipping, no
+scrollbar.

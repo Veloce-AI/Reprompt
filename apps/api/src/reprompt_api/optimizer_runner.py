@@ -39,6 +39,7 @@ from reprompt_core.optimizer.seam import SeamExample, SeamInput, evaluate_seam
 from reprompt_api import models
 from reprompt_api.db import SessionLocal
 from reprompt_api.llm_context import complete_with_workspace_credentials
+from reprompt_api.system_models import system_model_override
 
 # NOTE: reprompt_api.migrations.get_available_models is imported lazily
 # inside _run() below, not here at module level - migrations.py itself
@@ -124,23 +125,31 @@ def _run(db: Session, migration_id: int) -> None:  # noqa: C901
         # candidate outputs / mutating-critiquing-refining candidate
         # prompts) - deliberately decoupled from `target_models` above
         # (the user's own choice of model(s) being tested), so a target
-        # model never silently grades or refines its own output. An
-        # explicit override in target_model_config always wins; otherwise
-        # auto-select independently from the workspace's own available
-        # models (never from target_models) via the same select_model()
-        # pattern already used for rubric generation - see
-        # reprompt_api.migrations.get_available_models and
-        # reprompt_core.llm.model_select.select_model. See DEV_TRACKER.md's
-        # "Fix judge/mutator self-grading bias" section for the full
-        # rationale.
+        # model never silently grades or refines its own output. Priority
+        # order: (1) an explicit override in this migration's own
+        # target_model_config always wins outright; (2) an operator-set
+        # REPROMPT_JUDGE_MODEL/REPROMPT_MUTATOR_MODEL env var, if set, pins
+        # every migration on this deployment to that one model (see
+        # reprompt_api.system_models); (3) otherwise auto-select
+        # independently from the workspace's own available models (never
+        # from target_models) via the same select_model() pattern already
+        # used for rubric generation - see reprompt_api.migrations.
+        # get_available_models and reprompt_core.llm.model_select.
+        # select_model. See DEV_TRACKER.md's "Fix judge/mutator
+        # self-grading bias" and "System model config" entries for the
+        # full rationale.
         from reprompt_api.migrations import get_available_models  # local import - see note above imports
 
         available_models = [option.model for option in get_available_models(db, workspace)]
-        judge_model = migration.target_model_config.get("judge_model") or select_model(
-            "judge", available_models
+        judge_model = (
+            migration.target_model_config.get("judge_model")
+            or system_model_override("judge")
+            or select_model("judge", available_models, target_models=target_models)
         )
-        mutator_model = migration.target_model_config.get("mutator_model") or select_model(
-            "mutator", available_models
+        mutator_model = (
+            migration.target_model_config.get("mutator_model")
+            or system_model_override("mutator")
+            or select_model("mutator", available_models, target_models=target_models)
         )
 
         db_stages = db.scalars(

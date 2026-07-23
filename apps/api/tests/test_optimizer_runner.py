@@ -416,6 +416,58 @@ def test_judge_and_mutator_auto_select_from_workspace_not_target_model(
     assert captured["mutator_model"] != "ollama/llama3.1"
 
 
+def test_env_var_override_wins_over_auto_select_for_judge_and_mutator(
+    client: None, session_factory: sessionmaker, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """REPROMPT_JUDGE_MODEL/REPROMPT_MUTATOR_MODEL, when set by the operator,
+    must be used instead of auto-select - even though a BYOK key would
+    otherwise make a different model the tier-1 auto-select pick. Neither
+    migration sets its own judge_model/mutator_model override, so this
+    exercises the middle tier of the 3-tier priority chain."""
+    monkeypatch.setenv("REPROMPT_JUDGE_MODEL", "nvidia_nim/deepseek-ai/deepseek-v4-flash")
+    monkeypatch.setenv("REPROMPT_MUTATOR_MODEL", "nvidia_nim/deepseek-ai/deepseek-v4-flash")
+    with session_factory() as db:
+        workspace = _make_workspace(db)
+        _add_api_key(db, workspace, "anthropic")
+        pipeline_id, migration_id = _make_migration_with_one_stage(
+            db, target_model_config={"models": ["ollama/llama3.1"]}
+        )
+
+    captured: dict = {}
+    with patch(
+        "reprompt_api.optimizer_runner.run_optimizer", _capturing_fake_run_optimizer(captured)
+    ):
+        run_optimizer_for_migration(migration_id)
+
+    assert captured["judge_model"] == "nvidia_nim/deepseek-ai/deepseek-v4-flash"
+    assert captured["mutator_model"] == "nvidia_nim/deepseek-ai/deepseek-v4-flash"
+
+
+def test_migration_level_override_still_wins_over_env_var(
+    client: None, session_factory: sessionmaker, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A per-migration judge_model/mutator_model override (top of the
+    3-tier priority chain) must still beat the operator's env var."""
+    monkeypatch.setenv("REPROMPT_JUDGE_MODEL", "nvidia_nim/deepseek-ai/deepseek-v4-flash")
+    with session_factory() as db:
+        _make_workspace(db)
+        pipeline_id, migration_id = _make_migration_with_one_stage(
+            db,
+            target_model_config={
+                "models": ["gpt-4o-mini"],
+                "judge_model": "claude-haiku-4-5",
+            },
+        )
+
+    captured: dict = {}
+    with patch(
+        "reprompt_api.optimizer_runner.run_optimizer", _capturing_fake_run_optimizer(captured)
+    ):
+        run_optimizer_for_migration(migration_id)
+
+    assert captured["judge_model"] == "claude-haiku-4-5"
+
+
 def test_explicit_judge_model_override_wins_over_auto_select(
     client: None, session_factory: sessionmaker
 ) -> None:

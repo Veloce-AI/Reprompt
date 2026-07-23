@@ -42,6 +42,7 @@ from reprompt_api.crypto import EncryptionNotConfigured
 from reprompt_api.db import get_db
 from reprompt_api.llm_context import ProviderKeyNotConfigured, complete_with_workspace_credentials
 from reprompt_api.migrations import get_available_models
+from reprompt_api.system_models import system_model_override
 
 router = APIRouter(tags=["rubrics"])
 
@@ -295,7 +296,9 @@ def generate_rubric_for_stage(
     outputs across all traces, using the current user's workspace's saved
     BYOK key for the generator model's provider.
 
-    `body.model` is optional: if omitted, the model is auto-selected via
+    `body.model` is optional: if omitted, an operator-set REPROMPT_RUBRIC_MODEL
+    env var wins next (see reprompt_api.system_models); otherwise the model is
+    auto-selected via
     `reprompt_core.llm.model_select.select_model(purpose="rubric_generation",
     ...)` from this workspace's configured models (the same BYOK-filtered
     curated list `GET /settings/models` shows — see
@@ -328,6 +331,8 @@ def generate_rubric_for_stage(
 
     if body.model:
         generator_model = body.model
+    elif (override := system_model_override("rubric_generation")) is not None:
+        generator_model = override
     else:
         available = [option.model for option in get_available_models(db, workspace)]
         try:

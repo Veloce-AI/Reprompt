@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import { fireEvent } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { NewMigrationWizard } from "./new-migration-wizard";
@@ -11,6 +11,8 @@ vi.mock("@/lib/api", async () => {
     ...actual,
     getPipelineDag: vi.fn(),
     listModelOptions: vi.fn(),
+    listOpenRouterCatalog: vi.fn(),
+    listSystemModels: vi.fn(),
     createMigration: vi.fn(),
     getModelCard: vi.fn(),
     listApiKeys: vi.fn(),
@@ -24,6 +26,8 @@ import {
   getPipelineDag,
   listApiKeys,
   listModelOptions,
+  listOpenRouterCatalog,
+  listSystemModels,
   getModelCard,
 } from "@/lib/api";
 import type { ApiKeyOut } from "@/lib/api";
@@ -107,6 +111,8 @@ function baseModelCard(family: string): ModelCardInfo {
         will_apply: true,
       },
     ],
+    supports_reasoning: false,
+    code_sample: `complete(model="${family}-example", messages=[...])`,
   };
 }
 
@@ -124,6 +130,8 @@ function renderWizard(onCreated: (m: unknown) => void) {
 beforeEach(() => {
   vi.mocked(getPipelineDag).mockReset();
   vi.mocked(listModelOptions).mockReset();
+  vi.mocked(listOpenRouterCatalog).mockReset();
+  vi.mocked(listSystemModels).mockReset();
   vi.mocked(createMigration).mockReset();
   vi.mocked(getModelCard).mockReset();
   vi.mocked(listApiKeys).mockReset();
@@ -132,6 +140,30 @@ beforeEach(() => {
   // pre-existing test sees the wizard exactly as it behaved before the
   // locked-model states existed. Lock-specific tests override this.
   vi.mocked(listApiKeys).mockResolvedValue([keyFor("openai", 1), keyFor("anthropic", 2)]);
+  // Default: empty catalog - only the new OpenRouter-picker-specific test
+  // below needs a populated one.
+  vi.mocked(listOpenRouterCatalog).mockResolvedValue([]);
+  vi.mocked(listSystemModels).mockResolvedValue([
+    { purpose: "rubric_generation", selected_model: "nvidia_nim/deepseek-ai/deepseek-v4-flash", reason: "pinned via REPROMPT_RUBRIC_MODEL" },
+    { purpose: "judge", selected_model: "nvidia_nim/deepseek-ai/deepseek-v4-flash", reason: "pinned via REPROMPT_JUDGE_MODEL" },
+    { purpose: "mutator", selected_model: "nvidia_nim/deepseek-ai/deepseek-v4-flash", reason: "pinned via REPROMPT_MUTATOR_MODEL" },
+  ]);
+});
+
+describe("NewMigrationWizard — pre-start Prism reference", () => {
+  it("mentions Prism and offers the 'How Prism works' explainer before a migration is created", async () => {
+    vi.mocked(getPipelineDag).mockResolvedValue(baseDag());
+    vi.mocked(listModelOptions).mockResolvedValue(baseModels());
+
+    renderWizard(vi.fn());
+
+    expect(await screen.findByText("Prism", { selector: "span" })).toBeInTheDocument();
+    const trigger = screen.getByText("How Prism works");
+
+    fireEvent.click(trigger);
+    const dialog = await screen.findByRole("dialog");
+    expect(dialog).toHaveTextContent("Prism is a self-evolving prompt optimizer");
+  });
 });
 
 describe("NewMigrationWizard", () => {
@@ -209,6 +241,72 @@ describe("NewMigrationWizard", () => {
 
     await waitFor(() => {
       expect(onCreated).toHaveBeenCalledWith(expect.objectContaining({ id: 42 }));
+    });
+  });
+
+  it("defaults judge/mutator to the global system model and sends only the one actually overridden", async () => {
+    vi.mocked(getPipelineDag).mockResolvedValue(baseDag());
+    vi.mocked(listModelOptions).mockResolvedValue(baseModels());
+    vi.mocked(createMigration).mockResolvedValue({
+      id: 43,
+      pipeline_id: 1,
+      target_model_config: { models: ["gpt-4o-mini"], judge_model: "claude-haiku-4-5" },
+      budget: 10,
+      parity_threshold: 0.95,
+      status: "pending",
+      total_cost_usd: null,
+      stopped_early: false,
+      stop_reason: null,
+      progress_stage_name: null,
+      progress_current: null,
+      progress_total: null,
+      progress_substep: null,
+      activity_log: null,
+      completed_at: null,
+      stage_states: {},
+    });
+
+    renderWizard(vi.fn());
+
+    await screen.findByLabelText("gpt-4o-mini");
+    fireEvent.click(screen.getByLabelText("gpt-4o-mini"));
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Advanced: override judge/mutator for this migration" })
+    );
+    const judgeSelect = await screen.findByLabelText("Judge");
+    const mutatorSelect = screen.getByLabelText("Mutator");
+    expect(
+      within(judgeSelect).getByRole("option", {
+        name: "Same as global: nvidia_nim/deepseek-ai/deepseek-v4-flash",
+      })
+    ).toBeInTheDocument();
+    expect(
+      within(mutatorSelect).getByRole("option", {
+        name: "Same as global: nvidia_nim/deepseek-ai/deepseek-v4-flash",
+      })
+    ).toBeInTheDocument();
+
+    fireEvent.change(judgeSelect, { target: { value: "claude-haiku-4-5" } });
+    // Mutator left untouched - should not appear in the payload at all.
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Continue to budget & parity threshold" })
+    );
+    await screen.findByLabelText("Budget");
+    fireEvent.change(screen.getByLabelText("Budget"), { target: { value: "10" } });
+    fireEvent.click(screen.getByRole("button", { name: "Continue to review" }));
+
+    await screen.findByRole("button", { name: "Run migration" });
+    expect(screen.getByText("Judge/mutator overrides")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Run migration" }));
+
+    await waitFor(() => {
+      expect(createMigration).toHaveBeenCalledWith(1, {
+        target_model_config: { models: ["gpt-4o-mini"], judge_model: "claude-haiku-4-5" },
+        budget: 10,
+        parity_threshold: 0.95,
+      });
     });
   });
 
@@ -406,6 +504,30 @@ describe("NewMigrationWizard", () => {
     expect(descriptions.length).toBeGreaterThanOrEqual(1);
   });
 
+  it("explains why a non-applying transform rule doesn't apply, instead of just striking it through", async () => {
+    vi.mocked(getPipelineDag).mockResolvedValue(baseDag());
+    vi.mocked(listModelOptions).mockResolvedValue(baseModels());
+    vi.mocked(getModelCard).mockResolvedValue({
+      ...baseModelCard("openai"),
+      rules: [
+        {
+          name: "terseify_if_small",
+          description: "Strip hedging/filler phrases.",
+          applies_to: "small_only",
+          will_apply: false,
+        },
+      ],
+    });
+
+    renderWizard(vi.fn());
+    await screen.findByLabelText("gpt-4o-mini");
+
+    const explanations = await screen.findAllByText(
+      /only applies to small\/cheap model variants/
+    );
+    expect(explanations.length).toBeGreaterThanOrEqual(1);
+  });
+
   it("shows key-requiring models locked (visible but disabled) when their provider has no key", async () => {
     vi.mocked(getPipelineDag).mockResolvedValue(baseDag());
     vi.mocked(listModelOptions).mockResolvedValue(baseModels());
@@ -471,5 +593,60 @@ describe("NewMigrationWizard", () => {
     await waitFor(() => expect(screen.getByLabelText("claude-haiku-4-5")).toBeEnabled());
     fireEvent.click(screen.getByLabelText("claude-haiku-4-5"));
     expect(screen.getByLabelText("claude-haiku-4-5")).toBeChecked();
+  });
+
+  it("searches the OpenRouter catalog and adds a selected model", async () => {
+    vi.mocked(getPipelineDag).mockResolvedValue(baseDag());
+    vi.mocked(listModelOptions).mockResolvedValue(baseModels());
+    vi.mocked(getModelCard).mockRejectedValue(new Error("skip"));
+    vi.mocked(listOpenRouterCatalog).mockResolvedValue([
+      {
+        model: "openrouter/anthropic/claude-3.7-sonnet",
+        provider: "openrouter",
+        input_cost_per_1m: 3,
+        output_cost_per_1m: 15,
+        max_input_tokens: 200000,
+        max_output_tokens: 64000,
+        supports_json_mode: true,
+        supports_function_calling: true,
+        requires_api_key: true,
+        family: "anthropic",
+        transform_descriptions: [],
+      },
+      {
+        model: "openrouter/openai/gpt-4o",
+        provider: "openrouter",
+        input_cost_per_1m: 2.5,
+        output_cost_per_1m: 10,
+        max_input_tokens: 128000,
+        max_output_tokens: 16384,
+        supports_json_mode: true,
+        supports_function_calling: true,
+        requires_api_key: true,
+        family: "openai",
+        transform_descriptions: [],
+      },
+    ]);
+
+    renderWizard(vi.fn());
+
+    await screen.findByLabelText("gpt-4o-mini");
+    const search = await screen.findByLabelText("Search OpenRouter models");
+    await waitFor(() => expect(search).not.toBeDisabled());
+
+    fireEvent.focus(search);
+    fireEvent.change(search, { target: { value: "claude" } });
+
+    const result = await screen.findByRole("option", {
+      name: "openrouter/anthropic/claude-3.7-sonnet",
+    });
+    expect(
+      screen.queryByRole("option", { name: "openrouter/openai/gpt-4o" })
+    ).not.toBeInTheDocument();
+
+    fireEvent.click(result);
+
+    expect(await screen.findByLabelText("openrouter/anthropic/claude-3.7-sonnet")).toBeInTheDocument();
+    expect(search).toHaveValue("");
   });
 });

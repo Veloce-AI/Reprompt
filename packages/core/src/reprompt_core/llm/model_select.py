@@ -51,8 +51,9 @@ module only knows about model strings and the (also-FastAPI-free)
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Literal, Sequence
 
+from reprompt_core.llm.model_card import resolve_family
 from reprompt_core.llm.registry import get_model_capabilities
 
 __all__ = ["Purpose", "NoAvailableModelError", "select_model"]
@@ -125,6 +126,7 @@ def select_model(
     available_models: list[str],
     *,
     explicit: str | None = None,
+    target_models: Sequence[str] = (),
 ) -> str:
     """Pick a good model for ``purpose`` out of ``available_models``.
 
@@ -143,10 +145,33 @@ def select_model(
         registry; this function trusts the caller's list completely.
     explicit:
         A caller-supplied model choice that always wins immediately,
-        without being checked against ``available_models`` or any tier —
-        see module docstring's "Explicit override" section. Pass the
-        caller's already-chosen model here (if any) rather than branching
-        around this function at the call site.
+        without being checked against ``available_models``, ``target_models``,
+        or any tier — see module docstring's "Explicit override" section.
+        Pass the caller's already-chosen model here (if any) rather than
+        branching around this function at the call site.
+    target_models:
+        The model(s) actually under test in the caller's context (e.g. a
+        migration's chosen target model list) — never auto-selected for
+        ``purpose="judge"``/``"mutator"``, so a target model can never
+        silently grade or refine its own output. Ignored for
+        ``purpose="rubric_generation"`` (there is no "target" in that
+        context). For ``purpose="judge"`` specifically, candidates whose
+        :func:`~reprompt_core.llm.model_card.resolve_family` matches any
+        target model's family are also deprioritized (not hard-excluded —
+        see "Cross-family judging" below): same-family judging has been
+        observed to favor a model's own stylistic output even when the
+        exact model differs, so a same-family judge is a real but lesser
+        risk than the target literally judging itself.
+
+    Cross-family judging
+    ---------------------------------------------------------------------
+    For ``purpose="judge"``, within a tier, candidates from a family that
+    doesn't match any ``target_models`` entry are preferred over
+    same-family candidates — cost only breaks ties *within* that
+    preference group, not across it. If every candidate in every tier
+    happens to share a family with a target model, the best same-family
+    candidate is still returned (degrade gracefully, matching this
+    module's existing "some pick beats none" stance) rather than raising.
 
     Returns
     -------
@@ -155,25 +180,42 @@ def select_model(
     Raises
     ------
     NoAvailableModelError
-        ``explicit`` is not given and ``available_models`` is empty —
-        there is nothing to select from.
+        ``explicit`` is not given and ``available_models`` (after
+        excluding any exact ``target_models`` matches) is empty — there is
+        nothing to select from.
     """
     if explicit:
         return explicit
 
-    if not available_models:
+    # Hard rule, all purposes this applies to: a model under test is never
+    # a candidate for judging/mutating itself, regardless of cost/tier.
+    usable_models = [m for m in available_models if m not in set(target_models)]
+
+    if not usable_models:
         raise NoAvailableModelError(
             f"No models available to select from for purpose={purpose!r} "
-            "(available_models was empty, and no explicit model was given)."
+            "(available_models was empty, or only contained target_models "
+            "excluded to prevent self-grading, and no explicit model was given)."
         )
 
-    available_set = set(available_models)
+    available_set = set(usable_models)
+    target_families = (
+        {resolve_family(m) for m in target_models} if purpose == "judge" and target_models else set()
+    )
     for tier in _CAPABILITY_TIERS.get(purpose, ()):
         candidates = [model for model in tier if model in available_set]
-        if candidates:
-            return min(candidates, key=_combined_cost_per_token)
+        if not candidates:
+            continue
+        if target_families:
+            cross_family = [m for m in candidates if resolve_family(m) not in target_families]
+            if cross_family:
+                candidates = cross_family
+            # else: every candidate in this tier shares a family with a
+            # target model — fall through and pick the best of them
+            # anyway rather than skip the tier, per "degrade gracefully".
+        return min(candidates, key=_combined_cost_per_token)
 
-    # Nothing in available_models appears in any curated tier for this
+    # Nothing in usable_models appears in any curated tier for this
     # purpose (e.g. an uncurated provider) — still return something usable
     # rather than raising, per the module's "some pick beats none" stance.
-    return min(available_models, key=_combined_cost_per_token)
+    return min(usable_models, key=_combined_cost_per_token)

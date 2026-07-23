@@ -211,8 +211,8 @@ function boxesOverlap(a: Box, b: Box): boolean {
   return a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height;
 }
 
-async function getNodeBoxes(page: Page): Promise<Box[]> {
-  const nodes = page.locator(".react-flow__node");
+async function getNodeBoxes(page: Page, selector = ".react-flow__node"): Promise<Box[]> {
+  const nodes = page.locator(selector);
   const count = await nodes.count();
   const boxes: Box[] = [];
   for (let i = 0; i < count; i++) {
@@ -221,6 +221,20 @@ async function getNodeBoxes(page: Page): Promise<Box[]> {
     if (box) boxes.push(box);
   }
   return boxes;
+}
+
+// Since the Canvas/Graph merge, a pipeline with no migration running
+// defaults to Analytics mode, which also renders one node per unique model
+// in a fixed right column (see pipeline-canvas.tsx's ModelGraphNode). That
+// node is deliberately more compact than a stage card (it holds a model
+// name and a stage count, nothing else) — the legible-zoom-floor guarantee
+// below is specifically about stage-node.tsx's Card (name/model badge/stats
+// line all needing to stay readable), so legibility assertions are scoped
+// to stage nodes only via React Flow's own `react-flow__node-<type>` class.
+// Overlap checks stay on every node (stage *and* model) - nothing should
+// ever overlap regardless of type.
+async function getStageNodeBoxes(page: Page): Promise<Box[]> {
+  return getNodeBoxes(page, ".react-flow__node.react-flow__node-stage");
 }
 
 function assertNoOverlap(boxes: Box[]) {
@@ -269,12 +283,18 @@ test.describe("canvas dagre auto-layout — tall/narrow pipeline (~38 stages, mo
     await mockPipelineApi(page, dag, total);
 
     await page.goto(`/pipelines/${PIPELINE_ID}?tab=canvas`);
-    await expect(page.locator(".react-flow__node")).toHaveCount(total);
+    // Scoped to stage-type nodes specifically (React Flow's own
+    // `react-flow__node-<type>` class), not just `.react-flow__node` - since
+    // the Canvas/Graph merge, this pipeline (no migration running) now
+    // defaults to Analytics mode, which also renders one node per unique
+    // model in a fixed right column. That's correct, expected behavior, not
+    // something these layout/legibility assertions should trip on.
+    await expect(page.locator(".react-flow__node.react-flow__node-stage")).toHaveCount(total);
     await page.waitForTimeout(300);
 
     let boxes = await getNodeBoxes(page);
     assertNoOverlap(boxes);
-    assertLegible(boxes);
+    assertLegible(await getStageNodeBoxes(page));
     // This shape is far taller than any reasonable viewport at a legible
     // zoom, so fitView should clamp to the floor exactly, not something
     // in between - proof the floor is actually being enforced.
@@ -285,7 +305,7 @@ test.describe("canvas dagre auto-layout — tall/narrow pipeline (~38 stages, mo
 
     boxes = await getNodeBoxes(page);
     assertNoOverlap(boxes);
-    assertLegible(boxes);
+    assertLegible(await getStageNodeBoxes(page));
     expect(await getZoomScale(page)).toBeCloseTo(0.5, 2);
   });
 
@@ -296,7 +316,7 @@ test.describe("canvas dagre auto-layout — tall/narrow pipeline (~38 stages, mo
     await mockPipelineApi(page, dag, total);
 
     await page.goto(`/pipelines/${PIPELINE_ID}?tab=canvas`);
-    await expect(page.locator(".react-flow__node")).toHaveCount(total);
+    await expect(page.locator(".react-flow__node.react-flow__node-stage")).toHaveCount(total);
     await page.waitForTimeout(300);
 
     async function railGap(axis: "x" | "y"): Promise<number> {
@@ -311,14 +331,14 @@ test.describe("canvas dagre auto-layout — tall/narrow pipeline (~38 stages, mo
     const compactHorizontalGap = await railGap("x");
     let boxes = await getNodeBoxes(page);
     assertNoOverlap(boxes);
-    assertLegible(boxes);
+    assertLegible(await getStageNodeBoxes(page));
 
     await page.getByRole("button", { name: "Spacious", exact: true }).click();
     await page.waitForTimeout(300);
     const spaciousHorizontalGap = await railGap("x");
     boxes = await getNodeBoxes(page);
     assertNoOverlap(boxes);
-    assertLegible(boxes);
+    assertLegible(await getStageNodeBoxes(page));
     expect(spaciousHorizontalGap).toBeGreaterThan(compactHorizontalGap);
 
     // Switch to vertical while still on "Spacious".
@@ -327,14 +347,14 @@ test.describe("canvas dagre auto-layout — tall/narrow pipeline (~38 stages, mo
     const spaciousVerticalGap = await railGap("y");
     boxes = await getNodeBoxes(page);
     assertNoOverlap(boxes);
-    assertLegible(boxes);
+    assertLegible(await getStageNodeBoxes(page));
 
     await page.getByRole("button", { name: "Compact", exact: true }).click();
     await page.waitForTimeout(300);
     const compactVerticalGap = await railGap("y");
     boxes = await getNodeBoxes(page);
     assertNoOverlap(boxes);
-    assertLegible(boxes);
+    assertLegible(await getStageNodeBoxes(page));
     expect(spaciousVerticalGap).toBeGreaterThan(compactVerticalGap);
   });
 
@@ -343,14 +363,14 @@ test.describe("canvas dagre auto-layout — tall/narrow pipeline (~38 stages, mo
     await mockPipelineApi(page, dag, total);
 
     await page.goto(`/pipelines/${PIPELINE_ID}?tab=canvas`);
-    await expect(page.locator(".react-flow__node")).toHaveCount(total);
+    await expect(page.locator(".react-flow__node.react-flow__node-stage")).toHaveCount(total);
 
     await page.getByRole("button", { name: "↓", exact: true }).click();
     await page.getByRole("button", { name: "Spacious", exact: true }).click();
     await page.waitForTimeout(300);
 
     await page.reload();
-    await expect(page.locator(".react-flow__node")).toHaveCount(total);
+    await expect(page.locator(".react-flow__node.react-flow__node-stage")).toHaveCount(total);
     await page.waitForTimeout(300);
 
     await expect(page.getByRole("button", { name: "↓", exact: true })).toHaveAttribute("aria-pressed", "true");
@@ -361,7 +381,7 @@ test.describe("canvas dagre auto-layout — tall/narrow pipeline (~38 stages, mo
 
     const boxes = await getNodeBoxes(page);
     assertNoOverlap(boxes);
-    assertLegible(boxes);
+    assertLegible(await getStageNodeBoxes(page));
   });
 
   test("zoom controls zoom in past the legible floor and never below it on zoom-out", async ({ page }) => {
@@ -369,7 +389,7 @@ test.describe("canvas dagre auto-layout — tall/narrow pipeline (~38 stages, mo
     await mockPipelineApi(page, dag, total);
 
     await page.goto(`/pipelines/${PIPELINE_ID}?tab=canvas`);
-    await expect(page.locator(".react-flow__node")).toHaveCount(total);
+    await expect(page.locator(".react-flow__node.react-flow__node-stage")).toHaveCount(total);
     await page.waitForTimeout(300);
 
     const initialZoom = await getZoomScale(page);
@@ -384,8 +404,7 @@ test.describe("canvas dagre auto-layout — tall/narrow pipeline (~38 stages, mo
 
     // A user zoomed in on one node should be able to actually read it - the
     // whole point of the fix.
-    const zoomedInBoxes = await getNodeBoxes(page);
-    assertLegible(zoomedInBoxes);
+    assertLegible(await getStageNodeBoxes(page));
 
     // React Flow disables its own Zoom Out button once minZoom is reached
     // (confirmed here, not assumed) - so "never below the floor" is proven
@@ -400,6 +419,51 @@ test.describe("canvas dagre auto-layout — tall/narrow pipeline (~38 stages, mo
     const zoomedOutScale = await getZoomScale(page);
     expect(zoomedOutScale).toBeGreaterThanOrEqual(0.5 - 0.01);
   });
+
+  test("fits exactly on a short-but-not-tiny window - no scrollbar, and nothing clipped either", async ({
+    page,
+  }) => {
+    // Real repro: a 660px-tall window left ~462px available for the tab
+    // content wrapper once the pipeline header/tabs/theme-toggle bar are
+    // accounted for. PipelineCanvas used to carry a min-h-[480px] floor -
+    // a few pixels taller than that 462px - which first showed up as a
+    // scrollbar (confirmed live: scrollHeight 480 vs clientHeight 462 on
+    // the wrapper), and after making that wrapper overflow-hidden instead
+    // of overflow-y-auto, as a clipped sliver of the minimap/controls
+    // instead. The floor is gone now (h-full alone is enough - the whole
+    // ancestor chain gives this a real, definite height), so this
+    // asserts the stronger property: the canvas box exactly matches its
+    // container, nothing scrolled *or* clipped.
+    await page.setViewportSize({ width: 1330, height: 660 });
+    const { dag, total } = buildTallNarrowDag();
+    await mockPipelineApi(page, dag, total);
+
+    await page.goto(`/pipelines/${PIPELINE_ID}?tab=canvas`);
+    await expect(page.locator(".react-flow__node.react-flow__node-stage")).toHaveCount(total);
+    await page.waitForTimeout(300);
+
+    const metrics = await page.evaluate(() => {
+      const wrapper = document
+        .querySelector(".react-flow__renderer")
+        ?.closest("div.overflow-hidden, div.overflow-y-auto");
+      if (!wrapper) return null;
+      return { scrollHeight: wrapper.scrollHeight, clientHeight: wrapper.clientHeight };
+    });
+    expect(metrics).not.toBeNull();
+    expect(metrics!.scrollHeight).toBe(metrics!.clientHeight);
+
+    const isScrollable = await page.evaluate(() => {
+      const wrapper = document
+        .querySelector(".react-flow__renderer")
+        ?.closest("div.overflow-hidden, div.overflow-y-auto");
+      if (!wrapper) return null;
+      return (
+        wrapper.scrollHeight > wrapper.clientHeight &&
+        getComputedStyle(wrapper).overflowY !== "hidden"
+      );
+    });
+    expect(isScrollable).toBe(false);
+  });
 });
 
 test.describe("canvas dagre auto-layout — wide pipeline (35 stages, two 12-wide layers) regression", () => {
@@ -412,19 +476,19 @@ test.describe("canvas dagre auto-layout — wide pipeline (35 stages, two 12-wid
     await mockPipelineApi(page, dag, total);
 
     await page.goto(`/pipelines/${PIPELINE_ID}?tab=canvas`);
-    await expect(page.locator(".react-flow__node")).toHaveCount(35);
+    await expect(page.locator(".react-flow__node.react-flow__node-stage")).toHaveCount(35);
     await page.waitForTimeout(300);
 
     let boxes = await getNodeBoxes(page);
     assertNoOverlap(boxes);
-    assertLegible(boxes);
+    assertLegible(await getStageNodeBoxes(page));
 
     await page.getByRole("button", { name: "↓", exact: true }).click();
     await page.waitForTimeout(300);
 
     boxes = await getNodeBoxes(page);
     assertNoOverlap(boxes);
-    assertLegible(boxes);
+    assertLegible(await getStageNodeBoxes(page));
   });
 
   test("colors and animates a running migration's stages on the same 35-node layout", async ({ page }) => {
@@ -437,7 +501,7 @@ test.describe("canvas dagre auto-layout — wide pipeline (35 stages, two 12-wid
     await mockPipelineApi(page, dag, total, { runningMigration: true, stageStates });
 
     await page.goto(`/pipelines/${PIPELINE_ID}?tab=canvas`);
-    await expect(page.locator(".react-flow__node")).toHaveCount(35);
+    await expect(page.locator(".react-flow__node.react-flow__node-stage")).toHaveCount(35);
 
     await expect(page.getByText("Migration running — view in Migrations →")).toBeVisible();
 
@@ -452,6 +516,6 @@ test.describe("canvas dagre auto-layout — wide pipeline (35 stages, two 12-wid
 
     const boxes = await getNodeBoxes(page);
     assertNoOverlap(boxes);
-    assertLegible(boxes);
+    assertLegible(await getStageNodeBoxes(page));
   });
 });

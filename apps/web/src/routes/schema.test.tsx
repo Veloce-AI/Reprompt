@@ -32,7 +32,7 @@ function renderSchemaPage() {
     path: "/schema",
     component: SchemaReference,
   });
-  const homeRoute = createRoute({ getParentRoute: () => rootRoute, path: "/", component: () => null });
+  const homeRoute = createRoute({ getParentRoute: () => rootRoute, path: "/pipelines", component: () => null });
   const routeTree = rootRoute.addChildren([schemaRoute, homeRoute]);
   const router = createRouter({
     routeTree,

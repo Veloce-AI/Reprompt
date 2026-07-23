@@ -126,3 +126,32 @@ def test_get_model_card_requires_no_auth() -> None:
     response = client.get("/model-cards/claude-3-5-sonnet")
     assert response.status_code == 200
     # No Authorization header needed, no cookies
+
+
+def test_get_model_card_reasoning_model_flags_true_and_shows_thinking() -> None:
+    response = client.get("/model-cards/claude-sonnet-4-5")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["supports_reasoning"] is True
+    assert "thinking=" in data["code_sample"]
+
+
+def test_get_model_card_non_reasoning_model_flags_false_and_omits_thinking() -> None:
+    response = client.get("/model-cards/gpt-4o")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["supports_reasoning"] is False
+    assert '"type": "enabled"' not in data["code_sample"]
+    assert "# thinking= / reasoning_effort= omitted" in data["code_sample"]
+
+
+def test_get_model_card_code_sample_uses_the_actual_model_string() -> None:
+    response = client.get("/model-cards/gpt-4o-mini")
+    assert response.status_code == 200
+    data = response.json()
+    assert '"gpt-4o-mini"' in data["code_sample"]
+    # reprompt_core is this project's own internal package - the sample
+    # must be directly usable by an external caller (pip install litellm),
+    # not reference a package only Reprompt's own codebase has installed.
+    assert "import litellm" in data["code_sample"]
+    assert "reprompt_core" not in data["code_sample"]

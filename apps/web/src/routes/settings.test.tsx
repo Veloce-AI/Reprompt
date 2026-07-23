@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import { fireEvent } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
@@ -25,6 +25,7 @@ vi.mock("@/lib/api", async () => {
     deleteApiKey: vi.fn(),
     listConfiguredModels: vi.fn(),
     listSystemModels: vi.fn(),
+    testModel: vi.fn(),
   };
 });
 
@@ -36,6 +37,7 @@ import {
   listApiKeys,
   listConfiguredModels,
   listSystemModels,
+  testModel,
   updateWorkspaceSettings,
 } from "@/lib/api";
 
@@ -77,6 +79,7 @@ function baseConfiguredModel(overrides: Partial<ConfiguredModel> = {}): Configur
     supports_json_mode: true,
     supports_function_calling: true,
     requires_api_key: false,
+    unlocked: true,
     model_card: {
       family: "llama",
       version: 1,
@@ -90,6 +93,8 @@ function baseConfiguredModel(overrides: Partial<ConfiguredModel> = {}): Configur
           will_apply: false,
         },
       ],
+      supports_reasoning: false,
+      code_sample: 'complete(model="ollama/llama3.1", messages=[...])',
     },
     ...overrides,
   };
@@ -102,7 +107,7 @@ function renderSettings() {
     path: "/settings",
     component: Settings,
   });
-  const homeRoute = createRoute({ getParentRoute: () => rootRoute, path: "/", component: () => null });
+  const homeRoute = createRoute({ getParentRoute: () => rootRoute, path: "/pipelines", component: () => null });
   const loginRoute = createRoute({ getParentRoute: () => rootRoute, path: "/login", component: () => null });
   const routeTree = rootRoute.addChildren([settingsRoute, homeRoute, loginRoute]);
   const router = createRouter({
@@ -210,7 +215,7 @@ describe("Settings", () => {
 
     renderSettings();
 
-    await screen.findByText("No API keys configured yet.");
+    await screen.findByText(/No API keys configured yet/);
 
     fireEvent.change(screen.getByLabelText("Provider"), { target: { value: "anthropic" } });
     const keyInput = screen.getByLabelText("API key");
@@ -239,7 +244,7 @@ describe("Settings", () => {
 
     renderSettings();
 
-    await screen.findByText("No API keys configured yet.");
+    await screen.findByText(/No API keys configured yet/);
 
     fireEvent.change(screen.getByLabelText("Provider"), { target: { value: "other" } });
     const customProviderInput = await screen.findByLabelText("Provider name");
@@ -270,7 +275,7 @@ describe("Settings", () => {
     });
 
     await waitFor(() => {
-      expect(screen.getByText("No API keys configured yet.")).toBeInTheDocument();
+      expect(screen.getByText(/No API keys configured yet/)).toBeInTheDocument();
     });
   });
 
@@ -281,7 +286,7 @@ describe("Settings", () => {
 
     renderSettings();
 
-    await screen.findByText("No API keys configured yet.");
+    await screen.findByText(/No API keys configured yet/);
     expect(screen.getByRole("button", { name: "Add API key" })).toBeDisabled();
   });
 
@@ -303,6 +308,8 @@ describe("Settings", () => {
           description: "GPT-family models.",
           is_small_variant: false,
           rules: [],
+          supports_reasoning: true,
+          code_sample: 'complete(model="gpt-4o", messages=[...], reasoning_effort="medium")',
         },
       }),
     ]);
@@ -315,6 +322,175 @@ describe("Settings", () => {
     expect(screen.getByText("ollama")).toBeInTheDocument();
     expect(screen.getByText("openai", { selector: "h3" })).toBeInTheDocument();
     expect(screen.getByText(/Free \(local\)/)).toBeInTheDocument();
+  });
+
+  it("shows a thinking-mode badge and a copyable code sample for a reasoning-capable model", async () => {
+    Object.assign(navigator, { clipboard: { writeText: vi.fn().mockResolvedValue(undefined) } });
+
+    vi.mocked(getSessionToken).mockReturnValue("session-token");
+    vi.mocked(getWorkspaceSettings).mockResolvedValue(baseWorkspace());
+    vi.mocked(listApiKeys).mockResolvedValue([baseKey()]);
+    vi.mocked(listConfiguredModels).mockResolvedValue([
+      baseConfiguredModel({
+        model: "gpt-4o",
+        provider: "openai",
+        requires_api_key: true,
+        model_card: {
+          family: "openai",
+          version: 1,
+          description: "GPT-family models.",
+          is_small_variant: false,
+          rules: [],
+          supports_reasoning: true,
+          code_sample: 'complete(model="gpt-4o", messages=[...], reasoning_effort="medium")',
+        },
+      }),
+    ]);
+
+    renderSettings();
+
+    expect(await screen.findByText("Thinking mode")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByText("Code sample"));
+    expect(
+      screen.getByText('complete(model="gpt-4o", messages=[...], reasoning_effort="medium")')
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Copy code" }));
+    await waitFor(() => {
+      expect(navigator.clipboard.writeText).toHaveBeenCalledWith(
+        'complete(model="gpt-4o", messages=[...], reasoning_effort="medium")'
+      );
+    });
+    expect(await screen.findByRole("button", { name: "Copied" })).toBeInTheDocument();
+  });
+
+  it("tests an unlocked model and shows the real latency on success", async () => {
+    vi.mocked(getSessionToken).mockReturnValue("session-token");
+    vi.mocked(getWorkspaceSettings).mockResolvedValue(baseWorkspace());
+    vi.mocked(listApiKeys).mockResolvedValue([baseKey()]);
+    vi.mocked(listConfiguredModels).mockResolvedValue([baseConfiguredModel()]);
+    vi.mocked(testModel).mockResolvedValue({
+      model: "ollama/llama3.1",
+      provider: "ollama",
+      latency_ms: 342,
+      content_preview: "ok",
+    });
+
+    renderSettings();
+
+    await screen.findByText("ollama/llama3.1");
+    // Scoped to the curated model's own row - "Test any model" (a
+    // separate card) has an identically-labeled submit button.
+    const row = screen.getByText("ollama/llama3.1").closest("div.rounded-control");
+    fireEvent.click(within(row as HTMLElement).getByRole("button", { name: "Test" }));
+
+    expect(await screen.findByText("Works — 342ms")).toBeInTheDocument();
+    expect(testModel).toHaveBeenCalledWith("ollama/llama3.1");
+  });
+
+  it("shows 'Test failed' when a model test errors", async () => {
+    vi.mocked(getSessionToken).mockReturnValue("session-token");
+    vi.mocked(getWorkspaceSettings).mockResolvedValue(baseWorkspace());
+    vi.mocked(listApiKeys).mockResolvedValue([baseKey()]);
+    vi.mocked(listConfiguredModels).mockResolvedValue([baseConfiguredModel()]);
+    vi.mocked(testModel).mockRejectedValue(new Error("No API key configured"));
+
+    renderSettings();
+
+    await screen.findByText("ollama/llama3.1");
+    // Scoped to the curated model's own row - "Test any model" (a
+    // separate card) has an identically-labeled submit button.
+    const row = screen.getByText("ollama/llama3.1").closest("div.rounded-control");
+    fireEvent.click(within(row as HTMLElement).getByRole("button", { name: "Test" }));
+
+    expect(await screen.findByText("Test failed")).toBeInTheDocument();
+    // The failure reason is visible text now, not just a hover tooltip -
+    // a screenshot/report of a failed test used to be undiagnosable
+    // without knowing to hover over the badge.
+    expect(
+      await screen.findByText("Test failed — check your connection and try again.")
+    ).toBeInTheDocument();
+  });
+
+  it("lets a user test any model string, not just ones in the curated list", async () => {
+    vi.mocked(getSessionToken).mockReturnValue("session-token");
+    vi.mocked(getWorkspaceSettings).mockResolvedValue(baseWorkspace());
+    vi.mocked(listApiKeys).mockResolvedValue([baseKey()]);
+    vi.mocked(listConfiguredModels).mockResolvedValue([baseConfiguredModel()]);
+    vi.mocked(testModel).mockResolvedValue({
+      model: "nvidia_nim/z-ai/glm-5.2",
+      provider: "nvidia_nim",
+      latency_ms: 512,
+      content_preview: "ok",
+    });
+
+    renderSettings();
+
+    await screen.findByText("ollama/llama3.1");
+    const testInput = screen.getByLabelText("Model string to test");
+    fireEvent.change(testInput, { target: { value: "nvidia_nim/z-ai/glm-5.2" } });
+    fireEvent.click(
+      within(testInput.closest("form") as HTMLElement).getByRole("button", { name: "Test" })
+    );
+
+    expect(await screen.findByText("Works — 512ms")).toBeInTheDocument();
+    expect(testModel).toHaveBeenCalledWith("nvidia_nim/z-ai/glm-5.2");
+  });
+
+  it("shows a locked curated model (e.g. NVIDIA NIM) with an inline unlock, not hidden", async () => {
+    vi.mocked(getSessionToken).mockReturnValue("session-token");
+    vi.mocked(getWorkspaceSettings).mockResolvedValue(baseWorkspace());
+    vi.mocked(listApiKeys).mockResolvedValue([]);
+    vi.mocked(listConfiguredModels).mockResolvedValue([
+      baseConfiguredModel(),
+      baseConfiguredModel({
+        model: "nvidia_nim/meta/llama-3.1-405b-instruct",
+        provider: "nvidia_nim",
+        requires_api_key: true,
+        unlocked: false,
+        input_cost_per_1m: null,
+        output_cost_per_1m: null,
+        model_card: {
+          family: "llama",
+          version: 1,
+          description: "Open-weight/self-hosted bucket.",
+          is_small_variant: false,
+          rules: [],
+          supports_reasoning: false,
+          code_sample: 'complete(model="nvidia_nim/meta/llama-3.1-405b-instruct", messages=[...])',
+        },
+      }),
+    ]);
+    vi.mocked(addApiKey).mockResolvedValue({
+      id: 9,
+      provider: "nvidia_nim",
+      last_four: "9999",
+      created_at: "2026-01-15T12:00:00Z",
+    });
+
+    renderSettings();
+
+    // Locked model is visible (not filtered out) with a clear unlock path.
+    const modelName = await screen.findByText("nvidia_nim/meta/llama-3.1-405b-instruct");
+    const modelCard = modelName.closest("div")?.parentElement as HTMLElement;
+    expect(within(modelCard).getByText("API key required")).toBeInTheDocument();
+
+    // "Add API key" is also the ApiKeysCard form's own submit button above -
+    // scope to the locked model's own card to click the right one.
+    fireEvent.click(within(modelCard).getByRole("button", { name: "Add API key" }));
+
+    // The drawer portals outside the render root as a dialog - ApiKeysCard's
+    // own "API key" field is a separate, simultaneously-present element, so
+    // scope every subsequent query into the dialog specifically.
+    const dialog = await screen.findByRole("dialog");
+    const keyInput = within(dialog).getByLabelText("API key");
+    fireEvent.change(keyInput, { target: { value: "nvapi-test-key-000000000000" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Save key & unlock models" }));
+
+    await waitFor(() => {
+      expect(addApiKey).toHaveBeenCalledWith("nvidia_nim", "nvapi-test-key-000000000000");
+    });
   });
 
   it("shows only no-key-required models when no BYOK key is configured", async () => {

@@ -173,11 +173,16 @@ After any restart, hard-refresh the browser (`Ctrl+Shift+R`).
 ## 3. How to navigate — the full screen map
 
 ```
-/                                      Pipelines home
+/                                      Landing page (marketing/first-visit only —
+                                        signed-in visitors redirect straight to
+                                        /pipelines in beforeLoad, never see this)
+/pipelines                             Pipelines home (was "/" — moved 2026-07-23,
+                                        see DEV_TRACKER.md's "Landing page Phase 0")
 /pipelines/import                      Import wizard (3 steps)
-/pipelines/$pipelineId?tab=canvas      Pipeline workspace — Canvas tab (default, React Flow DAG)
+/pipelines/$pipelineId?tab=canvas      Pipeline workspace — Canvas tab (default; Live/Analytics mode toggle, §3.3d)
 /pipelines/$pipelineId?tab=data        Pipeline workspace — Data tab (StageRecord browser, Phase 3)
 /pipelines/$pipelineId?tab=rubrics     Pipeline workspace — Rubrics tab (screen 4)
+/pipelines/$pipelineId?tab=contracts   Pipeline workspace — Contracts tab (contract mining, Phase 5)
 /pipelines/$pipelineId?tab=migrations  Pipeline workspace — Migrations tab (screen 5)
 /login                                 Request a magic link
 /auth/verify?token=...                 Exchange a magic link for a session
@@ -328,6 +333,25 @@ exclusive to the Rubrics tab.
    fast follow-on once Phase 2's `GET /pipelines/{id}/runs` multi-run
    endpoint lands — see `DEV_TRACKER.md`'s Phase 3 entry) and no text
    search box (out of scope, would need real indexing).
+6. With real/long stage names (e.g. underscore-joined, no spaces) and long
+   rendered prompts/input JSON, confirm every cell truncates to a single
+   line with an ellipsis and stays fully inside its own column — the Stage
+   badge in particular must never visually spill into the Input column next
+   to it (see `DEV_TRACKER.md`'s "Fix: Data tab table cell text overlap"
+   entry, 2026-07-22, for the CSS Grid `min-width: auto` root cause).
+
+Automated coverage: `apps/web/src/components/data-table.test.tsx` (jsdom,
+stage filter population, empty state, row truncation + drawer shows full
+content on click, stage-filter re-fetch) and
+`apps/web/e2e/data-table-density.spec.ts` (real Playwright/Chromium render
+with dense mock data modeled on the product owner's screenshot — 30 rows,
+long underscore-joined stage names, long prompts/input JSON — asserting no
+cell's rendered content bleeds into its neighboring cell, consistent row
+height across all visible rows, the drawer still shows full untruncated
+content on row click, and no overlap at a narrow 900px viewport). The jsdom
+unit test alone cannot catch this class of bug — jsdom has no real layout
+engine, so CSS Grid track overflow (the actual root cause) never happens
+there; the Playwright spec is what actually reproduces and guards it.
 
 ### 3.1e Delete a pipeline (Pipelines home)
 
@@ -486,27 +510,42 @@ checks on that same wide shape).
    actually apply to that specific model (e.g. "xml_wrap_sections" for a
    Claude target, "terseify_if_small" only for a nano/mini/haiku-class
    model) — see `DEV_TRACKER.md`'s "Phase D(a)".
+1a. Directly under the "Pick a target model..." intro line on this same
+   step-1 screen: a one-line Prism mention — "Running this migration hands
+   each stage's prompt to **Prism** — a self-evolving prompt optimizer" —
+   with the same **"How Prism works"** link next to it (added so Prism is
+   visible before the user has even picked a model, not only after a
+   migration is already running — see `DEV_TRACKER.md`). Click the link →
+   the same drawer described in step 5b below opens; Escape or the close
+   (X) button dismisses it. `apps/web/src/components/new-migration-wizard.tsx`.
 2. Set a bulk default model, override one stage individually.
 3. Step 2: set a budget and parity threshold (default 95%).
 4. Step 3: confirm screen shows the full config correctly, including the
    per-stage override.
 5. Click "Run migration" → **expected**: a real `Migration` row is
-   created and the optimizer actually runs (M3/M4 wiring — Phase 4/4b —
-   landed after this section was first written; the "no fake progress bar"
-   caveat that used to live here is stale and superseded by the live view
-   below). Needs a real BYOK key configured — see `README.md`'s "Getting
-   an AI model API key" section.
-5a. Once started, a subtitle line appears above the run bar: "Optimizing
-   with **Prism** — a self-evolving prompt optimizer", with a **"How Prism
-   works"** text link next to it. Click the link → a drawer opens (same
-   drawer primitive used elsewhere) titled "How Prism works" with two
-   short factual paragraphs on the actual loop (judge-aware critique, up
-   to 3 refine rounds, budget-bounded, per-stage) and one paragraph on
-   what it doesn't do — explicitly states Prism doesn't carry learnings
-   between separate migrations, each migration evolves its own prompt
-   from scratch. Press Escape or click the drawer's close (X) button to
-   dismiss it — see `apps/web/src/components/prism-explainer.tsx` and the
-   dated "Branding/copy pass" section in `DEV_TRACKER.md`.
+   created (status `pending`) and the screen switches to the "Migration
+   saved" not-started view — **"Migration #N created"** with a "Start
+   migration" button (M3/M4 wiring — Phase 4/4b — landed after this
+   section was first written; the "no fake progress bar" caveat that used
+   to live here is stale and superseded by the live view below).
+5a. On this not-started view, below the "Migration saved..." line: the
+   same one-line Prism mention as step 1a — "Starting this runs **Prism**
+   — a self-evolving prompt optimizer" — with its own **"How Prism
+   works"** link, so a user sees what they're about to run before clicking
+   "Start migration". `apps/web/src/components/migration-success-screen.tsx`.
+5b. Click "Start migration". Needs a real BYOK key configured — see
+   `README.md`'s "Getting an AI model API key" section. Once started, a
+   subtitle line appears above the run bar: "Optimizing with **Prism** — a
+   self-evolving prompt optimizer", with a **"How Prism works"** text link
+   next to it. Click the link → a drawer opens (same drawer primitive used
+   elsewhere) titled "How Prism works" with two short factual paragraphs
+   on the actual loop (judge-aware critique, up to 3 refine rounds,
+   budget-bounded, per-stage) and one paragraph on what it doesn't do —
+   explicitly states Prism doesn't carry learnings between separate
+   migrations, each migration evolves its own prompt from scratch. Press
+   Escape or click the drawer's close (X) button to dismiss it — see
+   `apps/web/src/components/prism-explainer.tsx` and the dated
+   "Branding/copy pass" section in `DEV_TRACKER.md`.
 6. While it's running: the pipeline DAG canvas appears live, with the
    currently-optimizing stage's node pulsing indigo (Phase 2 — "Live
    DAG/run status view") and, directly under its name, a small sub-step
@@ -618,7 +657,7 @@ the full design (`apps/web/src/routes/pipeline-workspace.tsx`'s
 `CanvasTabContent`, sharing `apps/web/src/hooks/use-migration-status-poll.ts`
 with `MigrationSuccessScreen`'s own run view).
 
-1. Start a migration from the Migrations tab (§3.3, steps 1–5) so it's
+1. Start a migration from the Migrations tab (§3.3, steps 1–5b) so it's
    actually `running`, then click the **Canvas** tab (`?tab=canvas`) while
    it's still going.
 2. **Expected**: within a couple of seconds, a small pill appears just
@@ -642,40 +681,43 @@ with `MigrationSuccessScreen`'s own run view).
    stops entirely while it isn't the active tab — both polls are scoped to
    the Canvas tab actually being mounted, not global background polling.
 
-### 3.3d Graph tab — model/call drill-down visualization
+### 3.3d Canvas tab — Live / Analytics mode (formerly a separate Graph tab)
 
-**What it is**: A new "Graph" tab in the pipeline workspace, complementary to
-the live-run-focused Canvas tab — this one is a static analytics/drill-down
-view. All UI is rendered as React Flow nodes directly inside the graph
-canvas itself (no floating panels, no slide-in drawers — everything you see
-below is an inline node type: `StageGraphNode`, `ModelGraphNode`,
-`CallGraphNode` in `pipeline-graph.tsx`).
+**What changed**: the standalone "Graph" tab has been removed
+(`pipeline-graph.tsx` deleted, `"graph"` dropped from `WORKSPACE_TABS`) and
+its capabilities folded into the Canvas tab as a second mode — see
+`docs/architecture/adr-001-merge-canvas-and-graph-tabs.md` for the full
+decision record. Both modes share one dagre layout engine, one zoom floor,
+one toolbar (Spacing/Orientation/Minimap), one `["pipeline-dag", id]` query
+cache — there is no longer a second, independently-drifting DAG renderer.
 
 **Walkthrough**:
-1. Open any pipeline with at least one stage → click the **Graph** tab.
-2. All stages render as nodes connected by dependency edges. Node shows:
-   - Stage name (truncated, full name on hover)
-   - Model badge
-   - Trace count + avg token/latency stats (shows "No traces yet" if none)
-   - Total accumulated cost (only when StageRecord.cost data exists)
-   - "View inference calls →" affordance
-3. **Model nodes**: a fixed column of nodes to the right of the stages, one
-   per unique model used in the pipeline, connected by dashed edges from
-   every stage that uses it. Click a model node → its edges and every
-   connected stage node highlight (beam-accent border/glow). Click again to
-   clear the highlight.
-4. **Call nodes**: click a stage node's "View inference calls" affordance →
-   up to 20 compact `CallGraphNode`s appear inline in the graph, positioned
-   below their parent stage (not a drawer/panel) — each shows tokens in/out,
-   latency, and cost for that individual call. Full input/output text isn't
-   shown here; use the Data tab's record browser for that.
-5. **Orientation toggle (top-left)**: `→` = horizontal (left-to-right ranks),
-   `↓` = vertical (top-to-bottom). Choice persists in `localStorage` per
-   pipeline (separate key from Canvas tab's layout preference).
-6. If a pipeline has no stages, the graph renders empty (no error).
-7. Layout uses `spacious` dagre spacing — same underlying `computeCanvasLayout`
-   function as the Canvas tab, reusing the shared `["pipeline-dag", id]` query
-   cache, so switching Canvas→Graph doesn't trigger a second network request.
+1. Open any pipeline with at least one stage → the Canvas tab. A **Live /
+   Analytics** segmented toggle sits in the top-right toolbar alongside
+   Spacing/Orientation.
+2. **Auto-select**: the toggle defaults to **Live** whenever a migration is
+   running for this pipeline, **Analytics** otherwise. Manually overriding
+   it holds for the rest of the session (not persisted to `localStorage`,
+   unlike Spacing/Orientation — a stale saved preference must never
+   suppress auto-switching to Live when a run starts).
+3. **Live mode** (unchanged from before the merge): per-stage
+   running/done/failed coloring, sub-step label, beam-pulse animation on
+   the active stage, click a node → rubric drawer.
+4. **Analytics mode** (folded in from the old Graph tab): stage nodes gain
+   richer stats (trace count, avg token/latency, total accumulated cost).
+   A fixed column of **model nodes** to the right, one per unique model
+   used in the pipeline, connected by dashed edges from every stage that
+   uses it — click a model node to highlight it and its connected stages
+   (click again to clear). Click a stage's "View inference calls →" →
+   up to 20 compact call nodes appear inline below it (not a drawer/panel),
+   each showing tokens in/out, latency, cost for that individual call. Full
+   input/output text isn't shown here — use the Data tab for that.
+5. **On mode switch**, any expanded call-drill-down collapses — it does not
+   persist across a Live↔Analytics toggle.
+6. Orientation (`→`/`↓`) and Spacing (Compact/Spacious) toggles apply to
+   both modes identically, one shared `localStorage` key per pipeline (the
+   old Graph tab's separate orientation key no longer exists).
+7. If a pipeline has no stages, both modes render empty (no error).
 
 **Potential regressions to watch for**:
 - Adding the "graph" tab to `WORKSPACE_TABS` extends the tab bar — verify the
@@ -683,6 +725,35 @@ below is an inline node type: `StageGraphNode`, `ModelGraphNode`,
 - `StageInfo` now has `trace_count` and `total_cost_usd` — if the backend is
   not running the latest code, the graph still renders (fields default to 0 /
   null via Pydantic defaults), but stats will be blank.
+
+### 3.3e Contract Mining (Contracts tab, Phase 5)
+
+No walkthrough existed for this tab before now (Phase 5 — see
+`DEV_TRACKER.md` — shipped without one); this closes that gap and covers
+the "(i)" explainer icon added next to the heading.
+
+1. From the workspace, click the "Contracts" tab (`?tab=contracts`) → a
+   **"Contract Mining"** heading, with a small **"(i)" info icon** right
+   next to it. Hover (or click, or Tab-focus) the icon → a small popover
+   appears below it with a plain-language explanation: "Looks at real
+   outputs from this stage and finds what never changes across them
+   (e.g. 'the flag is always low/medium/high, always cites a number').
+   Those become an executable contract a migrated prompt must satisfy —
+   instead of just matching your original wording." Mouse-leave (or
+   click again) closes it. `apps/web/src/components/ui/info-tooltip.tsx`,
+   used from `apps/web/src/components/contract-review-panel.tsx`.
+2. The heading + info icon render in every state of this tab — while
+   stages are still loading, on a pipeline with zero stages ("No stages
+   found — import a pipeline first."), and once stages are listed — not
+   just the happy path.
+3. Per stage: click **"Mine contract"** → runs the two-axis miner against
+   existing traces (no LLM calls for Axis A) and a table of extracted
+   invariants (`required_keys`/`enum_values`/`regex`) appears, each with a
+   kind, plain-language description, confidence, and status badge.
+4. **Approve** an invariant → status badge flips to "approved" (promotes
+   it to an executable assertion used in Phase 8 validation). **Retire**
+   → status flips to "retired". Both re-fetch the table via the existing
+   assertions query, no page reload needed.
 
 ### 3.4 Auth + Settings (M5)
 

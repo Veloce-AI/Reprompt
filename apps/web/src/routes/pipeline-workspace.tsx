@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
-import { useNavigate, useParams, useSearch } from "@tanstack/react-router";
+import { Link, useNavigate, useParams, useSearch } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { ArrowLeft } from "lucide-react";
 import {
   approveRubric,
   importIntoExistingPipeline,
@@ -24,7 +25,6 @@ import {
 import { AppShell } from "@/components/app-shell";
 import { Dropzone } from "@/components/dropzone";
 import { PipelineCanvas } from "@/components/pipeline-canvas";
-import { PipelineGraph } from "@/components/pipeline-graph";
 import { DataTable } from "@/components/data-table";
 import { RubricReviewPanel } from "@/components/rubric-review-panel";
 import { ContractReviewPanel } from "@/components/contract-review-panel";
@@ -43,9 +43,9 @@ import {
 } from "@/components/ui/drawer";
 import { cn } from "@/lib/utils";
 
-export type WorkspaceTab = "canvas" | "data" | "rubrics" | "contracts" | "migrations" | "graph";
+export type WorkspaceTab = "canvas" | "data" | "rubrics" | "contracts" | "migrations";
 
-export const WORKSPACE_TABS: readonly WorkspaceTab[] = ["canvas", "data", "rubrics", "contracts", "migrations", "graph"];
+export const WORKSPACE_TABS: readonly WorkspaceTab[] = ["canvas", "data", "rubrics", "contracts", "migrations"];
 
 const TAB_LABELS: Record<WorkspaceTab, string> = {
   canvas: "Canvas",
@@ -53,7 +53,6 @@ const TAB_LABELS: Record<WorkspaceTab, string> = {
   rubrics: "Rubrics",
   contracts: "Contracts",
   migrations: "Migrations",
-  graph: "Graph",
 };
 
 /**
@@ -122,17 +121,31 @@ export default function PipelineWorkspace() {
 
   return (
     <AppShell>
-      {/* h-[calc(100vh-1px)], not min-h - AppShell's <main> wrapper
-          ("mx-auto max-w-[1440px]") has no explicit height of its own, so
-          only an explicit (not min-) height here is a "definite size" per
-          the flexbox spec for percentage/flex-basis resolution to propagate
-          down through the Canvas tab's nested flex-item chain to
+      {/* h-full, not min-h - AppShell's <main> wrapper ("mx-auto
+          max-w-[1440px]") now gives this a definite height (100% of the
+          viewport space below the theme toggle bar - see app-shell.tsx),
+          so only an explicit (not min-) height here is a "definite size"
+          per the flexbox spec for percentage/flex-basis resolution to
+          propagate down through the Canvas tab's nested flex-item chain to
           react-flow's own height:100% root - min-height alone produced a
           real pixel value at each layer but never a spec-definite one, so
           react-flow's DAG silently rendered in a 0-height viewport (see the
-          Canvas tab wrapper below for the fuller trace). */}
-      <div className="flex h-[calc(100vh-1px)] flex-col">
+          Canvas tab wrapper below for the fuller trace). This used to be a
+          hardcoded h-[calc(100vh-1px)], which assumed this div got the
+          *entire* viewport height - true before the theme toggle bar
+          existed as its own reserved row above it, and off by exactly that
+          row's height afterwards, which is what re-introduced a page-level
+          scrollbar on Canvas (React Flow's own pan/zoom, not page scroll,
+          is supposed to be the only way to navigate a large DAG). */}
+      <div className="flex h-full flex-col">
         <div className="border-b border-line px-8 py-4">
+          <Link
+            to="/pipelines"
+            className="mb-2 inline-flex items-center gap-1 text-12 font-medium text-ink-soft hover:text-ink"
+          >
+            <ArrowLeft className="h-3 w-3" aria-hidden="true" />
+            Pipelines
+          </Link>
           <div className="flex items-start justify-between gap-4">
           {isEditingName ? (
             <div className="flex items-center gap-2">
@@ -202,16 +215,29 @@ export default function PipelineWorkspace() {
 
         {/* flex + flex-col (not just the flex-1 item class) so the Canvas
             tab's PipelineCanvas - whose default wrapper div is itself
-            "h-full min-h-[480px] flex-1" - gets a real flex-item main size
-            to grow into. Without display:flex here, that inner flex-1 is
-            inert (this div isn't a flex *container*), height:100% has no
-            definite ancestor height to resolve against (min-height doesn't
-            count per spec), and react-flow's own 100%-height root collapses
-            to 0 - the DAG's nodes render in the DOM (data/labels are all
-            present) but paint in a zero-height viewport, i.e. invisible.
-            Single child per tab (mutually exclusive conditionals below) so
-            this doesn't change layout for Data/Rubrics/Migrations. */}
-        <div className="flex flex-1 flex-col overflow-y-auto">
+            "h-full flex-1" - gets a real flex-item main size to grow into.
+            Without display:flex here, that inner flex-1 is inert (this div
+            isn't a flex *container*), height:100% has no definite ancestor
+            height to resolve against, and react-flow's own 100%-height
+            root collapses to 0 - the DAG's nodes render in the DOM
+            (data/labels are all present) but paint in a zero-height
+            viewport, i.e. invisible. Single child per tab (mutually
+            exclusive conditionals below) so this doesn't change layout for
+            Data/Rubrics/Migrations.
+
+            overflow-y-auto only for non-Canvas tabs: on Canvas, this level
+            must never produce a scrollbar - React Flow's own pan/zoom is
+            the only way its content is meant to be reachable, same
+            reasoning as app-shell.tsx's overflow-x-hidden - so it's
+            overflow-hidden instead. (PipelineCanvas used to carry a
+            min-h-[480px] floor that could exceed the *actual* available
+            space on a short-but-not-tiny window - confirmed once: 480px
+            vs 462px available - which is what first triggered this
+            scrollbar; the floor itself is gone now, so overflow-hidden
+            here is belt-and-braces, not covering for a live gap.) Every
+            other tab's content can genuinely be taller than the viewport
+            and still wants to scroll here as before. */}
+        <div className={cn("flex flex-1 flex-col", tab === "canvas" ? "overflow-hidden" : "overflow-y-auto")}>
           {tab === "canvas" && (
             <CanvasTabContent
               pipelineId={pid}
@@ -227,7 +253,6 @@ export default function PipelineWorkspace() {
           )}
           {tab === "contracts" && (
             <div className="p-8">
-              <h2 className="mb-2 font-display text-22 font-semibold text-ink">Contract Mining</h2>
               <ContractReviewPanel pipelineId={pid} />
             </div>
           )}
@@ -236,7 +261,6 @@ export default function PipelineWorkspace() {
               <MigrationsTab pipelineId={pid} onBackToCanvas={() => goToTab("canvas")} />
             </div>
           )}
-          {tab === "graph" && <PipelineGraph pipelineId={pid} />}
         </div>
       </div>
 
@@ -291,11 +315,15 @@ const MIGRATION_LIST_POLL_INTERVAL_MS = 5000;
  *   live-coloring poll — same queryKey/refetchInterval convention, so the
  *   two "poll a migration's stage_states" call sites can't drift apart.
  *
- * When nothing is running, this renders exactly what the Canvas tab always
- * rendered before this change — no `stageStates`/`runningSubstep` props, no
- * badge, and (since `useMigrationStatusPoll` is disabled whenever
- * `runningMigration` is `null`) no status poll at all. Static, no polling
- * overhead beyond the lightweight 5s list check.
+ * When nothing is running, this renders no `stageStates`/`runningSubstep`
+ * props and no badge (and, since `useMigrationStatusPoll` is disabled
+ * whenever `runningMigration` is `null`, no status poll at all — no polling
+ * overhead beyond the lightweight 5s list check). `migrationRunning` below
+ * is also handed straight to `<PipelineCanvas>`, which uses it to
+ * auto-select its own Live/Analytics mode (Live while running, Analytics
+ * otherwise — see DEV_TRACKER.md's Canvas/Graph merge entry, which folded
+ * the former separate Graph tab's model/call drilldown view into this same
+ * canvas as that Analytics mode).
  */
 function CanvasTabContent({
   pipelineId,
@@ -318,6 +346,23 @@ function CanvasTabContent({
     enabled: runningMigration !== null,
     initialData: runningMigration ?? undefined,
   });
+
+  // Defaults to `true` (not `false`) while this query's own first fetch
+  // hasn't resolved yet - deliberately, and not a hypothetical: forcing
+  // `false` here before the list ever resolved meant a pipeline whose
+  // migration actually *is* running still spent its first render(s) in
+  // Analytics mode before flipping to Live once the list settled, and that
+  // forced mode flip immediately after mount intermittently broke React
+  // Flow's edge rendering on PipelineCanvas's fully-controlled canvas
+  // (edges' data stayed correct in React state, but 0 rendered in the DOM -
+  // not a timing fluke fixable with a longer wait, the render simply never
+  // recovered), found via a repeatedly-flaky e2e run. `true` is the safe
+  // default to guess during this brief, real-API-backed window: it's
+  // *usually* wrong to guess a migration isn't running before you've even
+  // checked, and being briefly, incorrectly "Live" for a pipeline with no
+  // migration is a much smaller visual hiccup (no coloring/pulsing to show
+  // regardless) than the alternative's actual failure mode.
+  const migrationRunning = migrationsQuery.isLoading ? true : runningMigration !== null;
 
   // Guard against a stale poll result outliving its migration (e.g. the
   // list's next 5s tick already dropped this id from "running") — only
@@ -343,6 +388,7 @@ function CanvasTabContent({
         pipelineId={pipelineId}
         stageStates={liveStatus?.stage_states}
         runningSubstep={liveStatus?.progress_substep}
+        migrationRunning={migrationRunning}
         onNodeClick={onNodeClick}
       />
     </>

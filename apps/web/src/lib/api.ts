@@ -246,6 +246,27 @@ export function listModelOptions(pipelineId: number): Promise<ModelOption[]> {
   return request<ModelOption[]>(`/pipelines/${pipelineId}/models`);
 }
 
+/** Looks up any LiteLLM model string, not just the curated list - e.g. an
+ * NVIDIA NIM or OpenRouter model not in the curated subset. Never fails on
+ * an unrecognized string; it comes back with conservative/empty fields
+ * instead (see the endpoint's own docstring). */
+export function lookupModelOption(pipelineId: number, model: string): Promise<ModelOption> {
+  return request<ModelOption>(
+    `/pipelines/${pipelineId}/models/lookup?model=${encodeURIComponent(model)}`
+  );
+}
+
+/** Every OpenRouter model string LiteLLM's bundled registry knows about
+ * (~96), for the wizard's searchable OpenRouter dropdown - a much wider
+ * set than the handful of OpenRouter families in `listModelOptions`'s
+ * curated list. Fetched once and filtered client-side (see
+ * new-migration-wizard.tsx's OpenRouterModelPicker) rather than per
+ * keystroke - the full catalog is small enough (~96 entries) that a
+ * search-as-you-type round trip would only add latency. */
+export function listOpenRouterCatalog(pipelineId: number): Promise<ModelOption[]> {
+  return request<ModelOption[]>(`/pipelines/${pipelineId}/models/catalog/openrouter`);
+}
+
 export function createMigration(
   pipelineId: number,
   migration: MigrationCreate
@@ -350,6 +371,8 @@ export interface ModelCardInfo {
   description: string;
   is_small_variant: boolean;
   rules: TransformRuleInfo[];
+  supports_reasoning: boolean;
+  code_sample: string;
 }
 
 export function getModelCard(model: string): Promise<ModelCardInfo> {
@@ -584,10 +607,31 @@ export interface ConfiguredModel {
   supports_function_calling: boolean;
   requires_api_key: boolean;
   model_card: ModelCardInfo;
+  unlocked: boolean;
 }
 
 export function listConfiguredModels(): Promise<ConfiguredModel[]> {
   return request<ConfiguredModel[]>("/settings/models", { headers: authHeaders() });
+}
+
+export interface ModelTestResult {
+  model: string;
+  provider: string | null;
+  latency_ms: number;
+  content_preview: string;
+}
+
+/** Makes one real, minimal call to `model` using this workspace's saved
+ * BYOK key - "does this key actually work for this model", not just "is
+ * a row saved for it". Throws ApiError (422) if no key is configured for
+ * the model's provider, same shape every other settings call already
+ * uses for that case. */
+export function testModel(model: string): Promise<ModelTestResult> {
+  return request<ModelTestResult>("/settings/models/test", {
+    method: "POST",
+    headers: { ...authHeaders(), "Content-Type": "application/json" },
+    body: JSON.stringify({ model }),
+  });
 }
 
 // SystemModel mirrors apps/api's settings.SystemModelOut - which model

@@ -189,6 +189,69 @@ def test_scoped_credential_reaches_litellm_as_a_direct_kwarg_not_an_env_var(
     assert result.content == "hi"
 
 
+def test_no_key_required_model_never_raises_provider_key_not_configured(
+    db: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression test: complete_with_workspace_credentials used to demand
+    a saved WorkspaceApiKey row for every model unconditionally - including
+    Ollama/vLLM, which every other surface in this codebase (the registry,
+    the curated model list, Settings, the migration wizard) already
+    treats as needing no key at all. A workspace with zero saved keys
+    must still be able to call a local model.
+    """
+    workspace = _make_workspace(db)
+    # Deliberately no _save_key call - this workspace has no keys at all.
+
+    captured: dict = {}
+
+    def fake_completion(**kwargs):
+        captured.update(kwargs)
+        return _fake_response(model="ollama/llama3.1")
+
+    monkeypatch.setattr("reprompt_core.llm.client.litellm.completion", fake_completion)
+
+    result = complete_with_workspace_credentials(
+        db, workspace, "ollama/llama3.1", [{"role": "user", "content": "hi"}]
+    )
+
+    assert result.content == "hi"
+    # No credential was scoped in either - there was nothing to scope.
+    assert "api_key" not in captured
+
+
+def test_no_key_required_model_picks_up_an_optional_base_url_override(
+    db: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A workspace can still save a row for a no-key provider purely to
+    point at a custom endpoint (e.g. a remote Ollama instance) - that
+    override is used when present, but its absence is never an error."""
+    workspace = _make_workspace(db)
+    db.add(
+        models.WorkspaceApiKey(
+            workspace_id=workspace.id,
+            provider="ollama",
+            encrypted_key=crypto.encrypt("unused"),
+            last_four="used",
+            base_url="http://remote-ollama.internal:11434",
+        )
+    )
+    db.commit()
+
+    captured: dict = {}
+
+    def fake_completion(**kwargs):
+        captured.update(kwargs)
+        return _fake_response(model="ollama/llama3.1")
+
+    monkeypatch.setattr("reprompt_core.llm.client.litellm.completion", fake_completion)
+
+    complete_with_workspace_credentials(
+        db, workspace, "ollama/llama3.1", [{"role": "user", "content": "hi"}]
+    )
+
+    assert captured["api_base"] == "http://remote-ollama.internal:11434"
+
+
 def test_scoped_credential_never_leaks_into_the_environment(
     db: Session, monkeypatch: pytest.MonkeyPatch
 ) -> None:

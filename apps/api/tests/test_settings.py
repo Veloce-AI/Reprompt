@@ -18,9 +18,11 @@ from __future__ import annotations
 from collections.abc import Iterator
 from urllib.parse import parse_qs, urlparse
 
+import litellm.exceptions as litellm_exceptions
 import pytest
 from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
+from litellm.types.utils import Choices, Message as LiteLLMMessage, ModelResponse, Usage
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -29,6 +31,23 @@ from reprompt_api import crypto, models
 from reprompt_api.db import get_db
 from reprompt_api.main import app
 from reprompt_api.models import Base
+
+
+def _fake_response(*, model: str = "gpt-4o-2024-08-06", content: str = "ok") -> ModelResponse:
+    return ModelResponse(
+        id="chatcmpl-test",
+        created=0,
+        model=model,
+        object="chat.completion",
+        choices=[
+            Choices(
+                finish_reason="stop",
+                index=0,
+                message=LiteLLMMessage(content=content, role="assistant"),
+            )
+        ],
+        usage=Usage(prompt_tokens=5, completion_tokens=1, total_tokens=6),
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -396,17 +415,27 @@ def test_add_api_key_fails_loudly_when_encryption_key_not_configured(
 # ---------------------------------------------------------------------------
 
 
-def test_list_configured_models_shows_only_no_key_models_before_any_byok_key(
+def test_list_configured_models_shows_every_curated_model_locked_or_not(
     client: TestClient,
 ) -> None:
+    # Changed 2026-07-23 (see DEV_TRACKER.md): this endpoint used to filter
+    # out locked models entirely - now it returns the full curated catalog
+    # with an `unlocked` flag per entry, so a user can see what a new BYOK
+    # key would unlock instead of the model looking like it doesn't exist.
     token, _ = _sign_in(client, "nomodels@example.com")
     response = client.get("/settings/models", headers=_auth_headers(token))
     assert response.status_code == 200, response.text
     body = response.json()
+    models_out = {entry["model"]: entry for entry in body}
     assert len(body) > 0
-    # Every entry returned before any key is added must be a no-key-required
-    # (e.g. local/self-hosted Ollama) model.
-    assert all(entry["requires_api_key"] is False for entry in body)
+    # Every no-key-required (local/self-hosted) model is unlocked...
+    assert all(entry["unlocked"] for entry in body if not entry["requires_api_key"])
+    # ...and every key-requiring model is locked, since no key exists yet.
+    assert all(not entry["unlocked"] for entry in body if entry["requires_api_key"])
+    # Locked models are still present, not filtered out.
+    assert "gpt-4o" in models_out
+    assert models_out["gpt-4o"]["requires_api_key"] is True
+    assert models_out["gpt-4o"]["unlocked"] is False
 
 
 def test_list_configured_models_includes_provider_after_byok_key_added(
@@ -424,6 +453,7 @@ def test_list_configured_models_includes_provider_after_byok_key_added(
     assert "gpt-4o" in models_out
     assert "gpt-4o-mini" in models_out
     assert models_out["gpt-4o"]["requires_api_key"] is True
+    assert models_out["gpt-4o"]["unlocked"] is True
 
 
 def test_list_configured_models_includes_model_card_info(client: TestClient) -> None:
@@ -437,7 +467,7 @@ def test_list_configured_models_includes_model_card_info(client: TestClient) -> 
     assert len(ollama_entry["model_card"]["rules"]) > 0
 
 
-def test_list_configured_models_only_shows_this_workspaces_keys(client: TestClient) -> None:
+def test_list_configured_models_only_unlocks_this_workspaces_keys(client: TestClient) -> None:
     alice_token, _ = _sign_in(client, "alice2@example.com")
     bob_token, _ = _sign_in(client, "bob2@example.com")
 
@@ -447,17 +477,20 @@ def test_list_configured_models_only_shows_this_workspaces_keys(client: TestClie
         headers=_auth_headers(alice_token),
     )
 
+    # gpt-4o is present for both (curated models are always visible - see
+    # test_list_configured_models_shows_every_curated_model_locked_or_not),
+    # but only Alice's workspace has it unlocked.
     bob_models = {
-        entry["model"]
+        entry["model"]: entry
         for entry in client.get("/settings/models", headers=_auth_headers(bob_token)).json()
     }
-    assert "gpt-4o" not in bob_models
+    assert bob_models["gpt-4o"]["unlocked"] is False
 
     alice_models = {
-        entry["model"]
+        entry["model"]: entry
         for entry in client.get("/settings/models", headers=_auth_headers(alice_token)).json()
     }
-    assert "gpt-4o" in alice_models
+    assert alice_models["gpt-4o"]["unlocked"] is True
 
 
 # ---------------------------------------------------------------------------
@@ -477,6 +510,23 @@ def test_list_system_models_covers_all_three_purposes(client: TestClient) -> Non
     # empty even before any BYOK key is configured.
     assert all(entry["selected_model"] for entry in body)
     assert all(entry["reason"] for entry in body)
+
+
+def test_list_system_models_reflects_an_operator_env_var_override(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("REPROMPT_JUDGE_MODEL", "nvidia_nim/deepseek-ai/deepseek-v4-flash")
+    token, _ = _sign_in(client, "systemmodels-override@example.com")
+
+    response = client.get("/settings/system-models", headers=_auth_headers(token))
+    assert response.status_code == 200, response.text
+    judge = next(entry for entry in response.json() if entry["purpose"] == "judge")
+    assert judge["selected_model"] == "nvidia_nim/deepseek-ai/deepseek-v4-flash"
+    assert judge["reason"] == "pinned via REPROMPT_JUDGE_MODEL"
+
+    # Unaffected purposes still auto-select as normal.
+    mutator = next(entry for entry in response.json() if entry["purpose"] == "mutator")
+    assert mutator["reason"] == "best available"
 
 
 def test_list_system_models_selects_a_stronger_model_once_a_byok_key_is_added(
@@ -535,3 +585,125 @@ def test_list_system_models_only_reflects_this_workspaces_keys(client: TestClien
         if entry["purpose"] == "judge"
     )
     assert alice_judge["selected_model"] == "claude-sonnet-4-5"
+
+
+# ---------------------------------------------------------------------------
+# POST /settings/models/test
+# ---------------------------------------------------------------------------
+
+
+def test_test_model_makes_a_real_scoped_call_and_returns_a_preview(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    token, _ = _sign_in(client, "testmodel@example.com")
+    client.post(
+        "/settings/api-keys",
+        json={"provider": "openai", "api_key": "sk-testmodelkey12345"},
+        headers=_auth_headers(token),
+    )
+
+    captured: dict = {}
+
+    def fake_completion(**kwargs):
+        captured.update(kwargs)
+        return _fake_response(content="ok")
+
+    monkeypatch.setattr("reprompt_core.llm.client.litellm.completion", fake_completion)
+
+    response = client.post(
+        "/settings/models/test", json={"model": "gpt-4o"}, headers=_auth_headers(token)
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["model"] == "gpt-4o-2024-08-06"
+    assert body["provider"] == "openai"
+    assert body["content_preview"] == "ok"
+    assert body["latency_ms"] >= 0
+
+    # The workspace's real (decrypted) key reached LiteLLM as a direct
+    # kwarg, same mechanism test_llm_context.py verifies at the unit level.
+    assert captured["api_key"] == "sk-testmodelkey12345"
+    assert captured["max_tokens"] == 5
+    assert captured["timeout"] == 60.0
+
+
+def test_test_model_times_out_instead_of_hanging_indefinitely(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A provider that never responds (a huge/gated model that silently
+    hangs rather than rejecting the request outright) must not leave this
+    "quick connectivity check" spinning forever - a 20s `timeout` is
+    passed to LiteLLM (asserted above), and litellm.exceptions.Timeout is
+    already mapped to TransientLLMError -> a clear 502, not a hang."""
+    token, _ = _sign_in(client, "testmodel-timeout@example.com")
+    client.post(
+        "/settings/api-keys",
+        json={"provider": "openai", "api_key": "sk-timeoutkey123456"},
+        headers=_auth_headers(token),
+    )
+
+    def fake_completion(**kwargs):
+        raise litellm_exceptions.Timeout(message="timed out", model="gpt-4o", llm_provider="openai")
+
+    monkeypatch.setattr("reprompt_core.llm.client.litellm.completion", fake_completion)
+
+    response = client.post(
+        "/settings/models/test", json={"model": "gpt-4o"}, headers=_auth_headers(token)
+    )
+    assert response.status_code == 502, response.text
+    assert "gpt-4o" in response.json()["detail"]
+
+
+def test_test_model_without_a_configured_key_returns_a_clear_422(client: TestClient) -> None:
+    token, _ = _sign_in(client, "testmodel-nokey@example.com")
+
+    response = client.post(
+        "/settings/models/test", json={"model": "gpt-4o"}, headers=_auth_headers(token)
+    )
+    assert response.status_code == 422
+    assert "openai" in response.json()["detail"]
+    assert "/settings" not in response.json()["detail"] or "above" in response.json()["detail"]
+
+
+def test_test_model_no_key_required_local_model_never_asks_for_one(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    token, _ = _sign_in(client, "testmodel-local@example.com")
+
+    monkeypatch.setattr(
+        "reprompt_core.llm.client.litellm.completion",
+        lambda **kwargs: _fake_response(model="ollama/llama3.1", content="ok"),
+    )
+
+    response = client.post(
+        "/settings/models/test",
+        json={"model": "ollama/llama3.1"},
+        headers=_auth_headers(token),
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["content_preview"] == "ok"
+
+
+def test_test_model_truncates_a_long_response_to_a_short_preview(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    token, _ = _sign_in(client, "testmodel-long@example.com")
+    client.post(
+        "/settings/api-keys",
+        json={"provider": "openai", "api_key": "sk-longkey123456789"},
+        headers=_auth_headers(token),
+    )
+
+    long_content = "x" * 200
+    monkeypatch.setattr(
+        "reprompt_core.llm.client.litellm.completion",
+        lambda **kwargs: _fake_response(content=long_content),
+    )
+
+    response = client.post(
+        "/settings/models/test", json={"model": "gpt-4o"}, headers=_auth_headers(token)
+    )
+    assert response.status_code == 200, response.text
+    preview = response.json()["content_preview"]
+    assert len(preview) <= 81  # 80 chars + the trailing ellipsis char
+    assert preview.endswith("…")

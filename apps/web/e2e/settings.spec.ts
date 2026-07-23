@@ -20,8 +20,8 @@ test.describe("settings", () => {
     await expect(devLink).toBeVisible();
     await devLink.click();
 
-    // auth-verify.tsx redirects to "/" once the session token is stored.
-    await expect(page).toHaveURL("/");
+    // auth-verify.tsx redirects to "/pipelines" once the session token is stored.
+    await expect(page).toHaveURL("/pipelines");
 
     await page.getByRole("link", { name: "Settings" }).click();
     await expect(page.getByRole("heading", { name: "Settings" })).toBeVisible();

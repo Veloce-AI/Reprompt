@@ -1,6 +1,7 @@
 import { createRouter, createRoute, createRootRoute, Outlet, redirect } from "@tanstack/react-router";
 import { RouteErrorFallback } from "./components/route-error-fallback";
 import Home from "./routes/home";
+import Landing from "./routes/landing";
 import DevKit from "./routes/dev-kit";
 import PipelinesImport from "./routes/pipelines-import";
 import PipelineWorkspace, { WORKSPACE_TABS, type WorkspaceTab } from "./routes/pipeline-workspace";
@@ -23,9 +24,19 @@ const rootRoute = createRootRoute({
   errorComponent: RouteErrorFallback,
 });
 
-const homeRoute = createRoute({
+// Marketing page, always shown at "/" regardless of session state - a
+// signed-in visitor can still land here (bookmark, direct link, checking
+// what it looks like) and navigate into the app via its own nav/CTA
+// (Landing itself swaps "Sign in" for "Go to Pipelines" when signed in).
+const landingRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/",
+  component: Landing,
+});
+
+const homeRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/pipelines",
   component: Home,
 });
 
@@ -126,6 +137,7 @@ const schemaRoute = createRoute({
 });
 
 const routeTree = rootRoute.addChildren([
+  landingRoute,
   homeRoute,
   devKitRoute,
   pipelinesImportRoute,

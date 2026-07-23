@@ -83,14 +83,14 @@ export default function DevKit() {
         </h3>
         <div className="grid grid-cols-3 gap-4">
           {[
-            { name: "--parity-pass", hex: "#0E9F6E", meaning: "≥95% score" },
-            { name: "--parity-near", hex: "#D97706", meaning: "80–95% score" },
-            { name: "--parity-fail", hex: "#DC2626", meaning: "<80% score" },
+            { name: "--parity-pass", hex: "#0E9F6E", value: "var(--parity-pass)", meaning: "≥95% score" },
+            { name: "--parity-near", hex: "#D97706", value: "var(--parity-near)", meaning: "80–95% score" },
+            { name: "--parity-fail", hex: "#DC2626", value: "var(--parity-fail)", meaning: "<80% score" },
           ].map((swatch) => (
             <div key={swatch.name} className="space-y-2">
               <div
                 className="h-12 rounded-card border border-line"
-                style={{ backgroundColor: swatch.hex }}
+                style={{ backgroundColor: swatch.value }}
               />
               <div>
                 <div className="text-13 font-medium text-ink">{swatch.name}</div>

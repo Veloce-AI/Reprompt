@@ -54,13 +54,20 @@ from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from reprompt_core.llm.client import PermanentLLMError, RepromptLLMError, TransientLLMError
 from reprompt_core.llm.model_select import NoAvailableModelError, Purpose, select_model
 
 from reprompt_api import models
 from reprompt_api.auth import get_current_user
 from reprompt_api.crypto import EncryptionNotConfigured, encrypt
 from reprompt_api.db import get_db
-from reprompt_api.migrations import ModelOption, get_available_models
+from reprompt_api.llm_context import ProviderKeyNotConfigured, complete_with_workspace_credentials
+from reprompt_api.migrations import (
+    ModelOption,
+    get_available_models,
+    list_curated_models_with_lock_state,
+)
+from reprompt_api.system_models import system_model_env_var_name, system_model_override
 from reprompt_api.model_cards import FamilyCardOut, build_family_card
 
 router = APIRouter(prefix="/settings", tags=["settings"])
@@ -305,9 +312,16 @@ class ConfiguredModelOut(BaseModel):
     supports_function_calling: bool
     requires_api_key: bool
     model_card: FamilyCardOut
+    unlocked: bool
+    """True if this workspace can target this model right now (no key
+    needed, or its provider has a BYOK key configured). False means it's
+    curated but locked - still shown (not filtered out) so a user can see
+    what adding a key for that provider would unlock, rather than a
+    curated model silently looking like it doesn't exist. See
+    reprompt_api.migrations.list_curated_models_with_lock_state."""
 
 
-def _to_configured_model_out(option: ModelOption) -> ConfiguredModelOut:
+def _to_configured_model_out(option: ModelOption, unlocked: bool) -> ConfiguredModelOut:
     return ConfiguredModelOut(
         model=option.model,
         provider=option.provider,
@@ -319,6 +333,7 @@ def _to_configured_model_out(option: ModelOption) -> ConfiguredModelOut:
         supports_function_calling=option.supports_function_calling,
         requires_api_key=option.requires_api_key,
         model_card=build_family_card(option.model),
+        unlocked=unlocked,
     )
 
 
@@ -326,16 +341,102 @@ def _to_configured_model_out(option: ModelOption) -> ConfiguredModelOut:
 def list_configured_models(
     current_user: models.User = Depends(get_current_user), db: Session = Depends(get_db)
 ) -> list[ConfiguredModelOut]:
-    """Every curated model this workspace can actually target right now:
-    every model that needs no API key (local/self-hosted, e.g. Ollama) plus
-    every model whose provider has a BYOK key configured for this workspace.
-    Each entry carries its model-card info (prompt family + which transform
-    rules will apply) so a user can see *how* their prompt will be rewritten
-    for that target without opening a migration wizard first.
+    """Every curated model, including ones this workspace can't target yet:
+    each entry carries `unlocked` (no key needed, or its provider has a
+    BYOK key configured) plus its model-card info (prompt family + which
+    transform rules will apply), so a user can see the full curated
+    catalog - including what a new key would unlock - not just what's
+    already usable. The migration wizard's own picker
+    (`GET /pipelines/{id}/models`) is intentionally different: it still
+    only lists *usable* models via `get_available_models`, since a locked
+    model must not be selectable as a migration target.
     """
     workspace = _get_workspace_or_500(db, current_user)
-    available = get_available_models(db, workspace)
-    return [_to_configured_model_out(option) for option in available]
+    return [
+        _to_configured_model_out(option, unlocked)
+        for option, unlocked in list_curated_models_with_lock_state(db, workspace)
+    ]
+
+
+class ModelTestIn(BaseModel):
+    model: str = Field(
+        min_length=1, max_length=255, description="A LiteLLM model string, e.g. 'gpt-4o'."
+    )
+
+
+class ModelTestOut(BaseModel):
+    model: str
+    provider: str | None
+    latency_ms: float
+    content_preview: str
+    """First ~80 chars of the real response, trimmed - enough to see it's
+    a genuine reply (not just a 200 with an empty body) without echoing a
+    full completion back for what's meant to be a quick connectivity
+    check."""
+
+
+@router.post("/models/test", response_model=ModelTestOut)
+def test_model(
+    body: ModelTestIn,
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> ModelTestOut:
+    """Makes one real, minimal call to `body.model` using this workspace's
+    saved BYOK key (same credential-scoping path as the migration wizard's
+    stage-level `/pipelines/{id}/stages/{id}/test-prompt`), so "I added a
+    key" and "this key actually works for this model" don't have to be
+    two different leaps of faith. Not pipeline/stage-scoped like that
+    endpoint - this is a workspace-level "does this key work at all"
+    check, asked right after adding a key or picking a model, before any
+    pipeline is even involved.
+    """
+    workspace = _get_workspace_or_500(db, current_user)
+
+    try:
+        result = complete_with_workspace_credentials(
+            db,
+            workspace,
+            body.model,
+            [{"role": "user", "content": "Reply with exactly one word: ok"}],
+            max_tokens=5,
+            # No timeout was set here before, so a provider that's slow to
+            # respond (or never responds at all - e.g. a huge/gated model
+            # that silently hangs instead of rejecting the request) left
+            # this "quick connectivity check" spinning indefinitely, with
+            # no clear failure for the caller to show. litellm.exceptions.
+            # Timeout is already mapped to TransientLLMError below, which
+            # reports a clear 502 instead of hanging. 60s (not the
+            # originally-chosen 20s) - confirmed live against a real NVIDIA
+            # NIM on-demand model that a 20s budget wasn't enough to outlast
+            # its cold-start latency, even though the model itself was
+            # otherwise reachable and working.
+            timeout=60.0,
+        )
+    except ProviderKeyNotConfigured as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"No API key configured for provider '{exc.provider}' in this "
+                "workspace. Add one above before testing this model."
+            ),
+        ) from exc
+    except EncryptionNotConfigured as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    except TransientLLMError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    except (PermanentLLMError, RepromptLLMError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    preview = result.content.strip()
+    if len(preview) > 80:
+        preview = preview[:80] + "…"
+
+    return ModelTestOut(
+        model=result.model,
+        provider=result.provider,
+        latency_ms=result.latency_ms,
+        content_preview=preview,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -384,18 +485,29 @@ _SYSTEM_MODEL_PURPOSES: tuple[Purpose, ...] = ("rubric_generation", "judge", "mu
 def list_system_models(
     current_user: models.User = Depends(get_current_user), db: Session = Depends(get_db)
 ) -> list[SystemModelOut]:
-    """Which model Reprompt's own harness currently auto-selects for each
-    purpose, given this workspace's configured providers - the exact same
-    reprompt_core.llm.model_select.select_model() call apps/api's
-    rubrics.py/optimizer_runner.py make for a real run, with no override
-    applied (see module-level note above for why this is workspace-scoped
-    rather than migration-scoped).
+    """Which model Reprompt's own harness currently uses for each purpose,
+    given this workspace's configured providers - the exact same priority
+    order (per-migration override, not shown here since this is workspace-
+    not migration-scoped -> operator-set env var -> auto-select) apps/api's
+    rubrics.py/optimizer_runner.py actually use for a real run (see
+    reprompt_api.system_models and module-level note above for why this is
+    workspace-scoped rather than migration-scoped).
     """
     workspace = _get_workspace_or_500(db, current_user)
     available = [option.model for option in get_available_models(db, workspace)]
 
     results: list[SystemModelOut] = []
     for purpose in _SYSTEM_MODEL_PURPOSES:
+        override = system_model_override(purpose)
+        if override is not None:
+            results.append(
+                SystemModelOut(
+                    purpose=purpose,
+                    selected_model=override,
+                    reason=f"pinned via {system_model_env_var_name(purpose)}",
+                )
+            )
+            continue
         try:
             selected = select_model(purpose, available)
         except NoAvailableModelError as exc:

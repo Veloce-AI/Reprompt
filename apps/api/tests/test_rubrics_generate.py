@@ -403,6 +403,75 @@ def test_null_model_also_auto_selects(client: TestClient, monkeypatch: pytest.Mo
     assert captured["model"] == "gpt-4o"
 
 
+def test_env_var_override_wins_over_auto_select_when_model_omitted(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """REPROMPT_RUBRIC_MODEL, when set by the operator, must be used instead
+    of auto-select - even though the workspace's own configured key would
+    otherwise make a different model the tier-1 auto-select pick."""
+    monkeypatch.setenv("REPROMPT_RUBRIC_MODEL", "nvidia_nim/deepseek-ai/deepseek-v4-flash")
+    token, _ = _sign_in(client, "envoverride@example.com")
+    client.post(
+        "/settings/api-keys",
+        json={"provider": "anthropic", "api_key": "sk-workspacekey12345"},
+        headers=_auth_headers(token),
+    )
+    pipeline_id, stage_id = _import_pipeline_with_traces(client, outputs=["out1"])
+
+    captured: dict = {}
+
+    def fake_complete_with_workspace_credentials(db, workspace, model, messages, **kwargs):
+        captured["model"] = model
+        return _fake_llm_response(VALID_RUBRIC_CONTENT, model=model)
+
+    monkeypatch.setattr(
+        "reprompt_api.rubrics.complete_with_workspace_credentials", fake_complete_with_workspace_credentials
+    )
+
+    response = client.post(
+        f"/pipelines/{pipeline_id}/stages/{stage_id}/generate-rubric",
+        json={},
+        headers=_auth_headers(token),
+    )
+
+    assert response.status_code == 200, response.text
+    assert captured["model"] == "nvidia_nim/deepseek-ai/deepseek-v4-flash"
+
+
+def test_explicit_body_model_still_wins_over_env_var_override(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A caller-supplied `model` in the request body outranks the operator's
+    env var override, same as it outranks plain auto-select."""
+    monkeypatch.setenv("REPROMPT_RUBRIC_MODEL", "nvidia_nim/deepseek-ai/deepseek-v4-flash")
+    token, _ = _sign_in(client, "envoverride-explicit@example.com")
+    client.post(
+        "/settings/api-keys",
+        json={"provider": "openai", "api_key": "sk-workspacekey12345"},
+        headers=_auth_headers(token),
+    )
+    pipeline_id, stage_id = _import_pipeline_with_traces(client, outputs=["out1"])
+
+    captured: dict = {}
+
+    def fake_complete_with_workspace_credentials(db, workspace, model, messages, **kwargs):
+        captured["model"] = model
+        return _fake_llm_response(VALID_RUBRIC_CONTENT, model=model)
+
+    monkeypatch.setattr(
+        "reprompt_api.rubrics.complete_with_workspace_credentials", fake_complete_with_workspace_credentials
+    )
+
+    response = client.post(
+        f"/pipelines/{pipeline_id}/stages/{stage_id}/generate-rubric",
+        json={"model": "gpt-4o-mini"},
+        headers=_auth_headers(token),
+    )
+
+    assert response.status_code == 200, response.text
+    assert captured["model"] == "gpt-4o-mini"
+
+
 def test_explicit_model_is_never_second_guessed_by_auto_select(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -1,6 +1,7 @@
 import { useReducer, useState, type FormEvent } from "react";
 import { Link } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Check, Copy } from "lucide-react";
 import {
   ApiError,
   addApiKey,
@@ -11,13 +12,16 @@ import {
   listApiKeys,
   listConfiguredModels,
   listSystemModels,
+  testModel,
   updateWorkspaceSettings,
   type ConfiguredModel,
   type SystemModel,
   type SystemModelPurpose,
 } from "@/lib/api";
+import { AddApiKeyDrawer } from "@/components/add-api-key-drawer";
 import { AppShell } from "@/components/app-shell";
 import { DevSignInButton } from "@/components/dev-sign-in-button";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -30,13 +34,14 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { cn } from "@/lib/utils";
 
 // Curated suggestion list only - the provider field is free text server-side
 // (see apps/api/src/reprompt_api/models.py's WorkspaceApiKey docstring for
 // why: LiteLLM supports many more providers than any fixed list, and "any
 // provider" is an explicit project design goal). "Other" reveals a plain
 // text input so nothing is actually blocked by this list.
-const SUGGESTED_PROVIDERS = ["openai", "anthropic", "gemini"] as const;
+const SUGGESTED_PROVIDERS = ["openai", "anthropic", "gemini", "nvidia_nim", "openrouter"] as const;
 
 function formatDate(iso: string): string {
   try {
@@ -224,6 +229,12 @@ function ApiKeysCard() {
     mutationFn: () => addApiKey(provider === "other" ? customProvider : provider, apiKey),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["settings-api-keys"] });
+      // A new key can unlock previously-locked curated models (both cards
+      // below filter by which providers have a configured key) - without
+      // this, "Configured models"/"System models" silently stay stale
+      // until the whole page is reloaded.
+      queryClient.invalidateQueries({ queryKey: ["settings-configured-models"] });
+      queryClient.invalidateQueries({ queryKey: ["settings-system-models"] });
       // Clear the form - the key must never remain visible or resubmittable
       // after a successful save, per "never displayed after save."
       setApiKey("");
@@ -235,6 +246,10 @@ function ApiKeysCard() {
     mutationFn: (id: number) => deleteApiKey(id),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["settings-api-keys"] });
+      // Deleting a key can lock models back out - same staleness concern
+      // as the add path above, in the other direction.
+      queryClient.invalidateQueries({ queryKey: ["settings-configured-models"] });
+      queryClient.invalidateQueries({ queryKey: ["settings-system-models"] });
     },
   });
 
@@ -279,7 +294,12 @@ function ApiKeysCard() {
         )}
 
         {keysQuery.data && keysQuery.data.length === 0 && (
-          <p className="text-13 text-ink-soft">No API keys configured yet.</p>
+          <p className="text-13 text-ink-soft">
+            No API keys configured yet — only local, no-key models (Ollama) are available until
+            you add one. Supported providers:{" "}
+            <span className="font-medium text-ink">{SUGGESTED_PROVIDERS.join(", ")}</span>, or any
+            other LiteLLM-supported provider via &quot;Other&quot; below.
+          </p>
         )}
 
         {keysQuery.data && keysQuery.data.length > 0 && (
@@ -383,8 +403,80 @@ function ApiKeysCard() {
               : "Couldn't delete the API key."}
           </p>
         )}
+
+        <TestAnyModelForm />
       </CardContent>
     </Card>
+  );
+}
+
+/**
+ * Free-text "does my key actually work for this model" check, right where
+ * a key gets added - the natural next step after "Add API key" is "does it
+ * work", not a scroll down to a separate card. `POST /settings/models/test`
+ * already accepts any LiteLLM model string server-side (curated or not);
+ * this is the one entry point for it, shared by whichever card renders it.
+ */
+function TestAnyModelForm() {
+  const [customTestModel, setCustomTestModel] = useState("");
+
+  // Own mutation instance, not shared with ConfiguredModelsCard's curated
+  // "Test" buttons - the two cards don't need to coordinate pending/result
+  // state with each other.
+  const testMutation = useMutation({
+    mutationFn: (model: string) => testModel(model),
+  });
+
+  return (
+    <div className="border-t border-line pt-6">
+      <h3 className="mb-1 text-13 font-medium text-ink">Test any model</h3>
+      <p className="mb-3 text-12 text-ink-soft">
+        Not every model a provider hosts is curated below (e.g. an aggregator like NVIDIA NIM or
+        OpenRouter has far more than what's shown) — check whether the key you just added
+        actually works for a specific model string.
+      </p>
+      <form
+        className="flex items-start gap-2"
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (!customTestModel.trim() || testMutation.isPending) return;
+          testMutation.mutate(customTestModel.trim());
+        }}
+      >
+        <Input
+          aria-label="Model string to test"
+          placeholder="e.g. nvidia_nim/z-ai/glm-5.2"
+          value={customTestModel}
+          onChange={(event) => setCustomTestModel(event.target.value)}
+          className="max-w-sm font-mono"
+        />
+        <Button
+          type="submit"
+          variant="secondary"
+          size="sm"
+          disabled={!customTestModel.trim() || (testMutation.isPending && testMutation.variables === customTestModel.trim())}
+        >
+          {testMutation.isPending && testMutation.variables === customTestModel.trim()
+            ? "Testing…"
+            : "Test"}
+        </Button>
+        {testMutation.variables === customTestModel.trim() && testMutation.isSuccess && (
+          <Badge variant="pass" title={testMutation.data.content_preview}>
+            Works — {Math.round(testMutation.data.latency_ms)}ms
+          </Badge>
+        )}
+        {testMutation.variables === customTestModel.trim() && testMutation.isError && (
+          <Badge variant="fail">Test failed</Badge>
+        )}
+      </form>
+      {testMutation.variables === customTestModel.trim() && testMutation.isError && (
+        <p className="mt-1 text-12 text-parity-fail" role="alert">
+          {testMutation.error instanceof ApiError
+            ? testMutation.error.message
+            : "Test failed — check your connection and try again."}
+        </p>
+      )}
+    </div>
   );
 }
 
@@ -394,11 +486,57 @@ function formatCost(perMillion: number | null): string {
   return `$${perMillion.toFixed(2)} / 1M tokens`;
 }
 
+/** Copies `code` to the clipboard and shows a brief "Copied" confirmation -
+ * the first clipboard-copy affordance in this codebase, so kept local
+ * rather than a new shared component until a second caller needs it. */
+function CopyCodeButton({ code }: { code: string }) {
+  const [copied, setCopied] = useState(false);
+
+  async function handleCopy() {
+    await navigator.clipboard.writeText(code);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1500);
+  }
+
+  return (
+    <Button variant="secondary" size="sm" onClick={handleCopy}>
+      {copied ? (
+        <>
+          <Check className="h-3.5 w-3.5" aria-hidden="true" />
+          Copied
+        </>
+      ) : (
+        <>
+          <Copy className="h-3.5 w-3.5" aria-hidden="true" />
+          Copy code
+        </>
+      )}
+    </Button>
+  );
+}
+
 function ConfiguredModelsCard() {
+  // Which provider the inline add-a-key drawer is open for; null = closed.
+  // Same component/pattern the migration wizard's model picker already
+  // uses for its own locked models - unlocking here shouldn't need a
+  // different flow than unlocking there.
+  const [keyDrawerProvider, setKeyDrawerProvider] = useState<string | null>(null);
+
   const modelsQuery = useQuery({
     queryKey: ["settings-configured-models"],
     queryFn: listConfiguredModels,
     retry: false,
+  });
+
+  // One shared mutation for every curated row's own "Test" button -
+  // `testMutation.variables` (the model string just mutated with) tells
+  // each row whether *it* is the one currently pending/just resolved, so
+  // "did my key actually work for this model" is answered in place
+  // instead of only "is a row saved for it". The free-text "Test any
+  // model" tester lives in ApiKeysCard (TestAnyModelForm) with its own
+  // independent mutation, right next to where a key gets added.
+  const testMutation = useMutation({
+    mutationFn: (model: string) => testModel(model),
   });
 
   if (modelsQuery.isError && isUnauthorized(modelsQuery.error)) {
@@ -421,13 +559,22 @@ function ConfiguredModelsCard() {
 
   return (
     <Card>
+      {keyDrawerProvider != null && (
+        <AddApiKeyDrawer
+          provider={keyDrawerProvider}
+          open
+          onOpenChange={(open) => {
+            if (!open) setKeyDrawerProvider(null);
+          }}
+        />
+      )}
       <CardHeader>
         <CardTitle>Configured models</CardTitle>
         <CardDescription>
-          What you can actually target in a migration right now: local models need no key,
-          everything else needs a BYOK key above for that provider. Each model shows the prompt
-          rewrite rules (model-card transforms) that will apply when it's picked as a migration
-          target.
+          The full curated catalog, including providers you haven&apos;t added a key for yet -
+          those stay visible (dimmed, with an inline &quot;Add API key&quot;) instead of looking
+          like they don&apos;t exist. Each model shows the prompt rewrite rules (model-card
+          transforms) that will apply when it&apos;s picked as a migration target.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-6">
@@ -453,7 +600,10 @@ function ConfiguredModelsCard() {
               {providerModels.map((model) => (
                 <div
                   key={model.model}
-                  className="rounded-control border border-line p-4 text-13"
+                  className={cn(
+                    "rounded-control border p-4 text-13",
+                    model.unlocked ? "border-line" : "border-line opacity-60"
+                  )}
                 >
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <span className="font-mono font-medium text-ink">{model.model}</span>
@@ -462,6 +612,53 @@ function ConfiguredModelsCard() {
                       {formatCost(model.output_cost_per_1m)} out
                     </span>
                   </div>
+                  {!model.unlocked && model.provider && (
+                    <div className="mt-2 flex flex-wrap items-center gap-2">
+                      <Badge variant="neutral">API key required</Badge>
+                      <button
+                        type="button"
+                        className="text-12 font-medium text-beam hover:underline"
+                        onClick={() => setKeyDrawerProvider(model.provider)}
+                      >
+                        Add API key
+                      </button>
+                    </div>
+                  )}
+                  {model.unlocked && (
+                    <div className="mt-2 flex flex-wrap items-center gap-2">
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        disabled={testMutation.isPending && testMutation.variables === model.model}
+                        onClick={() => testMutation.mutate(model.model)}
+                      >
+                        {testMutation.isPending && testMutation.variables === model.model
+                          ? "Testing…"
+                          : "Test"}
+                      </Button>
+                      {testMutation.variables === model.model && testMutation.isSuccess && (
+                        <Badge variant="pass" title={testMutation.data.content_preview}>
+                          Works — {Math.round(testMutation.data.latency_ms)}ms
+                        </Badge>
+                      )}
+                      {testMutation.variables === model.model && testMutation.isError && (
+                        <Badge variant="fail">Test failed</Badge>
+                      )}
+                    </div>
+                  )}
+                  {/* Was only a Badge `title` attribute (a hover tooltip) -
+                      the actual reason ("No API key configured...", a
+                      provider's real error message, ...) was invisible
+                      without knowing to hover, which is exactly what made a
+                      real failure unreadable from a screenshot/report. Now
+                      shown as plain text right under the badge instead. */}
+                  {testMutation.variables === model.model && testMutation.isError && (
+                    <p className="mt-1 text-12 text-parity-fail" role="alert">
+                      {testMutation.error instanceof ApiError
+                        ? testMutation.error.message
+                        : "Test failed — check your connection and try again."}
+                    </p>
+                  )}
                   {/* model_card is a required field on the wire contract, but this
                       reads it defensively (optional chaining + fallbacks) rather than
                       assuming the live response always matches the TS type exactly -
@@ -480,6 +677,11 @@ function ConfiguredModelsCard() {
                         {model.model_card.description}
                       </p>
                       <ul className="mt-2 flex flex-wrap gap-2">
+                        {model.model_card.supports_reasoning && (
+                          <li>
+                            <Badge variant="pass">Thinking mode</Badge>
+                          </li>
+                        )}
                         {(model.model_card.rules ?? [])
                           .filter((rule) => rule.will_apply)
                           .map((rule) => (
@@ -491,10 +693,24 @@ function ConfiguredModelsCard() {
                               {rule.name.replace(/_/g, " ")}
                             </li>
                           ))}
-                        {(model.model_card.rules ?? []).every((rule) => !rule.will_apply) && (
-                          <li className="text-12 text-ink-soft">No transform rules apply.</li>
-                        )}
+                        {!model.model_card.supports_reasoning &&
+                          (model.model_card.rules ?? []).every((rule) => !rule.will_apply) && (
+                            <li className="text-12 text-ink-soft">No transform rules apply.</li>
+                          )}
                       </ul>
+                      {model.model_card.code_sample && (
+                        <details className="mt-3">
+                          <summary className="cursor-pointer text-12 font-medium text-ink-soft hover:text-ink">
+                            Code sample
+                          </summary>
+                          <div className="mt-2 flex flex-col items-start gap-2">
+                            <pre className="w-full overflow-x-auto rounded-control bg-beam-soft/30 p-3 font-mono text-12 text-ink">
+                              {model.model_card.code_sample}
+                            </pre>
+                            <CopyCodeButton code={model.model_card.code_sample} />
+                          </div>
+                        </details>
+                      )}
                     </>
                   ) : (
                     <p className="mt-2 text-12 text-ink-soft">

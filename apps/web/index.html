@@ -4,6 +4,31 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Reprompt</title>
+    <!--
+      Theme bootstrap - must run inline, synchronously, before any
+      stylesheet paints, so an explicit light/dark override (chosen via
+      Settings) doesn't flash the OS-default theme first on load. Mirrors
+      src/lib/theme.ts's read-and-apply logic exactly (same storage key,
+      same "system" = no attribute / else set the attribute convention) -
+      it has to be duplicated here rather than imported because this must
+      execute before the module graph (React, zustand, etc.) has loaded at
+      all. Keep the two in sync if either changes. "system" mode needs no
+      branch here: it means "no attribute", which is already the state of
+      a freshly parsed <html> tag, so tokens.css's
+      @media(prefers-color-scheme:dark) block alone decides.
+    -->
+    <script>
+      (function () {
+        try {
+          var mode = localStorage.getItem("reprompt-theme");
+          if (mode === "light" || mode === "dark") {
+            document.documentElement.setAttribute("data-theme", mode);
+          }
+        } catch (e) {
+          // Storage unavailable - fall through to the OS-preference default.
+        }
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

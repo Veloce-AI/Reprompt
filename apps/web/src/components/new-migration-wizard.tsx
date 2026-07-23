@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
+import { X } from "lucide-react";
 import {
   ApiError,
   createMigration,
@@ -7,6 +8,9 @@ import {
   getPipelineDag,
   listApiKeys,
   listModelOptions,
+  listOpenRouterCatalog,
+  listSystemModels,
+  lookupModelOption,
   type MigrationOut,
   type ModelCardInfo,
   type ModelOption,
@@ -14,8 +18,10 @@ import {
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { Select } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
 import { AddApiKeyDrawer } from "@/components/add-api-key-drawer";
+import { PrismExplainer } from "@/components/prism-explainer";
 
 type WizardStep = "target-model" | "budget" | "confirm";
 
@@ -33,6 +39,226 @@ function formatCostPer1M(value: number | null): string {
 
 function formatTokens(value: number | null): string {
   return value == null ? "Unknown" : value.toLocaleString();
+}
+
+/**
+ * One model's picker card - checkbox + cost/context/capability info +
+ * transform rules, locked or not. Shared by the curated grid and the
+ * custom-model lookup list (see `NewMigrationWizard`'s "Add a custom
+ * model" section) so a model looks and behaves identically regardless of
+ * which list it came from - the only thing that differs between the two
+ * lists is *how a model got there*, not how it's presented.
+ */
+function ModelOptionCard({
+  option,
+  checked,
+  locked,
+  modelCard,
+  onToggle,
+  onRequestKey,
+  onRemove,
+}: {
+  option: ModelOption;
+  checked: boolean;
+  locked: boolean;
+  modelCard: ModelCardInfo | null | undefined;
+  onToggle: () => void;
+  onRequestKey: () => void;
+  /** Only custom (looked-up, non-curated) models can be removed from the
+   * list entirely - curated models are always present. */
+  onRemove?: () => void;
+}) {
+  return (
+    <label
+      className={
+        "flex items-start gap-3 rounded-control border p-4 transition-colors " +
+        (locked
+          ? "cursor-default border-line opacity-60"
+          : checked
+            ? "cursor-pointer border-beam bg-beam-soft/40"
+            : "cursor-pointer border-line hover:border-beam/40")
+      }
+    >
+      <input
+        type="checkbox"
+        aria-label={option.model}
+        className="mt-0.5 accent-beam"
+        checked={checked}
+        disabled={locked}
+        onChange={onToggle}
+      />
+      <div className="min-w-0 flex-1">
+        <div className="flex items-start justify-between gap-2">
+          <p className="min-w-0 break-all font-mono text-13 font-medium text-ink">{option.model}</p>
+          {onRemove && (
+            <button
+              type="button"
+              aria-label={`Remove ${option.model}`}
+              className="shrink-0 rounded-control p-0.5 text-ink-soft hover:bg-beam-soft hover:text-ink"
+              onClick={(event) => {
+                event.preventDefault();
+                onRemove();
+              }}
+            >
+              <X className="h-3.5 w-3.5" aria-hidden="true" />
+            </button>
+          )}
+        </div>
+        {option.provider && <p className="text-12 text-ink-soft capitalize">{option.provider}</p>}
+        {locked && option.provider && (
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <Badge variant="neutral">API key required</Badge>
+            <button
+              type="button"
+              className="text-12 font-medium text-beam hover:underline"
+              onClick={(event) => {
+                // Inside a <label>: don't let the click also reach the
+                // (disabled) checkbox.
+                event.preventDefault();
+                onRequestKey();
+              }}
+            >
+              Add API key
+            </button>
+          </div>
+        )}
+        <p className="mt-1 text-12 text-ink-soft">
+          {formatCostPer1M(option.input_cost_per_1m)} in / {formatCostPer1M(option.output_cost_per_1m)} out
+          per 1M tokens
+        </p>
+        <p className="mt-1 text-12 text-ink-soft">Context: {formatTokens(option.max_input_tokens)} tokens</p>
+        <div className="mt-2 flex flex-wrap gap-1">
+          {option.supports_json_mode && <Badge variant="pass">JSON mode</Badge>}
+          {option.supports_function_calling && <Badge variant="pass">Tool use</Badge>}
+          {!option.requires_api_key && <Badge variant="neutral">No API key</Badge>}
+          {option.transform_descriptions.map((desc) => (
+            <Badge key={desc} variant="neutral">
+              {desc}
+            </Badge>
+          ))}
+        </div>
+        {modelCard && (
+          <div className="mt-3 space-y-1 rounded bg-ink-soft/5 p-3">
+            <p className="text-11 font-medium uppercase tracking-wide text-ink-soft">Model transform rules</p>
+            {modelCard.rules.length > 0 ? (
+              <ul className="space-y-1 text-12 text-ink">
+                {modelCard.rules.map((rule) => (
+                  <li
+                    key={rule.name}
+                    className={
+                      rule.will_apply
+                        ? "flex items-start gap-1 text-ink"
+                        : "flex items-start gap-1 text-ink-soft"
+                    }
+                  >
+                    <span className="mt-0.5 flex-shrink-0" aria-hidden="true">
+                      {rule.will_apply ? "✓" : "○"}
+                    </span>
+                    <span className="min-w-0 flex-1">
+                      <strong>{rule.name}:</strong> {rule.description}
+                      {/* Not a cancelled/error rule - just inactive for
+                          this specific model. Say why instead of leaving
+                          it to a struck-through line to imply (users read
+                          strikethrough as "removed"/"broken"). */}
+                      {!rule.will_apply && (
+                        <span className="italic">
+                          {" "}
+                          — {rule.applies_to === "small_only"
+                            ? "only applies to small/cheap model variants"
+                            : "doesn't apply to this model"}
+                        </span>
+                      )}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="text-12 text-ink-soft italic">No transform rules</p>
+            )}
+          </div>
+        )}
+      </div>
+    </label>
+  );
+}
+
+/**
+ * Type-to-filter dropdown over the full OpenRouter model catalog (~96
+ * entries, fetched once - see `listOpenRouterCatalog`), not just the
+ * handful of OpenRouter families in the curated grid above. Selecting a
+ * result hands its already-complete `ModelOption` straight to `onSelect`;
+ * no per-model lookup round trip is needed since the catalog fetch already
+ * carries full cost/capability data for every entry.
+ */
+function OpenRouterModelPicker({
+  catalog,
+  isLoading,
+  onSelect,
+}: {
+  catalog: ModelOption[];
+  isLoading: boolean;
+  onSelect: (option: ModelOption) => void;
+}) {
+  const [query, setQuery] = useState("");
+  const [open, setOpen] = useState(false);
+  const trimmed = query.trim().toLowerCase();
+  const filtered = trimmed === "" ? catalog : catalog.filter((option) => option.model.toLowerCase().includes(trimmed));
+  const visible = filtered.slice(0, 50);
+
+  return (
+    <div className="relative">
+      <Input
+        aria-label="Search OpenRouter models"
+        placeholder={isLoading ? "Loading OpenRouter catalog…" : `Search ${catalog.length} OpenRouter models…`}
+        value={query}
+        disabled={isLoading}
+        onChange={(event) => {
+          setQuery(event.target.value);
+          setOpen(true);
+        }}
+        onFocus={() => setOpen(true)}
+        onBlur={() => setOpen(false)}
+        className="font-mono"
+      />
+      {open && !isLoading && (
+        <ul
+          role="listbox"
+          aria-label="OpenRouter model results"
+          className="absolute z-10 mt-1 max-h-64 w-full overflow-auto rounded-control border border-line bg-paper shadow-lg"
+        >
+          {visible.length === 0 ? (
+            <li className="px-3 py-2 text-13 text-ink-soft">No matches</li>
+          ) : (
+            visible.map((option) => (
+              <li key={option.model}>
+                <button
+                  type="button"
+                  role="option"
+                  aria-selected="false"
+                  className="block w-full px-3 py-2 text-left text-13 font-mono text-ink hover:bg-beam-soft/40"
+                  // Fires before the input's onBlur closes the list, so the
+                  // click still registers on this button.
+                  onMouseDown={(event) => event.preventDefault()}
+                  onClick={() => {
+                    onSelect(option);
+                    setQuery("");
+                    setOpen(false);
+                  }}
+                >
+                  {option.model}
+                </button>
+              </li>
+            ))
+          )}
+          {filtered.length > visible.length && (
+            <li className="px-3 py-2 text-11 text-ink-soft">
+              +{filtered.length - visible.length} more — keep typing to narrow down
+            </li>
+          )}
+        </ul>
+      )}
+    </div>
+  );
 }
 
 /**
@@ -66,8 +292,24 @@ export function NewMigrationWizard({
   // every stage did before this section existed.
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [stageOverrides, setStageOverrides] = useState<Record<string, Set<string>>>({});
+  // Advanced, optional per-migration judge/mutator override - collapsed by
+  // default, most migrations just take Reprompt's global default (whatever
+  // Settings' System models table shows). Empty string = "use the global
+  // default", same convention as the Rubrics tab's model select. Was
+  // previously a real API field (target_model_config.judge_model/
+  // mutator_model) with no wizard UI at all - see Fable's "promote it to a
+  // visible, collapsed-by-default section" recommendation in DEV_TRACKER.md.
+  const [showJudgeMutatorAdvanced, setShowJudgeMutatorAdvanced] = useState(false);
+  const [judgeModelOverride, setJudgeModelOverride] = useState("");
+  const [mutatorModelOverride, setMutatorModelOverride] = useState("");
   // Which provider the inline add-a-key drawer is open for; null = closed.
   const [keyDrawerProvider, setKeyDrawerProvider] = useState<string | null>(null);
+  // "Add a custom model" - any LiteLLM model string beyond the curated
+  // list (e.g. an NVIDIA NIM/OpenRouter model not hand-curated). Looked up
+  // live via lookupMutation; successful lookups accumulate here so they
+  // render alongside the curated grid using the same ModelOptionCard.
+  const [customModelInput, setCustomModelInput] = useState("");
+  const [customModels, setCustomModels] = useState<ModelOption[]>([]);
 
   const dagQuery = useQuery({
     queryKey: ["pipeline-dag", pipelineId],
@@ -77,6 +319,18 @@ export function NewMigrationWizard({
     queryKey: ["model-options", pipelineId],
     queryFn: () => listModelOptions(pipelineId),
   });
+  const openRouterCatalogQuery = useQuery({
+    queryKey: ["openrouter-catalog", pipelineId],
+    queryFn: () => listOpenRouterCatalog(pipelineId),
+  });
+  // Same query key as the Rubrics tab's resolved-"Auto"-label fix, so
+  // whichever tab a reviewer visits first warms it for the other.
+  const systemModelsQuery = useQuery({
+    queryKey: ["settings-system-models"],
+    queryFn: listSystemModels,
+  });
+  const judgeDefault = systemModelsQuery.data?.find((m) => m.purpose === "judge");
+  const mutatorDefault = systemModelsQuery.data?.find((m) => m.purpose === "mutator");
   // Same query key as Settings' ApiKeysCard, so adding a key from either
   // place updates both. `retry: false` + the isSuccess guard below mean an
   // unauthenticated session (401 here) simply shows every model unlocked -
@@ -103,22 +357,37 @@ export function NewMigrationWizard({
     );
   }
 
-  // Fetch model card info for each available model
+  // Fetch model card info for every available model - curated plus any
+  // looked-up custom ones, merged rather than replaced so a re-run
+  // triggered by a new custom model doesn't drop already-fetched cards.
   useEffect(() => {
-    if (!modelsQuery.data) return;
+    const allOptions = [...(modelsQuery.data ?? []), ...customModels];
+    if (allOptions.length === 0) return;
     const fetchCards = async () => {
       const cards: Record<string, ModelCardInfo | null> = {};
-      for (const option of modelsQuery.data) {
+      for (const option of allOptions) {
         try {
           cards[option.model] = await getModelCard(option.model);
         } catch {
           cards[option.model] = null;
         }
       }
-      setModelCards(cards);
+      setModelCards((prev) => ({ ...prev, ...cards }));
     };
     fetchCards();
-  }, [modelsQuery.data]);
+  }, [modelsQuery.data, customModels]);
+
+  function addCustomModel(option: ModelOption) {
+    setCustomModels((prev) => [...prev.filter((m) => m.model !== option.model), option]);
+  }
+
+  const lookupMutation = useMutation({
+    mutationFn: () => lookupModelOption(pipelineId, customModelInput.trim()),
+    onSuccess: (option) => {
+      addCustomModel(option);
+      setCustomModelInput("");
+    },
+  });
 
   function toggleModel(model: string) {
     setSelectedModels((prev) => {
@@ -166,17 +435,31 @@ export function NewMigrationWizard({
   );
   const stages = Object.values(dagQuery.data?.stages ?? {}).sort((a, b) => a.id - b.id);
 
+  // Candidates for the judge/mutator override selects: every curated or
+  // looked-up model this workspace can actually call right now (unlocked),
+  // deduped - the same "usable" bar target-model selection already applies,
+  // since a judge/mutator override is just as unusable without a key.
+  const judgeMutatorCandidates = [
+    ...new Map(
+      [...(modelsQuery.data ?? []), ...customModels]
+        .filter((option) => !isLocked(option))
+        .map((option) => [option.model, option])
+    ).values(),
+  ];
+
   const migrationMutation = useMutation({
     mutationFn: () =>
       createMigration(pipelineId, {
         target_model_config: {
           models: [...selectedModels],
-          // Omit the key entirely (not `{}`) when nothing was customized -
-          // keeps the common-case payload/stored shape identical to before
-          // this section existed.
+          // Omit each key entirely (not send it as `{}`/`null`) when
+          // untouched - keeps the common-case payload/stored shape
+          // identical to before these sections existed.
           ...(Object.keys(stageOverridesPayload).length > 0
             ? { stage_overrides: stageOverridesPayload }
             : {}),
+          ...(judgeModelOverride ? { judge_model: judgeModelOverride } : {}),
+          ...(mutatorModelOverride ? { mutator_model: mutatorModelOverride } : {}),
         },
         budget: Number(budget),
         parity_threshold: Number(parityThresholdPercent) / 100,
@@ -216,6 +499,13 @@ export function NewMigrationWizard({
       <p className="mt-1 text-14 text-ink-soft">
         Pick a target model, set a budget and parity threshold, then run the migration.
       </p>
+      <div className="mt-2 flex items-center gap-2">
+        <p className="text-12 text-ink-soft">
+          Running this migration hands each stage's prompt to{" "}
+          <span className="font-medium text-ink">Prism</span> — a self-evolving prompt optimizer
+        </p>
+        <PrismExplainer />
+      </div>
 
       {keyDrawerProvider != null && (
         <AddApiKeyDrawer
@@ -280,112 +570,102 @@ export function NewMigrationWizard({
                 <p className="text-13 text-ink-soft">Loading available models…</p>
               ) : (
                 <div className="grid grid-cols-2 gap-3">
-                  {(modelsQuery.data ?? []).map((option) => {
-                    const locked = isLocked(option);
-                    const checked = !locked && selectedModels.has(option.model);
-                    const modelCard = modelCards[option.model];
-                    return (
-                      <label
-                        key={option.model}
-                        className={
-                          "flex items-start gap-3 rounded-control border p-4 transition-colors " +
-                          (locked
-                            ? "cursor-default border-line opacity-60"
-                            : checked
-                              ? "cursor-pointer border-beam bg-beam-soft/40"
-                              : "cursor-pointer border-line hover:border-beam/40")
-                        }
-                      >
-                        <input
-                          type="checkbox"
-                          aria-label={option.model}
-                          className="mt-0.5 accent-beam"
-                          checked={checked}
-                          disabled={locked}
-                          onChange={() => toggleModel(option.model)}
-                        />
-                        <div className="min-w-0 flex-1">
-                          <p className="font-mono text-13 font-medium text-ink">{option.model}</p>
-                          {option.provider && (
-                            <p className="text-12 text-ink-soft capitalize">{option.provider}</p>
-                          )}
-                          {locked && option.provider && (
-                            <div className="mt-2 flex flex-wrap items-center gap-2">
-                              <Badge variant="neutral">API key required</Badge>
-                              <button
-                                type="button"
-                                className="text-12 font-medium text-beam hover:underline"
-                                onClick={(event) => {
-                                  // Inside a <label>: don't let the click
-                                  // also reach the (disabled) checkbox.
-                                  event.preventDefault();
-                                  setKeyDrawerProvider(option.provider);
-                                }}
-                              >
-                                Add API key
-                              </button>
-                            </div>
-                          )}
-                          <p className="mt-1 text-12 text-ink-soft">
-                            {formatCostPer1M(option.input_cost_per_1m)} in /{" "}
-                            {formatCostPer1M(option.output_cost_per_1m)} out per 1M tokens
-                          </p>
-                          <p className="mt-1 text-12 text-ink-soft">
-                            Context: {formatTokens(option.max_input_tokens)} tokens
-                          </p>
-                          <div className="mt-2 flex flex-wrap gap-1">
-                            {option.supports_json_mode && (
-                              <Badge variant="pass">JSON mode</Badge>
-                            )}
-                            {option.supports_function_calling && (
-                              <Badge variant="pass">Tool use</Badge>
-                            )}
-                            {!option.requires_api_key && (
-                              <Badge variant="neutral">No API key</Badge>
-                            )}
-                            {option.transform_descriptions.map((desc) => (
-                              <Badge key={desc} variant="neutral">{desc}</Badge>
-                            ))}
-                          </div>
-                          {modelCard && (
-                            <div className="mt-3 space-y-1 rounded bg-ink-soft/5 p-3">
-                              <p className="text-11 font-medium uppercase tracking-wide text-ink-soft">
-                                Model transform rules
-                              </p>
-                              {modelCard.rules.length > 0 ? (
-                                <ul className="space-y-1 text-12 text-ink">
-                                  {modelCard.rules.map((rule) => (
-                                    <li
-                                      key={rule.name}
-                                      className={
-                                        rule.will_apply
-                                          ? "flex items-start gap-1 text-ink"
-                                          : "flex items-start gap-1 text-ink-soft line-through"
-                                      }
-                                    >
-                                      <span className="mt-0.5 flex-shrink-0">
-                                        {rule.will_apply ? "✓" : "—"}
-                                      </span>
-                                      <span>
-                                        <strong>{rule.name}:</strong> {rule.description}
-                                      </span>
-                                    </li>
-                                  ))}
-                                </ul>
-                              ) : (
-                                <p className="text-12 text-ink-soft italic">No transform rules</p>
-                              )}
-                            </div>
-                          )}
-                        </div>
-                      </label>
-                    );
-                  })}
+                  {(modelsQuery.data ?? []).map((option) => (
+                    <ModelOptionCard
+                      key={option.model}
+                      option={option}
+                      checked={!isLocked(option) && selectedModels.has(option.model)}
+                      locked={isLocked(option)}
+                      modelCard={modelCards[option.model]}
+                      onToggle={() => toggleModel(option.model)}
+                      onRequestKey={() => setKeyDrawerProvider(option.provider)}
+                    />
+                  ))}
                 </div>
               )}
               {!canContinueFromTargetModel && !modelsQuery.isLoading && (
                 <p className="mt-3 text-12 text-ink-soft">Select at least one model to continue.</p>
               )}
+
+              {/* Beyond the curated list: any LiteLLM model string an
+                  aggregator provider (NVIDIA NIM, OpenRouter, ...) actually
+                  offers, not just what's hand-curated above - "any provider"
+                  is this project's own stated design goal (see
+                  WorkspaceApiKey's docstring in apps/api/models.py). */}
+              <div className="mt-4 border-t border-line pt-4">
+                <p className="mb-2 text-13 font-medium text-ink">Add another model</p>
+                <p className="mb-3 text-12 text-ink-soft">
+                  Search OpenRouter's full model catalog, or look up any other LiteLLM model
+                  string directly, e.g.{" "}
+                  <code className="font-mono text-11">nvidia_nim/meta/llama-3.1-8b-instruct</code>.
+                </p>
+                <div className="space-y-3">
+                  <div>
+                    <p className="mb-1 text-11 font-medium uppercase tracking-wide text-ink-soft">
+                      OpenRouter
+                    </p>
+                    <OpenRouterModelPicker
+                      catalog={openRouterCatalogQuery.data ?? []}
+                      isLoading={openRouterCatalogQuery.isLoading}
+                      onSelect={addCustomModel}
+                    />
+                  </div>
+                  <div>
+                    <p className="mb-1 text-11 font-medium uppercase tracking-wide text-ink-soft">
+                      Any other model string
+                    </p>
+                    <form
+                      className="flex items-start gap-2"
+                      onSubmit={(event) => {
+                        event.preventDefault();
+                        if (!customModelInput.trim() || lookupMutation.isPending) return;
+                        lookupMutation.mutate();
+                      }}
+                    >
+                      <Input
+                        aria-label="Custom model string"
+                        placeholder="provider/org/model-name"
+                        value={customModelInput}
+                        onChange={(event) => setCustomModelInput(event.target.value)}
+                        className="font-mono"
+                      />
+                      <Button type="submit" variant="secondary" disabled={!customModelInput.trim() || lookupMutation.isPending}>
+                        {lookupMutation.isPending ? "Looking up…" : "Look up"}
+                      </Button>
+                    </form>
+                  </div>
+                </div>
+                {lookupMutation.isError && (
+                  <p className="mt-2 text-13 text-parity-fail" role="alert">
+                    {lookupMutation.error instanceof ApiError
+                      ? lookupMutation.error.message
+                      : "Couldn't look up that model."}
+                  </p>
+                )}
+                {customModels.length > 0 && (
+                  <div className="mt-3 grid grid-cols-2 gap-3">
+                    {customModels.map((option) => (
+                      <ModelOptionCard
+                        key={option.model}
+                        option={option}
+                        checked={!isLocked(option) && selectedModels.has(option.model)}
+                        locked={isLocked(option)}
+                        modelCard={modelCards[option.model]}
+                        onToggle={() => toggleModel(option.model)}
+                        onRequestKey={() => setKeyDrawerProvider(option.provider)}
+                        onRemove={() => {
+                          setCustomModels((prev) => prev.filter((m) => m.model !== option.model));
+                          setSelectedModels((prev) => {
+                            const next = new Set(prev);
+                            next.delete(option.model);
+                            return next;
+                          });
+                        }}
+                      />
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
 
             {selectedModels.size > 0 && (
@@ -456,6 +736,80 @@ export function NewMigrationWizard({
                         );
                       })
                     )}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {selectedModels.size > 0 && (
+              <div>
+                <button
+                  type="button"
+                  onClick={() => setShowJudgeMutatorAdvanced((v) => !v)}
+                  aria-expanded={showJudgeMutatorAdvanced}
+                  className="text-13 font-medium text-beam hover:underline"
+                >
+                  {showJudgeMutatorAdvanced
+                    ? "Hide advanced: override judge/mutator for this migration"
+                    : "Advanced: override judge/mutator for this migration"}
+                </button>
+                {showJudgeMutatorAdvanced && (
+                  <div className="mt-3 space-y-4 rounded-control border border-line p-4">
+                    <p className="text-12 text-ink-soft">
+                      Optional — Reprompt's own judge and mutator (the models that score and
+                      rewrite candidate prompts) default to whatever Settings' System models
+                      table shows. Override either one for just this migration.
+                    </p>
+                    <div className="grid grid-cols-2 gap-4">
+                      <div>
+                        <label
+                          htmlFor="judge-model-override"
+                          className="mb-1 block text-12 font-medium text-ink"
+                        >
+                          Judge
+                        </label>
+                        <Select
+                          id="judge-model-override"
+                          value={judgeModelOverride}
+                          onChange={(e) => setJudgeModelOverride(e.target.value)}
+                        >
+                          <option value="">
+                            {judgeDefault
+                              ? `Same as global: ${judgeDefault.selected_model}`
+                              : "Same as global default"}
+                          </option>
+                          {judgeMutatorCandidates.map((option) => (
+                            <option key={option.model} value={option.model}>
+                              {option.model}
+                            </option>
+                          ))}
+                        </Select>
+                      </div>
+                      <div>
+                        <label
+                          htmlFor="mutator-model-override"
+                          className="mb-1 block text-12 font-medium text-ink"
+                        >
+                          Mutator
+                        </label>
+                        <Select
+                          id="mutator-model-override"
+                          value={mutatorModelOverride}
+                          onChange={(e) => setMutatorModelOverride(e.target.value)}
+                        >
+                          <option value="">
+                            {mutatorDefault
+                              ? `Same as global: ${mutatorDefault.selected_model}`
+                              : "Same as global default"}
+                          </option>
+                          {judgeMutatorCandidates.map((option) => (
+                            <option key={option.model} value={option.model}>
+                              {option.model}
+                            </option>
+                          ))}
+                        </Select>
+                      </div>
+                    </div>
                   </div>
                 )}
               </div>
@@ -574,6 +928,28 @@ export function NewMigrationWizard({
                 </ul>
                 <p className="mt-2 text-12 text-ink-soft">
                   These stages use their own model list instead of the target models above.
+                </p>
+              </div>
+            )}
+
+            {(judgeModelOverride || mutatorModelOverride) && (
+              <div>
+                <h2 className="mb-2 text-13 font-medium text-ink">Judge/mutator overrides</h2>
+                <ul className="space-y-1">
+                  {judgeModelOverride && (
+                    <li className="text-13 text-ink">
+                      Judge: <span className="font-mono">{judgeModelOverride}</span>
+                    </li>
+                  )}
+                  {mutatorModelOverride && (
+                    <li className="text-13 text-ink">
+                      Mutator: <span className="font-mono">{mutatorModelOverride}</span>
+                    </li>
+                  )}
+                </ul>
+                <p className="mt-2 text-12 text-ink-soft">
+                  Used only for this migration — every other migration keeps using the global
+                  default.
                 </p>
               </div>
             )}

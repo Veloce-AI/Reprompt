@@ -143,6 +143,85 @@ def test_list_model_options_unknown_pipeline_returns_404(client: TestClient) -> 
 
 
 # ---------------------------------------------------------------------------
+# GET /pipelines/{id}/models/lookup
+# ---------------------------------------------------------------------------
+
+
+def test_lookup_model_option_resolves_a_model_outside_the_curated_list(
+    client: TestClient,
+) -> None:
+    pipeline_id = _upload(client, _diamond_trace_file())
+
+    # Not in CURATED_MODELS, but a real, litellm-recognized OpenRouter
+    # model - the whole point of this endpoint.
+    response = client.get(
+        f"/pipelines/{pipeline_id}/models/lookup",
+        params={"model": "openrouter/deepseek/deepseek-r1"},
+    )
+    assert response.status_code == 200
+    option = response.json()
+    assert option["model"] == "openrouter/deepseek/deepseek-r1"
+    assert option["provider"] == "openrouter"
+    assert option["requires_api_key"] is True
+
+
+def test_lookup_model_option_degrades_gracefully_for_an_unrecognized_string(
+    client: TestClient,
+) -> None:
+    pipeline_id = _upload(client, _diamond_trace_file())
+
+    response = client.get(
+        f"/pipelines/{pipeline_id}/models/lookup",
+        params={"model": "not-a-real-provider/not-a-real-model"},
+    )
+    assert response.status_code == 200
+    option = response.json()
+    assert option["model"] == "not-a-real-provider/not-a-real-model"
+    assert option["input_cost_per_1m"] is None
+
+
+def test_lookup_model_option_rejects_empty_model(client: TestClient) -> None:
+    pipeline_id = _upload(client, _diamond_trace_file())
+
+    response = client.get(
+        f"/pipelines/{pipeline_id}/models/lookup", params={"model": "   "}
+    )
+    assert response.status_code == 422
+
+
+def test_lookup_model_option_unknown_pipeline_returns_404(client: TestClient) -> None:
+    response = client.get("/pipelines/999999/models/lookup", params={"model": "gpt-4o"})
+    assert response.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# GET /pipelines/{id}/models/catalog/openrouter
+# ---------------------------------------------------------------------------
+
+
+def test_list_openrouter_catalog_returns_every_known_model(client: TestClient) -> None:
+    pipeline_id = _upload(client, _diamond_trace_file())
+
+    response = client.get(f"/pipelines/{pipeline_id}/models/catalog/openrouter")
+    assert response.status_code == 200
+    options = response.json()
+
+    # Full LiteLLM-known catalog, not just CURATED_MODELS' hand-picked
+    # OpenRouter subset - dozens of entries, every one actually prefixed
+    # with the openrouter/ provider string.
+    assert len(options) > 50
+    assert all(option["model"].startswith("openrouter/") for option in options)
+    assert all(option["provider"] == "openrouter" for option in options)
+    models = [option["model"] for option in options]
+    assert models == sorted(models)
+
+
+def test_list_openrouter_catalog_unknown_pipeline_returns_404(client: TestClient) -> None:
+    response = client.get("/pipelines/999999/models/catalog/openrouter")
+    assert response.status_code == 404
+
+
+# ---------------------------------------------------------------------------
 # POST /pipelines/{id}/migrations
 # ---------------------------------------------------------------------------
 

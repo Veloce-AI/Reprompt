@@ -399,6 +399,15 @@ def test_model(
             body.model,
             [{"role": "user", "content": "Reply with exactly one word: ok"}],
             max_tokens=5,
+            # No timeout was set here before, so a provider that's slow to
+            # respond (or never responds at all - e.g. a huge/gated model
+            # that silently hangs instead of rejecting the request) left
+            # this "quick connectivity check" spinning indefinitely, with
+            # no clear failure for the caller to show. 20s is generous for
+            # a 5-token reply; litellm.exceptions.Timeout is already mapped
+            # to TransientLLMError below, which reports a clear 502 instead
+            # of hanging.
+            timeout=20.0,
         )
     except ProviderKeyNotConfigured as exc:
         raise HTTPException(

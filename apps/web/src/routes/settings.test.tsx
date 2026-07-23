@@ -380,10 +380,10 @@ describe("Settings", () => {
     renderSettings();
 
     await screen.findByText("ollama/llama3.1");
-    // Scoped to index 0: the curated model's own "Test" button renders
-    // before the "Test any model" free-text section's identically-labeled
-    // submit button further down the card.
-    fireEvent.click(screen.getAllByRole("button", { name: "Test" })[0]);
+    // Scoped to the curated model's own row - "Test any model" (a
+    // separate card) has an identically-labeled submit button.
+    const row = screen.getByText("ollama/llama3.1").closest("div.rounded-control");
+    fireEvent.click(within(row as HTMLElement).getByRole("button", { name: "Test" }));
 
     expect(await screen.findByText("Works — 342ms")).toBeInTheDocument();
     expect(testModel).toHaveBeenCalledWith("ollama/llama3.1");
@@ -399,10 +399,10 @@ describe("Settings", () => {
     renderSettings();
 
     await screen.findByText("ollama/llama3.1");
-    // Scoped to index 0: the curated model's own "Test" button renders
-    // before the "Test any model" free-text section's identically-labeled
-    // submit button further down the card.
-    fireEvent.click(screen.getAllByRole("button", { name: "Test" })[0]);
+    // Scoped to the curated model's own row - "Test any model" (a
+    // separate card) has an identically-labeled submit button.
+    const row = screen.getByText("ollama/llama3.1").closest("div.rounded-control");
+    fireEvent.click(within(row as HTMLElement).getByRole("button", { name: "Test" }));
 
     expect(await screen.findByText("Test failed")).toBeInTheDocument();
     // The failure reason is visible text now, not just a hover tooltip -
@@ -428,10 +428,11 @@ describe("Settings", () => {
     renderSettings();
 
     await screen.findByText("ollama/llama3.1");
-    fireEvent.change(screen.getByLabelText("Model string to test"), {
-      target: { value: "nvidia_nim/z-ai/glm-5.2" },
-    });
-    fireEvent.click(screen.getAllByRole("button", { name: "Test" })[1]);
+    const testInput = screen.getByLabelText("Model string to test");
+    fireEvent.change(testInput, { target: { value: "nvidia_nim/z-ai/glm-5.2" } });
+    fireEvent.click(
+      within(testInput.closest("form") as HTMLElement).getByRole("button", { name: "Test" })
+    );
 
     expect(await screen.findByText("Works — 512ms")).toBeInTheDocument();
     expect(testModel).toHaveBeenCalledWith("nvidia_nim/z-ai/glm-5.2");

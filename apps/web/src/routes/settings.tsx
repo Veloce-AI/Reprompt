@@ -403,8 +403,80 @@ function ApiKeysCard() {
               : "Couldn't delete the API key."}
           </p>
         )}
+
+        <TestAnyModelForm />
       </CardContent>
     </Card>
+  );
+}
+
+/**
+ * Free-text "does my key actually work for this model" check, right where
+ * a key gets added - the natural next step after "Add API key" is "does it
+ * work", not a scroll down to a separate card. `POST /settings/models/test`
+ * already accepts any LiteLLM model string server-side (curated or not);
+ * this is the one entry point for it, shared by whichever card renders it.
+ */
+function TestAnyModelForm() {
+  const [customTestModel, setCustomTestModel] = useState("");
+
+  // Own mutation instance, not shared with ConfiguredModelsCard's curated
+  // "Test" buttons - the two cards don't need to coordinate pending/result
+  // state with each other.
+  const testMutation = useMutation({
+    mutationFn: (model: string) => testModel(model),
+  });
+
+  return (
+    <div className="border-t border-line pt-6">
+      <h3 className="mb-1 text-13 font-medium text-ink">Test any model</h3>
+      <p className="mb-3 text-12 text-ink-soft">
+        Not every model a provider hosts is curated below (e.g. an aggregator like NVIDIA NIM or
+        OpenRouter has far more than what's shown) — check whether the key you just added
+        actually works for a specific model string.
+      </p>
+      <form
+        className="flex items-start gap-2"
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (!customTestModel.trim() || testMutation.isPending) return;
+          testMutation.mutate(customTestModel.trim());
+        }}
+      >
+        <Input
+          aria-label="Model string to test"
+          placeholder="e.g. nvidia_nim/z-ai/glm-5.2"
+          value={customTestModel}
+          onChange={(event) => setCustomTestModel(event.target.value)}
+          className="max-w-sm font-mono"
+        />
+        <Button
+          type="submit"
+          variant="secondary"
+          size="sm"
+          disabled={!customTestModel.trim() || (testMutation.isPending && testMutation.variables === customTestModel.trim())}
+        >
+          {testMutation.isPending && testMutation.variables === customTestModel.trim()
+            ? "Testing…"
+            : "Test"}
+        </Button>
+        {testMutation.variables === customTestModel.trim() && testMutation.isSuccess && (
+          <Badge variant="pass" title={testMutation.data.content_preview}>
+            Works — {Math.round(testMutation.data.latency_ms)}ms
+          </Badge>
+        )}
+        {testMutation.variables === customTestModel.trim() && testMutation.isError && (
+          <Badge variant="fail">Test failed</Badge>
+        )}
+      </form>
+      {testMutation.variables === customTestModel.trim() && testMutation.isError && (
+        <p className="mt-1 text-12 text-parity-fail" role="alert">
+          {testMutation.error instanceof ApiError
+            ? testMutation.error.message
+            : "Test failed — check your connection and try again."}
+        </p>
+      )}
+    </div>
   );
 }
 
@@ -449,7 +521,6 @@ function ConfiguredModelsCard() {
   // uses for its own locked models - unlocking here shouldn't need a
   // different flow than unlocking there.
   const [keyDrawerProvider, setKeyDrawerProvider] = useState<string | null>(null);
-  const [customTestModel, setCustomTestModel] = useState("");
 
   const modelsQuery = useQuery({
     queryKey: ["settings-configured-models"],
@@ -457,16 +528,13 @@ function ConfiguredModelsCard() {
     retry: false,
   });
 
-  // One shared mutation for every model's "Test" button (both the curated
-  // rows below and the free-text tester at the bottom) rather than one
-  // per row - `testMutation.variables` (the model string just mutated
-  // with) tells each row whether *it* is the one currently pending/just
-  // resolved, so "did my key actually work for this model" is answered
-  // in place instead of only "is a row saved for it". The backend
-  // endpoint (`POST /settings/models/test`) already accepts any LiteLLM
-  // model string, curated or not - this was previously only reachable
-  // for curated rows because no free-text entry point existed, even
-  // though nothing server-side required curation.
+  // One shared mutation for every curated row's own "Test" button -
+  // `testMutation.variables` (the model string just mutated with) tells
+  // each row whether *it* is the one currently pending/just resolved, so
+  // "did my key actually work for this model" is answered in place
+  // instead of only "is a row saved for it". The free-text "Test any
+  // model" tester lives in ApiKeysCard (TestAnyModelForm) with its own
+  // independent mutation, right next to where a key gets added.
   const testMutation = useMutation({
     mutationFn: (model: string) => testModel(model),
   });
@@ -654,56 +722,6 @@ function ConfiguredModelsCard() {
             </div>
           </div>
         ))}
-
-        <div className="border-t border-line pt-4">
-          <h3 className="mb-1 text-13 font-medium text-ink">Test any model</h3>
-          <p className="mb-3 text-12 text-ink-soft">
-            Not every model a provider hosts is in the curated list above (e.g. an aggregator
-            like NVIDIA NIM or OpenRouter has far more than what's shown) — check whether your
-            key actually works for a specific model string before relying on it.
-          </p>
-          <form
-            className="flex items-start gap-2"
-            onSubmit={(event) => {
-              event.preventDefault();
-              if (!customTestModel.trim() || testMutation.isPending) return;
-              testMutation.mutate(customTestModel.trim());
-            }}
-          >
-            <Input
-              aria-label="Model string to test"
-              placeholder="e.g. nvidia_nim/z-ai/glm-5.2"
-              value={customTestModel}
-              onChange={(event) => setCustomTestModel(event.target.value)}
-              className="max-w-sm font-mono"
-            />
-            <Button
-              type="submit"
-              variant="secondary"
-              size="sm"
-              disabled={!customTestModel.trim() || (testMutation.isPending && testMutation.variables === customTestModel.trim())}
-            >
-              {testMutation.isPending && testMutation.variables === customTestModel.trim()
-                ? "Testing…"
-                : "Test"}
-            </Button>
-            {testMutation.variables === customTestModel.trim() && testMutation.isSuccess && (
-              <Badge variant="pass" title={testMutation.data.content_preview}>
-                Works — {Math.round(testMutation.data.latency_ms)}ms
-              </Badge>
-            )}
-            {testMutation.variables === customTestModel.trim() && testMutation.isError && (
-              <Badge variant="fail">Test failed</Badge>
-            )}
-          </form>
-          {testMutation.variables === customTestModel.trim() && testMutation.isError && (
-            <p className="mt-1 text-12 text-parity-fail" role="alert">
-              {testMutation.error instanceof ApiError
-                ? testMutation.error.message
-                : "Test failed — check your connection and try again."}
-            </p>
-          )}
-        </div>
       </CardContent>
     </Card>
   );

@@ -18,6 +18,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 from urllib.parse import parse_qs, urlparse
 
+import litellm.exceptions as litellm_exceptions
 import pytest
 from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
@@ -623,6 +624,34 @@ def test_test_model_makes_a_real_scoped_call_and_returns_a_preview(
     # kwarg, same mechanism test_llm_context.py verifies at the unit level.
     assert captured["api_key"] == "sk-testmodelkey12345"
     assert captured["max_tokens"] == 5
+    assert captured["timeout"] == 20.0
+
+
+def test_test_model_times_out_instead_of_hanging_indefinitely(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A provider that never responds (a huge/gated model that silently
+    hangs rather than rejecting the request outright) must not leave this
+    "quick connectivity check" spinning forever - a 20s `timeout` is
+    passed to LiteLLM (asserted above), and litellm.exceptions.Timeout is
+    already mapped to TransientLLMError -> a clear 502, not a hang."""
+    token, _ = _sign_in(client, "testmodel-timeout@example.com")
+    client.post(
+        "/settings/api-keys",
+        json={"provider": "openai", "api_key": "sk-timeoutkey123456"},
+        headers=_auth_headers(token),
+    )
+
+    def fake_completion(**kwargs):
+        raise litellm_exceptions.Timeout(message="timed out", model="gpt-4o", llm_provider="openai")
+
+    monkeypatch.setattr("reprompt_core.llm.client.litellm.completion", fake_completion)
+
+    response = client.post(
+        "/settings/models/test", json={"model": "gpt-4o"}, headers=_auth_headers(token)
+    )
+    assert response.status_code == 502, response.text
+    assert "gpt-4o" in response.json()["detail"]
 
 
 def test_test_model_without_a_configured_key_returns_a_clear_422(client: TestClient) -> None:

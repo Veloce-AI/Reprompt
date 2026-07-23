@@ -4592,3 +4592,36 @@ resolves and calls `testModel` with the typed string). Full apps/web
 suite: 195/195. Sanity-checked Data/Settings/Pipelines-list still render
 and scroll correctly after the `app-shell.tsx` height change (no
 regression from making the wrapper `h-full` instead of auto-height).
+
+## Model test: fixed the real hang, moved the tester next to "Add API key" [DONE — 2026-07-23]
+
+Follow-up to the NVIDIA test-failure investigation above. Two more real
+issues surfaced:
+
+1. **The connectivity check could hang indefinitely.** `POST
+   /settings/models/test` never passed a `timeout` to `complete_with_
+   workspace_credentials` - a provider that stalls instead of rejecting
+   the request (observed live: `nvidia_nim/z-ai/glm-5.2` sat on
+   "Testing…" with no resolution) left the button spinning forever, no
+   error, no way to tell it had failed vs. was just slow. Fixed: `settings.py`'s
+   `test_model()` now passes `timeout=20.0` - generous for a 5-token
+   reply, but bounded. `litellm.exceptions.Timeout` was already mapped to
+   `TransientLLMError` (502) by `reprompt_core.llm.client`, so this was a
+   one-line fix, not new error-handling.
+2. **"Test any model" was in the wrong place.** User asked for it right
+   where a key gets added, not in a separate card further down the page -
+   the natural next step after "Add API key" is "does it work," not a
+   scroll away. Extracted into its own `TestAnyModelForm` component (own
+   mutation instance, independent of the curated rows' shared one) and
+   moved from `ConfiguredModelsCard` into `ApiKeysCard`, directly under
+   the add-key form.
+
+**Verified**: new backend test simulates a `litellm.exceptions.Timeout`
+and confirms a clean 502 instead of a hang; existing test asserts
+`timeout=20.0` actually reaches the LiteLLM call. Frontend tests
+re-scoped from fragile button-index assumptions to querying by the
+specific row/form each button belongs to (order-independent, won't break
+the next time a "Test" button gets added elsewhere). Full suites:
+apps/api 227/227, apps/web 195/195. Screenshotted the real dev server:
+"Test any model" now renders directly beneath "Add API key," above
+"Configured models."

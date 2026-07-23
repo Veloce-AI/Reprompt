@@ -624,7 +624,7 @@ def test_test_model_makes_a_real_scoped_call_and_returns_a_preview(
     # kwarg, same mechanism test_llm_context.py verifies at the unit level.
     assert captured["api_key"] == "sk-testmodelkey12345"
     assert captured["max_tokens"] == 5
-    assert captured["timeout"] == 20.0
+    assert captured["timeout"] == 60.0
 
 
 def test_test_model_times_out_instead_of_hanging_indefinitely(

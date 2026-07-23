@@ -403,11 +403,14 @@ def test_model(
             # respond (or never responds at all - e.g. a huge/gated model
             # that silently hangs instead of rejecting the request) left
             # this "quick connectivity check" spinning indefinitely, with
-            # no clear failure for the caller to show. 20s is generous for
-            # a 5-token reply; litellm.exceptions.Timeout is already mapped
-            # to TransientLLMError below, which reports a clear 502 instead
-            # of hanging.
-            timeout=20.0,
+            # no clear failure for the caller to show. litellm.exceptions.
+            # Timeout is already mapped to TransientLLMError below, which
+            # reports a clear 502 instead of hanging. 60s (not the
+            # originally-chosen 20s) - confirmed live against a real NVIDIA
+            # NIM on-demand model that a 20s budget wasn't enough to outlast
+            # its cold-start latency, even though the model itself was
+            # otherwise reachable and working.
+            timeout=60.0,
         )
     except ProviderKeyNotConfigured as exc:
         raise HTTPException(

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
   ReactFlow,
@@ -247,6 +247,36 @@ export function PipelineCanvas({
     }
   }, [expandedStageIds, stageRecordsMap, pipelineId]);
 
+  // Live-duration tracking for a "running" stage-node badge (see
+  // stage-node.tsx's elapsedMs). No server-side start timestamp exists to
+  // read instead, so the first moment this browser session observes a
+  // stage as "running" is recorded here, client-side; elapsed = now minus
+  // that moment. clockTick just forces the node-building useMemo below to
+  // recompute once a second while anything's running - its value is never
+  // read for anything besides being a dependency.
+  const runningSinceRef = useRef<Record<string, number>>({});
+  const [clockTick, setClockTick] = useState(0);
+
+  useEffect(() => {
+    if (!stageStates) return;
+    const now = Date.now();
+    for (const [stageId, state] of Object.entries(stageStates)) {
+      if (state === "running" && runningSinceRef.current[stageId] === undefined) {
+        runningSinceRef.current[stageId] = now;
+      } else if (state !== "running" && runningSinceRef.current[stageId] !== undefined) {
+        delete runningSinceRef.current[stageId];
+      }
+    }
+  }, [stageStates]);
+
+  useEffect(() => {
+    const anyRunning =
+      stageStates != null && Object.values(stageStates).some((s) => s === "running");
+    if (!anyRunning) return;
+    const id = setInterval(() => setClockTick((t) => t + 1), 1000);
+    return () => clearInterval(id);
+  }, [stageStates]);
+
   const { nodes, edges } = useMemo(() => {
     if (!data) return { nodes: [] as PipelineFlowNode[], edges: [] as Edge[] };
 
@@ -292,10 +322,23 @@ export function PipelineCanvas({
             isExpanded: expandedStageIds.has(stageId),
             canExpandCalls: (stage?.trace_count ?? 0) > 0,
             isModelHighlighted: highlightedModel !== null && stage?.model === highlightedModel,
+            elapsedMs:
+              runState === "running" && runningSinceRef.current[String(stageId)] !== undefined
+                ? Date.now() - runningSinceRef.current[String(stageId)]
+                : undefined,
           },
         };
       })
     );
+
+    // Data already collected per stage (avg_latency_ms), previously unused
+    // for anything visual - see computeEdgeStrokeWidth's own docstring for
+    // the full reasoning.
+    const knownLatencies = stageList
+      .map((s) => s.avg_latency_ms)
+      .filter((v): v is number => v != null);
+    const minLatency = knownLatencies.length ? Math.min(...knownLatencies) : 0;
+    const maxLatency = knownLatencies.length ? Math.max(...knownLatencies) : 0;
 
     const depEdges: Edge[] = data.edges.map((edge) => {
       const kind = edgeKindFor(
@@ -308,7 +351,14 @@ export function PipelineCanvas({
         target: String(edge.to_stage_id),
         className:
           kind === "beam" ? "edge-beam" : kind === "passed" ? "edge-passed" : undefined,
-        style: kind === "plain" ? { stroke: "var(--line)" } : undefined,
+        style: {
+          ...(kind === "plain" ? { stroke: "var(--line)" } : {}),
+          strokeWidth: computeEdgeStrokeWidth(
+            data.stages[String(edge.from_stage_id)]?.avg_latency_ms,
+            minLatency,
+            maxLatency
+          ),
+        },
       };
     });
 
@@ -412,6 +462,10 @@ export function PipelineCanvas({
     expandedStageIds,
     stageRecordsMap,
     highlightedModel,
+    // Not read directly - forces elapsedMs (computed from runningSinceRef,
+    // a plain mutable ref) to recompute once a second while any stage is
+    // running. See the clockTick effect above.
+    clockTick,
   ]);
 
   // Adaptive minimap box — see MINIMAP_MAX_W/H's own comment below for why a
@@ -669,6 +723,27 @@ function nodesBBox(nodes: PipelineFlowNode[]): { width: number; height: number }
     maxY = Math.max(maxY, node.position.y + h);
   }
   return { width: maxX - minX, height: maxY - minY };
+}
+
+export const EDGE_STROKE_WIDTH_MIN = 1.5;
+export const EDGE_STROKE_WIDTH_MAX = 4;
+
+/** A dependency edge's thickness scales with its *source* stage's own
+ * average latency - "how long did producing what flows along this edge
+ * actually take" - relative to this pipeline's own min/max known latency
+ * (a relative scale per-pipeline, not an absolute one: "slow" only means
+ * anything next to this pipeline's other stages). Falls back to the
+ * minimum weight when the latency is unknown, or every known stage has
+ * the same latency (nothing to scale against). Exported for direct unit
+ * testing, same pattern as computeMinimapSize below. */
+export function computeEdgeStrokeWidth(
+  latencyMs: number | null | undefined,
+  minLatencyMs: number,
+  maxLatencyMs: number
+): number {
+  if (latencyMs == null || maxLatencyMs <= minLatencyMs) return EDGE_STROKE_WIDTH_MIN;
+  const t = (latencyMs - minLatencyMs) / (maxLatencyMs - minLatencyMs);
+  return EDGE_STROKE_WIDTH_MIN + t * (EDGE_STROKE_WIDTH_MAX - EDGE_STROKE_WIDTH_MIN);
 }
 
 /** The minimap's own `style.width`/`.height` - see the block comment above

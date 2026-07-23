@@ -4227,3 +4227,54 @@ Contracts tests: "Mine all" fires `mineContract` for both stages in order
 Screenshotted the real dev server against an imported 5-stage fixture:
 back link and "Mine all" both present and correctly positioned, all 5
 stages listed in their real pipeline order.
+
+## Canvas visual identity pass [DONE — 2026-07-23]
+
+Consulted Fable (model="fable" via the Agent tool) for a design critique
+of everything built this session before touching Canvas further — see
+that discussion's own summary in the conversation. Verdict: the product
+reads unevenly ("a beautifully designed lobby attached to a
+functional-but-generic office") because Canvas — the flagship screen —
+had a scroll bug fixed but no actual visual pass. His concrete direction:
+state should be carried by fill, not just border; add a status chip +
+live duration on running nodes; animate/weight edges so "this is
+happening now" and "this stage is a bottleneck" are visible without
+reading a stats line. All three built:
+
+**Fill + status chip** (`stage-node.tsx`): `STATE_FILL` (a new
+`Record<StageRunState, string>`, `bg-beam-soft/40` running /
+`bg-parity-pass/10` done / `bg-parity-fail/10` failed / `bg-paper` idle —
+same opacity-tinted convention `Badge`'s own pass/near/fail variants
+already use, not a new color idea) replaces the old plain `role="img"`
+dot with a real `Badge` chip carrying the state label. `STATE_DOT` (the
+old dot-only styling) removed, superseded by the badge.
+
+**Live duration** (`pipeline-canvas.tsx` tracks it, `stage-node.tsx`
+displays it): no server-side per-stage start timestamp exists, so the
+first moment a browser session observes a stage as `"running"` is
+recorded client-side in a `runningSinceRef` map; a 1s `setInterval`
+(only running while at least one stage is actually running) forces the
+node-building `useMemo` to recompute `elapsedMs`, which the badge renders
+as `formatElapsed()` ("12s" / "2m 05s") in place of the plain "Running"
+label once known, next to the existing pulsing beam dot.
+
+**Duration-scaled edge thickness** (`computeEdgeStrokeWidth`, new
+exported pure function, same pattern as `computeMinimapSize`): a
+dependency edge's `strokeWidth` now scales 1.5px→4px with its *source*
+stage's own `avg_latency_ms`, relative to this pipeline's own min/max
+known latency (a per-pipeline relative scale, not absolute — "slow" only
+means anything next to this pipeline's other stages). Data was already
+being collected per stage and simply wasn't used for anything visual
+before this — a slow stage's bottleneck is now visible on the canvas
+itself.
+
+**Verified**: `tsc --noEmit` clean, full `apps/web` suite 186/186 (3
+`stage-node.test.tsx` tests updated from dot-based to badge-based
+assertions, 1 new test for the elapsed-time readout; 5 new
+`computeEdgeStrokeWidth` unit tests covering the null/equal-latency/min/
+max/midpoint cases). Screenshotted the real dev server against a mocked
+*running* migration (intercepted the migrations-list and status-poll
+endpoints via Playwright route mocking to show done/running/idle/failed
+states simultaneously without needing a real LLM call): fill, badge,
+pulsing dot, live "● 3s" duration, and visibly varying edge thickness
+all render correctly together.

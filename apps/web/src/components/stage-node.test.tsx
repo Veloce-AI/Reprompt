@@ -104,26 +104,54 @@ describe("StageNode", () => {
     expect(container.querySelector(".border-line")).toBeInTheDocument();
   });
 
-  it("pulses the beam-colored dot and border for a running stage", () => {
-    renderStageNode(baseStage(), "running");
+  it("shows a beam-colored status chip with a pulsing dot, and a fill, for a running stage", () => {
+    const { container } = renderStageNode(baseStage(), "running");
 
-    const dot = screen.getByRole("img", { name: "Stage running" });
-    expect(dot.className).toContain("bg-beam");
-    expect(dot.className).toContain("animate-pulse");
+    const badge = screen.getByText("Running");
+    expect(badge.className).toContain("bg-beam-soft");
+    expect(container.querySelector(".animate-pulse")).toBeInTheDocument();
+    // Fill (not just border) carries state now - see stage-node.tsx's
+    // STATE_FILL comment.
+    expect(container.querySelector(".bg-beam-soft\\/40")).toBeInTheDocument();
   });
 
-  it("shows a success dot/border for a done stage", () => {
-    renderStageNode(baseStage(), "done");
+  it("shows a success status chip and fill for a done stage", () => {
+    const { container } = renderStageNode(baseStage(), "done");
 
-    const dot = screen.getByRole("img", { name: "Stage done" });
-    expect(dot.className).toContain("bg-parity-pass");
+    const badge = screen.getByText("Done");
+    expect(badge.className).toContain("bg-parity-pass");
+    expect(container.querySelector(".bg-parity-pass\\/10")).toBeInTheDocument();
   });
 
-  it("shows an error dot/border for a failed stage", () => {
-    renderStageNode(baseStage(), "failed");
+  it("shows an error status chip and fill for a failed stage", () => {
+    const { container } = renderStageNode(baseStage(), "failed");
 
-    const dot = screen.getByRole("img", { name: "Stage failed" });
-    expect(dot.className).toContain("bg-parity-fail");
+    const badge = screen.getByText("Failed");
+    expect(badge.className).toContain("bg-parity-fail");
+    expect(container.querySelector(".bg-parity-fail\\/10")).toBeInTheDocument();
+  });
+
+  it("shows a live elapsed-time readout instead of the plain 'Running' label once elapsedMs is known", () => {
+    render(
+      <ReactFlowProvider>
+        <StageNode
+          {...({
+            id: "1",
+            data: { stage: baseStage(), runState: "running", elapsedMs: 65_000 },
+            type: "stage",
+            selected: false,
+            isConnectable: true,
+            zIndex: 0,
+            dragging: false,
+            positionAbsoluteX: 0,
+            positionAbsoluteY: 0,
+          } as unknown as NodeProps<StageFlowNode>)}
+        />
+      </ReactFlowProvider>
+    );
+
+    expect(screen.getByText("1m 05s")).toBeInTheDocument();
+    expect(screen.queryByText("Running")).not.toBeInTheDocument();
   });
 
   it("shows a human-readable sub-step label under the pulsing dot for a running stage", () => {

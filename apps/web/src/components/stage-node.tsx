@@ -36,6 +36,12 @@ export type StageNodeData = {
    * pinned/highlighted model node — same border/edge highlight treatment
    * the former Graph tab's ModelGraphNode click drove. */
   isModelHighlighted?: boolean;
+  /** Live mode only, while runState === "running": milliseconds since this
+   * stage was first observed running, tracked client-side by
+   * pipeline-canvas.tsx (no server-side start timestamp exists to read
+   * instead) — ticks once a second so "how long has this actually been
+   * running" is visible without the user doing the math themselves. */
+  elapsedMs?: number;
 };
 export type StageFlowNode = Node<StageNodeData, "stage">;
 
@@ -64,11 +70,23 @@ const STATE_BORDER: Record<StageRunState, string> = {
   failed: "border-parity-fail",
 };
 
-const STATE_DOT: Record<StageRunState, string> = {
-  idle: "bg-ink-soft/40",
-  running: "bg-beam animate-pulse",
-  done: "bg-parity-pass",
-  failed: "bg-parity-fail",
+// Fill, not just border, carries state now (per design review: a border
+// color swap alone reads as "generic flowchart", not "this is actively
+// happening"). Same opacity-tinted convention Badge's own pass/near/fail
+// variants already use (bg-parity-pass/10 etc.) — not a new color idea,
+// just applied to the whole card instead of a small pill.
+const STATE_FILL: Record<StageRunState, string> = {
+  idle: "bg-paper",
+  running: "bg-beam-soft/40",
+  done: "bg-parity-pass/10",
+  failed: "bg-parity-fail/10",
+};
+
+const STATE_BADGE_VARIANT: Record<StageRunState, "outline" | "neutral" | "pass" | "fail"> = {
+  idle: "outline",
+  running: "neutral", // neutral = bg-beam-soft/text-beam, i.e. the active/beam accent
+  done: "pass",
+  failed: "fail",
 };
 
 const STATE_LABEL: Record<StageRunState, string> = {
@@ -77,6 +95,17 @@ const STATE_LABEL: Record<StageRunState, string> = {
   done: "Done",
   failed: "Failed",
 };
+
+/** "12s" under a minute, "2m 05s" at or past one - a running stage is
+ * expected to be a seconds-to-low-minutes affair (one LLM call plus
+ * harness overhead), not hours, so no need for an hours unit. */
+function formatElapsed(ms: number): string {
+  const totalSeconds = Math.max(0, Math.floor(ms / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  if (minutes === 0) return `${seconds}s`;
+  return `${minutes}m ${String(seconds).padStart(2, "0")}s`;
+}
 
 // Trace format v1.1 makes StageRecord.tokens/latency_ms optional (a trace
 // recorder may not capture them), so the DAG's per-stage averages can come
@@ -105,6 +134,7 @@ export function StageNode({ data }: NodeProps<StageFlowNode>) {
     isExpanded,
     canExpandCalls,
     isModelHighlighted,
+    elapsedMs,
   } = data;
   const vertical = orientation === "vertical";
   const analytics = mode === "analytics";
@@ -114,12 +144,13 @@ export function StageNode({ data }: NodeProps<StageFlowNode>) {
       className={cn(
         "w-56 border-2 transition-colors duration-base ease-out",
         // Model-highlight (analytics mode) takes visual priority over the
-        // idle/done/failed border - a pinned model's stages should read as
-        // "selected" the same way a running stage reads as "active".
+        // idle/done/failed border+fill - a pinned model's stages should
+        // read as "selected" the same way a running stage reads as
+        // "active", not have the two compete.
         isModelHighlighted
           ? "border-beam shadow-[0_0_0_3px_var(--beam-soft)]"
           : runState
-            ? STATE_BORDER[runState]
+            ? cn(STATE_BORDER[runState], STATE_FILL[runState])
             : "border-line",
         // Soft --beam halo while an LLM call is happening in this stage -
         // the "light is here right now" signal (pulse disabled under
@@ -155,12 +186,21 @@ export function StageNode({ data }: NodeProps<StageFlowNode>) {
             {stage.name}
           </p>
           {runState && (
-            <span
-              role="img"
-              aria-label={`Stage ${STATE_LABEL[runState].toLowerCase()}`}
+            <Badge
+              variant={STATE_BADGE_VARIANT[runState]}
+              className="shrink-0 gap-1"
               title={STATE_LABEL[runState]}
-              className={cn("h-2 w-2 shrink-0 rounded-full", STATE_DOT[runState])}
-            />
+            >
+              {runState === "running" && (
+                <span
+                  className="h-1.5 w-1.5 rounded-full bg-beam animate-pulse"
+                  aria-hidden="true"
+                />
+              )}
+              {runState === "running" && elapsedMs != null
+                ? formatElapsed(elapsedMs)
+                : STATE_LABEL[runState]}
+            </Badge>
           )}
         </div>
         {runState === "running" && substep && (

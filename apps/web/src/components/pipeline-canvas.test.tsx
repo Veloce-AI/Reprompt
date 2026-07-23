@@ -1,5 +1,10 @@
 import { describe, it, expect } from "vitest";
-import { computeMinimapSize } from "./pipeline-canvas";
+import {
+  computeMinimapSize,
+  computeEdgeStrokeWidth,
+  EDGE_STROKE_WIDTH_MIN,
+  EDGE_STROKE_WIDTH_MAX,
+} from "./pipeline-canvas";
 
 /** Minimal duck-typed fixture — computeMinimapSize only reads
  * `position`/`initialWidth`/`initialHeight`, so a full PipelineFlowNode
@@ -47,5 +52,32 @@ describe("computeMinimapSize", () => {
     const result = computeMinimapSize([node(0, 0)]);
     expect(result.width).toBeLessThanOrEqual(224 * 0.5 + 1);
     expect(result.height).toBeLessThanOrEqual(127 * 0.5 + 1);
+  });
+});
+
+describe("computeEdgeStrokeWidth", () => {
+  it("returns the minimum weight for an unknown (null) latency", () => {
+    expect(computeEdgeStrokeWidth(null, 500, 2000)).toBe(EDGE_STROKE_WIDTH_MIN);
+    expect(computeEdgeStrokeWidth(undefined, 500, 2000)).toBe(EDGE_STROKE_WIDTH_MIN);
+  });
+
+  it("returns the minimum weight when every known stage has the same latency", () => {
+    // maxLatencyMs <= minLatencyMs - nothing to scale against.
+    expect(computeEdgeStrokeWidth(800, 800, 800)).toBe(EDGE_STROKE_WIDTH_MIN);
+  });
+
+  it("returns the minimum weight for the fastest stage in the pipeline", () => {
+    expect(computeEdgeStrokeWidth(500, 500, 2000)).toBe(EDGE_STROKE_WIDTH_MIN);
+  });
+
+  it("returns the maximum weight for the slowest stage in the pipeline", () => {
+    expect(computeEdgeStrokeWidth(2000, 500, 2000)).toBe(EDGE_STROKE_WIDTH_MAX);
+  });
+
+  it("scales linearly between min and max for a stage in the middle", () => {
+    // Exactly halfway between 500 and 2000.
+    const result = computeEdgeStrokeWidth(1250, 500, 2000);
+    const expected = (EDGE_STROKE_WIDTH_MIN + EDGE_STROKE_WIDTH_MAX) / 2;
+    expect(result).toBeCloseTo(expected, 5);
   });
 });

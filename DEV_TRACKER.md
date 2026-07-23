@@ -4162,3 +4162,28 @@ against a test router stub that has those routes registered, which
 `landing.test.tsx`'s already did). Screenshotted the real dev server:
 "Home" correctly highlighted only on `/`, nav rail/theme-toggle bar
 identical to every other screen, hero/rest of the page unaffected.
+
+## Fixed: whole page scrolled instead of just the content area [DONE — 2026-07-23]
+
+Most visible on the Canvas tab (reported as "still not good, has scrolling
+on that page, ideally that shouldn't") - React Flow's own pan/zoom expects
+a viewport-bounded container, not page-level scroll, but this actually
+affected every screen with content taller than the viewport, introduced
+by this session's own theme-toggle-bar restructuring of `app-shell.tsx`.
+
+Root cause: the outer shell was `min-h-screen` (a *floor* — allowed to
+grow taller than the viewport) rather than `h-screen` (a hard cap). With
+only a floor, a tall child (like Canvas's DAG) makes the whole flex row
+grow past 100vh; `main`'s flex-stretched height grows right along with
+it, so its own `overflow-y-auto` region never actually has anything to
+clip — there's nothing to scroll *inside*, so the browser scrolls the
+*whole page* instead, nav rail and theme-toggle bar included. Changed to
+`h-screen`: the app frame is always exactly one viewport tall, so any
+overflow is forced into the inner scrollable region instead of the page.
+
+**Verified**: full `apps/web` suite 178/178, `tsc --noEmit` clean (no
+test asserted the specific `min-h-screen` class). Live check: imported a
+real 5-stage fixture pipeline, opened its Canvas tab,
+`document.body.scrollHeight === window.innerHeight` exactly (no
+page-level scroll), nav rail/theme bar stayed fixed while the canvas
+itself handled pan/zoom internally, screenshotted to confirm.

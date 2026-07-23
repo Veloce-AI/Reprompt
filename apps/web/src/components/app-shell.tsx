@@ -28,7 +28,16 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
 
   return (
-    <div className="flex min-h-screen bg-paper">
+    // h-screen (a hard cap), not min-h-screen (a floor that lets this whole
+    // row grow taller than the viewport when content is tall) - with only
+    // a floor, `main`'s flex-stretched height grows right along with it and
+    // its own overflow-y-auto region never actually has anything to clip,
+    // so the browser scrolls the *whole page*, nav rail included, instead
+    // of just the inner content area. Most visible on the Canvas tab
+    // (React Flow's own pan/zoom expects a viewport-bounded container, not
+    // page-level scroll), but this affected every screen with content
+    // taller than the viewport.
+    <div className="flex h-screen bg-paper">
       <nav
         className="flex shrink-0 flex-col border-r border-line py-6"
         style={{ width: "var(--nav-rail-width)" }}

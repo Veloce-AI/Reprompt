@@ -4187,3 +4187,43 @@ real 5-stage fixture pipeline, opened its Canvas tab,
 `document.body.scrollHeight === window.innerHeight` exactly (no
 page-level scroll), nav rail/theme bar stayed fixed while the canvas
 itself handled pan/zoom internally, screenshotted to confirm.
+
+## Contracts tab: "Mine all" + explicit stage order; workspace back link [DONE — 2026-07-23]
+
+Three concrete asks: mine every stage at once instead of clicking each
+one individually, guarantee stages render in actual pipeline flow order
+(not incidental object-key order), and a way back to the pipelines list
+that isn't just the nav rail.
+
+**"Mine all"** (`contract-review-panel.tsx`): each `StageAssertions`
+registers its own `handleMine` into a ref-keyed map the parent
+`ContractReviewPanel` owns (`registerMiner`); a new "Mine all" button
+(shown only once there's more than one stage) awaits each stage's miner
+*sequentially*, not `Promise.all` — mining calls an LLM per stage, and
+firing every stage's call at once would make one failure hard to
+attribute and burst-load whatever provider is configured. Each stage
+still surfaces its own error inline via its own existing `mineError`
+state if it fails.
+
+**Stage order**: `stages` is now explicitly `.sort((a, b) => a.id - b.id)`
+instead of trusting `Object.values()`'s ordering to happen to match
+pipeline flow — same convention `new-migration-wizard.tsx`'s own stage
+list already uses. (In practice `Object.values()` on integer-keyed data
+already iterates ascending per the JS spec, so this doesn't change actual
+behavior — the sort is about not depending on that being understood
+correctly by whoever touches this next, not fixing an observed ordering
+bug.)
+
+**Back link**: `pipeline-workspace.tsx` gets a small "← Pipelines" link
+above the pipeline name — the old standalone screens had one before the
+"Phase 1 — Unified pipeline workspace" merge removed it in favor of
+relying solely on the nav rail's own "Pipelines" item. Both now coexist:
+the nav rail for general navigation, this for the common
+"I'm-done-with-this-pipeline" case without eye travel to the far-left rail.
+
+**Verified**: `tsc --noEmit` clean, full `apps/web` suite 180/180 (2 new
+Contracts tests: "Mine all" fires `mineContract` for both stages in order
+10→11, and is hidden entirely for a single-stage pipeline).
+Screenshotted the real dev server against an imported 5-stage fixture:
+back link and "Mine all" both present and correctly positioned, all 5
+stages listed in their real pipeline order.

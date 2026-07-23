@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
-import { useNavigate, useParams, useSearch } from "@tanstack/react-router";
+import { Link, useNavigate, useParams, useSearch } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { ArrowLeft } from "lucide-react";
 import {
   approveRubric,
   importIntoExistingPipeline,
@@ -131,6 +132,13 @@ export default function PipelineWorkspace() {
           Canvas tab wrapper below for the fuller trace). */}
       <div className="flex h-[calc(100vh-1px)] flex-col">
         <div className="border-b border-line px-8 py-4">
+          <Link
+            to="/pipelines"
+            className="mb-2 inline-flex items-center gap-1 text-12 font-medium text-ink-soft hover:text-ink"
+          >
+            <ArrowLeft className="h-3 w-3" aria-hidden="true" />
+            Pipelines
+          </Link>
           <div className="flex items-start justify-between gap-4">
           {isEditingName ? (
             <div className="flex items-center gap-2">

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   type AssertionOut,
@@ -32,10 +32,15 @@ function StageAssertions({
   pipelineId,
   stageId,
   stageName,
+  registerMiner,
 }: {
   pipelineId: number;
   stageId: number;
   stageName: string;
+  /** Lets the parent's "Mine all" button trigger this stage's own mine
+   * logic (and share its error/loading state) without lifting all of
+   * StageAssertions' state up - each stage still owns its own mining. */
+  registerMiner: (stageId: number, mine: () => Promise<void>) => void;
 }) {
   const qc = useQueryClient();
   const [mining, setMining] = useState(false);
@@ -68,6 +73,8 @@ function StageAssertions({
       setMining(false);
     }
   };
+
+  registerMiner(stageId, handleMine);
 
   const assertions = assertionsQuery.data ?? [];
 
@@ -176,18 +183,56 @@ export function ContractReviewPanel({ pipelineId }: { pipelineId: number }) {
   // runtime `.length` (TS only thought it did via the index signature),
   // which meant a genuinely empty pipeline never hit the `=== 0` check
   // below and rendered nothing instead of the "No stages found" message.
-  const stages = Object.values(dagQuery.data?.stages ?? {});
+  // Explicitly sorted by id (== pipeline flow/creation order, same
+  // convention new-migration-wizard.tsx's own stage list uses) rather than
+  // relying on Object.values' incidental key ordering to happen to match.
+  const stages = Object.values(dagQuery.data?.stages ?? {}).sort((a, b) => a.id - b.id);
+
+  const minersRef = useRef<Record<number, () => Promise<void>>>({});
+  const registerMiner = (stageId: number, mine: () => Promise<void>) => {
+    minersRef.current[stageId] = mine;
+  };
+  const [mineAllRunning, setMineAllRunning] = useState(false);
+
+  async function handleMineAll() {
+    setMineAllRunning(true);
+    try {
+      // Sequential, not Promise.all - mining calls an LLM per stage, and
+      // running every stage's call at once would make one failure hard to
+      // attribute and multiply the burst load on whatever provider is
+      // configured. Each stage still reports its own error inline (via its
+      // own handleMine/mineError) if it fails.
+      for (const stage of stages) {
+        const mine = minersRef.current[stage.id];
+        if (mine) await mine();
+      }
+    } finally {
+      setMineAllRunning(false);
+    }
+  }
 
   return (
     <div>
-      <div className="mb-2 flex items-center gap-1.5">
-        <h2 className="font-display text-22 font-semibold text-ink">Contract Mining</h2>
-        <InfoTooltip label="What is contract mining?">
-          Looks at real outputs from this stage and finds what never changes across them (e.g.
-          "the flag is always low/medium/high, always cites a number"). Those become an
-          executable contract a migrated prompt must satisfy — instead of just matching your
-          original wording.
-        </InfoTooltip>
+      <div className="mb-2 flex items-center justify-between gap-4">
+        <div className="flex items-center gap-1.5">
+          <h2 className="font-display text-22 font-semibold text-ink">Contract Mining</h2>
+          <InfoTooltip label="What is contract mining?">
+            Looks at real outputs from this stage and finds what never changes across them (e.g.
+            "the flag is always low/medium/high, always cites a number"). Those become an
+            executable contract a migrated prompt must satisfy — instead of just matching your
+            original wording.
+          </InfoTooltip>
+        </div>
+        {!dagQuery.isLoading && stages.length > 1 && (
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={handleMineAll}
+            disabled={mineAllRunning}
+          >
+            {mineAllRunning ? "Mining all…" : "Mine all"}
+          </Button>
+        )}
       </div>
 
       {dagQuery.isLoading && (
@@ -215,6 +260,7 @@ export function ContractReviewPanel({ pipelineId }: { pipelineId: number }) {
               pipelineId={pipelineId}
               stageId={stage.id}
               stageName={stage.name}
+              registerMiner={registerMiner}
             />
           ))}
         </>

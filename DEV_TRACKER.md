@@ -3738,3 +3738,63 @@ Phase 1 alongside real landing-page content).
 **Next**: Phase 1 (real landing-page copy/sections, simple CSS/SVG
 motion reusing the Logo/ParityBeam visual language) — not started, needs
 its own pass rather than being bundled with this one.
+
+## Landing page Phase 1 — real content + CSS/SVG motion [DONE — 2026-07-23]
+
+Replaces the Phase 0 placeholder with the actual marketing page, sourced
+directly from README's own plain-English product description (problem →
+what Reprompt does → Prism → how it stays reliable → proof) so the copy
+doesn't drift from what the product actually does. Six sections in
+`apps/web/src/routes/landing.tsx`: Hero, "what is a trace" (4-stage trace
+example), "the flow" (5-step Learn/Search/Check/Prove/Hand-back track),
+Prism spotlight (Mutate→Score→Critique→Refine, "up to 3 rounds", budget
+ceiling + plateau detection), proof/scorecard (a real `ParityBeam`
+instance, `score=97`, `animateIn`), and a closing CTA + footer.
+
+**Visual identity**: reuses existing tokens/components rather than
+inventing new ones (per the frontend-design skill) — `Logo` and
+`ParityBeam` directly, `--spectrum-violet`/`--spectrum-teal`/
+`--parity-pass` for the hero graphic's candidate/winner beams, serif
+`font-display` for headings next to sans body text, `bg-beam-soft/40` for
+the Prism section wash (an already-established pattern, see
+`data-table.tsx`/`dropzone.tsx`).
+
+**Motion** (`apps/web/src/styles/globals.css`, new `landing-flow-dot`
+keyframe + `HeroBeam`'s stroke-dashoffset draw-in inside `landing.tsx`):
+a one-time beam draw-in on the hero mark (same clip-path/rAF technique
+`ParityBeam` already uses, not a new approach) and a looping dot along
+the "how it works" step track. Both are explicitly exempt from the
+frontend-design skill's "motion must map to a real state" rule (there's
+no live run behind a marketing page — it's illustrative), but both still
+honor `prefers-reduced-motion`: the hero draw-in rides `--duration-base`/
+`--ease-out`, which tokens.css already zeroes under reduced motion, and
+the flow-dot gets its own explicit reduced-motion override that freezes
+it at 0%.
+
+**Regression found and fixed while verifying**: Phase 0's routing move
+broke two Playwright e2e specs that predated it -
+`apps/web/e2e/settings.spec.ts` asserted the post-sign-in redirect landed
+on `"/"` (now `"/pipelines"`), and `import-flow.spec.ts` opened `"/"`
+expecting the Pipelines-list empty state (now the Landing placeholder for
+a signed-out visitor). Both fixed to target `/pipelines`. While fixing
+`import-flow.spec.ts`, found a second, unrelated pre-existing staleness
+from the earlier Canvas/Graph tab merge (`DEV_TRACKER.md`'s "Phase 1 —
+Unified pipeline workspace" / "Canvas/Graph tab merge", both already
+landed before this session): the test still expected a standalone
+"Pipeline canvas" heading and a "← Pipelines" back-link, neither of which
+exist anymore in the unified workspace, and it counted `.react-flow__node`
+assuming the old single-mode canvas rather than the new default
+Analytics mode (which adds per-model summary nodes on top of the 5 raw
+stages). Fixed to check for the workspace's `"Canvas layout"` toolbar
+instead of the old heading, switch to Live mode before counting nodes
+(5, matching the raw stage DAG), and use the persistent nav rail's
+"Pipelines" link instead of the removed back-link.
+
+**Verified**: `tsc --noEmit` clean. `pnpm test` 170/170 (unchanged — this
+phase's new coverage is e2e, not unit). Full affected e2e set re-run
+against a fresh throwaway DB per `docs/DEVELOPMENT.md`'s gotcha:
+`auth.spec.ts` (2), `settings.spec.ts` (1), `import-flow.spec.ts` (2) —
+5/5 passing after the fixes above.
+
+**Next**: Phase 2 (richer flow animation) and Phase 3 (responsive/a11y
+polish) — not started.

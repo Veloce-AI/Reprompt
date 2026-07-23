@@ -75,3 +75,33 @@
     box-shadow: 0 0 10px 2px color-mix(in srgb, var(--beam) 40%, transparent);
   }
 }
+
+/* ============================================================
+   Landing page — "how it works" step track.
+   Purely illustrative motion (there's no live run behind a marketing
+   page), so it's exempt from the "motion must map to a real state"
+   rule elsewhere in this file - but it still respects reduced-motion,
+   same as everything else here.
+   A single dot loops along the step track to suggest the trace moving
+   through the pipeline stages the copy next to it describes.
+   ============================================================ */
+
+@keyframes landing-flow-dot {
+  0% {
+    left: 0%;
+  }
+  100% {
+    left: 100%;
+  }
+}
+
+.landing-flow-dot {
+  animation: landing-flow-dot 3.6s var(--ease-out) infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .landing-flow-dot {
+    animation: none;
+    left: 0%;
+  }
+}

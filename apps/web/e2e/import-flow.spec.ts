@@ -12,7 +12,7 @@ test.describe("pipeline import flow", () => {
   test("importing a fixture takes you from empty state through to the canvas", async ({
     page,
   }) => {
-    await page.goto("/");
+    await page.goto("/pipelines");
 
     // Empty state (assuming a clean DB - see README/CI notes: this test
     // expects to run against a freshly created database).
@@ -39,10 +39,18 @@ test.describe("pipeline import flow", () => {
 
     await page.getByRole("button", { name: "View pipeline canvas" }).click();
 
-    // Screen 3: the canvas itself.
+    // Screen 3: the unified pipeline workspace, Canvas tab (the default -
+    // see DEV_TRACKER.md's "Phase 1 - Unified pipeline workspace" /
+    // "Canvas/Graph tab merge", which replaced the old standalone
+    // "Pipeline canvas" screen and its "<- Pipelines" back-link with this
+    // tabbed workspace + the persistent nav rail).
     await expect(
-      page.getByRole("heading", { name: "Pipeline canvas" })
+      page.getByRole("toolbar", { name: "Canvas layout" })
     ).toBeVisible();
+    // Analytics mode (the default) groups stages by model, adding summary
+    // nodes on top of the 5 raw stages - switch to Live mode for a 1:1
+    // stage count, matching this test's original intent.
+    await page.getByRole("button", { name: "Live" }).click();
     // React Flow renders nodes async after layout - wait for at least one
     // stage card (rendered via our StageNode, which always shows a model
     // badge) to appear.
@@ -54,7 +62,7 @@ test.describe("pipeline import flow", () => {
 
     // Back to pipelines: the table now shows the imported pipeline, not
     // the empty state.
-    await page.getByRole("link", { name: "← Pipelines" }).click();
+    await page.getByRole("link", { name: "Pipelines" }).click();
     await expect(page.getByRole("table")).toBeVisible();
     await expect(page.getByText("Support ticket response pipeline")).toBeVisible();
   });

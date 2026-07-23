@@ -446,6 +446,29 @@ def list_model_options(pipeline_id: int, db: Session = Depends(get_db)) -> list[
     return [_to_option(model) for model in CURATED_MODELS]
 
 
+@router.get("/{pipeline_id}/models/lookup", response_model=ModelOption)
+def lookup_model_option(pipeline_id: int, model: str, db: Session = Depends(get_db)) -> ModelOption:
+    """Same shape as a `list_model_options` entry, for one arbitrary LiteLLM
+    model string instead of the curated list — lets a user target any
+    model an aggregator provider (NVIDIA NIM, OpenRouter, ...) actually
+    offers, not just what's hand-curated in `CURATED_MODELS`. "Any
+    provider" is already this project's stated design goal (see
+    `models.py`'s `WorkspaceApiKey` docstring) — `get_model_capabilities`
+    already works for any string LiteLLM recognizes, this just exposes
+    that generically instead of only for the curated subset.
+
+    Never 404s on an unrecognized model string: `_to_option` (like
+    `get_model_capabilities` underneath it) degrades to conservative
+    defaults rather than raising, so a user can preview a typo'd or
+    genuinely-unknown string and see *why* it looks wrong (e.g. no
+    provider resolved, no cost data) instead of a dead-end error.
+    """
+    _get_pipeline_or_404(db, pipeline_id)
+    if not model.strip():
+        raise HTTPException(status_code=422, detail="model must not be empty")
+    return _to_option(model.strip())
+
+
 @router.post("/{pipeline_id}/migrations", response_model=MigrationOut, status_code=201)
 def create_migration(
     pipeline_id: int, migration_in: MigrationCreate, db: Session = Depends(get_db)

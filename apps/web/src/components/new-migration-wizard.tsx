@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
+import { X } from "lucide-react";
 import {
   ApiError,
   createMigration,
@@ -7,6 +8,7 @@ import {
   getPipelineDag,
   listApiKeys,
   listModelOptions,
+  lookupModelOption,
   type MigrationOut,
   type ModelCardInfo,
   type ModelOption,
@@ -34,6 +36,133 @@ function formatCostPer1M(value: number | null): string {
 
 function formatTokens(value: number | null): string {
   return value == null ? "Unknown" : value.toLocaleString();
+}
+
+/**
+ * One model's picker card - checkbox + cost/context/capability info +
+ * transform rules, locked or not. Shared by the curated grid and the
+ * custom-model lookup list (see `NewMigrationWizard`'s "Add a custom
+ * model" section) so a model looks and behaves identically regardless of
+ * which list it came from - the only thing that differs between the two
+ * lists is *how a model got there*, not how it's presented.
+ */
+function ModelOptionCard({
+  option,
+  checked,
+  locked,
+  modelCard,
+  onToggle,
+  onRequestKey,
+  onRemove,
+}: {
+  option: ModelOption;
+  checked: boolean;
+  locked: boolean;
+  modelCard: ModelCardInfo | null | undefined;
+  onToggle: () => void;
+  onRequestKey: () => void;
+  /** Only custom (looked-up, non-curated) models can be removed from the
+   * list entirely - curated models are always present. */
+  onRemove?: () => void;
+}) {
+  return (
+    <label
+      className={
+        "flex items-start gap-3 rounded-control border p-4 transition-colors " +
+        (locked
+          ? "cursor-default border-line opacity-60"
+          : checked
+            ? "cursor-pointer border-beam bg-beam-soft/40"
+            : "cursor-pointer border-line hover:border-beam/40")
+      }
+    >
+      <input
+        type="checkbox"
+        aria-label={option.model}
+        className="mt-0.5 accent-beam"
+        checked={checked}
+        disabled={locked}
+        onChange={onToggle}
+      />
+      <div className="min-w-0 flex-1">
+        <div className="flex items-start justify-between gap-2">
+          <p className="min-w-0 break-all font-mono text-13 font-medium text-ink">{option.model}</p>
+          {onRemove && (
+            <button
+              type="button"
+              aria-label={`Remove ${option.model}`}
+              className="shrink-0 rounded-control p-0.5 text-ink-soft hover:bg-beam-soft hover:text-ink"
+              onClick={(event) => {
+                event.preventDefault();
+                onRemove();
+              }}
+            >
+              <X className="h-3.5 w-3.5" aria-hidden="true" />
+            </button>
+          )}
+        </div>
+        {option.provider && <p className="text-12 text-ink-soft capitalize">{option.provider}</p>}
+        {locked && option.provider && (
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <Badge variant="neutral">API key required</Badge>
+            <button
+              type="button"
+              className="text-12 font-medium text-beam hover:underline"
+              onClick={(event) => {
+                // Inside a <label>: don't let the click also reach the
+                // (disabled) checkbox.
+                event.preventDefault();
+                onRequestKey();
+              }}
+            >
+              Add API key
+            </button>
+          </div>
+        )}
+        <p className="mt-1 text-12 text-ink-soft">
+          {formatCostPer1M(option.input_cost_per_1m)} in / {formatCostPer1M(option.output_cost_per_1m)} out
+          per 1M tokens
+        </p>
+        <p className="mt-1 text-12 text-ink-soft">Context: {formatTokens(option.max_input_tokens)} tokens</p>
+        <div className="mt-2 flex flex-wrap gap-1">
+          {option.supports_json_mode && <Badge variant="pass">JSON mode</Badge>}
+          {option.supports_function_calling && <Badge variant="pass">Tool use</Badge>}
+          {!option.requires_api_key && <Badge variant="neutral">No API key</Badge>}
+          {option.transform_descriptions.map((desc) => (
+            <Badge key={desc} variant="neutral">
+              {desc}
+            </Badge>
+          ))}
+        </div>
+        {modelCard && (
+          <div className="mt-3 space-y-1 rounded bg-ink-soft/5 p-3">
+            <p className="text-11 font-medium uppercase tracking-wide text-ink-soft">Model transform rules</p>
+            {modelCard.rules.length > 0 ? (
+              <ul className="space-y-1 text-12 text-ink">
+                {modelCard.rules.map((rule) => (
+                  <li
+                    key={rule.name}
+                    className={
+                      rule.will_apply
+                        ? "flex items-start gap-1 text-ink"
+                        : "flex items-start gap-1 text-ink-soft line-through"
+                    }
+                  >
+                    <span className="mt-0.5 flex-shrink-0">{rule.will_apply ? "✓" : "—"}</span>
+                    <span className="min-w-0 flex-1">
+                      <strong>{rule.name}:</strong> {rule.description}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="text-12 text-ink-soft italic">No transform rules</p>
+            )}
+          </div>
+        )}
+      </div>
+    </label>
+  );
 }
 
 /**
@@ -69,6 +198,12 @@ export function NewMigrationWizard({
   const [stageOverrides, setStageOverrides] = useState<Record<string, Set<string>>>({});
   // Which provider the inline add-a-key drawer is open for; null = closed.
   const [keyDrawerProvider, setKeyDrawerProvider] = useState<string | null>(null);
+  // "Add a custom model" - any LiteLLM model string beyond the curated
+  // list (e.g. an NVIDIA NIM/OpenRouter model not hand-curated). Looked up
+  // live via lookupMutation; successful lookups accumulate here so they
+  // render alongside the curated grid using the same ModelOptionCard.
+  const [customModelInput, setCustomModelInput] = useState("");
+  const [customModels, setCustomModels] = useState<ModelOption[]>([]);
 
   const dagQuery = useQuery({
     queryKey: ["pipeline-dag", pipelineId],
@@ -104,22 +239,33 @@ export function NewMigrationWizard({
     );
   }
 
-  // Fetch model card info for each available model
+  // Fetch model card info for every available model - curated plus any
+  // looked-up custom ones, merged rather than replaced so a re-run
+  // triggered by a new custom model doesn't drop already-fetched cards.
   useEffect(() => {
-    if (!modelsQuery.data) return;
+    const allOptions = [...(modelsQuery.data ?? []), ...customModels];
+    if (allOptions.length === 0) return;
     const fetchCards = async () => {
       const cards: Record<string, ModelCardInfo | null> = {};
-      for (const option of modelsQuery.data) {
+      for (const option of allOptions) {
         try {
           cards[option.model] = await getModelCard(option.model);
         } catch {
           cards[option.model] = null;
         }
       }
-      setModelCards(cards);
+      setModelCards((prev) => ({ ...prev, ...cards }));
     };
     fetchCards();
-  }, [modelsQuery.data]);
+  }, [modelsQuery.data, customModels]);
+
+  const lookupMutation = useMutation({
+    mutationFn: () => lookupModelOption(pipelineId, customModelInput.trim()),
+    onSuccess: (option) => {
+      setCustomModels((prev) => [...prev.filter((m) => m.model !== option.model), option]);
+      setCustomModelInput("");
+    },
+  });
 
   function toggleModel(model: string) {
     setSelectedModels((prev) => {
@@ -288,112 +434,85 @@ export function NewMigrationWizard({
                 <p className="text-13 text-ink-soft">Loading available models…</p>
               ) : (
                 <div className="grid grid-cols-2 gap-3">
-                  {(modelsQuery.data ?? []).map((option) => {
-                    const locked = isLocked(option);
-                    const checked = !locked && selectedModels.has(option.model);
-                    const modelCard = modelCards[option.model];
-                    return (
-                      <label
-                        key={option.model}
-                        className={
-                          "flex items-start gap-3 rounded-control border p-4 transition-colors " +
-                          (locked
-                            ? "cursor-default border-line opacity-60"
-                            : checked
-                              ? "cursor-pointer border-beam bg-beam-soft/40"
-                              : "cursor-pointer border-line hover:border-beam/40")
-                        }
-                      >
-                        <input
-                          type="checkbox"
-                          aria-label={option.model}
-                          className="mt-0.5 accent-beam"
-                          checked={checked}
-                          disabled={locked}
-                          onChange={() => toggleModel(option.model)}
-                        />
-                        <div className="min-w-0 flex-1">
-                          <p className="font-mono text-13 font-medium text-ink">{option.model}</p>
-                          {option.provider && (
-                            <p className="text-12 text-ink-soft capitalize">{option.provider}</p>
-                          )}
-                          {locked && option.provider && (
-                            <div className="mt-2 flex flex-wrap items-center gap-2">
-                              <Badge variant="neutral">API key required</Badge>
-                              <button
-                                type="button"
-                                className="text-12 font-medium text-beam hover:underline"
-                                onClick={(event) => {
-                                  // Inside a <label>: don't let the click
-                                  // also reach the (disabled) checkbox.
-                                  event.preventDefault();
-                                  setKeyDrawerProvider(option.provider);
-                                }}
-                              >
-                                Add API key
-                              </button>
-                            </div>
-                          )}
-                          <p className="mt-1 text-12 text-ink-soft">
-                            {formatCostPer1M(option.input_cost_per_1m)} in /{" "}
-                            {formatCostPer1M(option.output_cost_per_1m)} out per 1M tokens
-                          </p>
-                          <p className="mt-1 text-12 text-ink-soft">
-                            Context: {formatTokens(option.max_input_tokens)} tokens
-                          </p>
-                          <div className="mt-2 flex flex-wrap gap-1">
-                            {option.supports_json_mode && (
-                              <Badge variant="pass">JSON mode</Badge>
-                            )}
-                            {option.supports_function_calling && (
-                              <Badge variant="pass">Tool use</Badge>
-                            )}
-                            {!option.requires_api_key && (
-                              <Badge variant="neutral">No API key</Badge>
-                            )}
-                            {option.transform_descriptions.map((desc) => (
-                              <Badge key={desc} variant="neutral">{desc}</Badge>
-                            ))}
-                          </div>
-                          {modelCard && (
-                            <div className="mt-3 space-y-1 rounded bg-ink-soft/5 p-3">
-                              <p className="text-11 font-medium uppercase tracking-wide text-ink-soft">
-                                Model transform rules
-                              </p>
-                              {modelCard.rules.length > 0 ? (
-                                <ul className="space-y-1 text-12 text-ink">
-                                  {modelCard.rules.map((rule) => (
-                                    <li
-                                      key={rule.name}
-                                      className={
-                                        rule.will_apply
-                                          ? "flex items-start gap-1 text-ink"
-                                          : "flex items-start gap-1 text-ink-soft line-through"
-                                      }
-                                    >
-                                      <span className="mt-0.5 flex-shrink-0">
-                                        {rule.will_apply ? "✓" : "—"}
-                                      </span>
-                                      <span className="min-w-0 flex-1">
-                                        <strong>{rule.name}:</strong> {rule.description}
-                                      </span>
-                                    </li>
-                                  ))}
-                                </ul>
-                              ) : (
-                                <p className="text-12 text-ink-soft italic">No transform rules</p>
-                              )}
-                            </div>
-                          )}
-                        </div>
-                      </label>
-                    );
-                  })}
+                  {(modelsQuery.data ?? []).map((option) => (
+                    <ModelOptionCard
+                      key={option.model}
+                      option={option}
+                      checked={!isLocked(option) && selectedModels.has(option.model)}
+                      locked={isLocked(option)}
+                      modelCard={modelCards[option.model]}
+                      onToggle={() => toggleModel(option.model)}
+                      onRequestKey={() => setKeyDrawerProvider(option.provider)}
+                    />
+                  ))}
                 </div>
               )}
               {!canContinueFromTargetModel && !modelsQuery.isLoading && (
                 <p className="mt-3 text-12 text-ink-soft">Select at least one model to continue.</p>
               )}
+
+              {/* Beyond the curated list: any LiteLLM model string an
+                  aggregator provider (NVIDIA NIM, OpenRouter, ...) actually
+                  offers, not just what's hand-curated above - "any provider"
+                  is this project's own stated design goal (see
+                  WorkspaceApiKey's docstring in apps/api/models.py). */}
+              <div className="mt-4 border-t border-line pt-4">
+                <p className="mb-2 text-13 font-medium text-ink">Add a custom model</p>
+                <p className="mb-3 text-12 text-ink-soft">
+                  Any LiteLLM model string, e.g.{" "}
+                  <code className="font-mono text-11">nvidia_nim/meta/llama-3.1-8b-instruct</code> or{" "}
+                  <code className="font-mono text-11">openrouter/anthropic/claude-3.7-sonnet</code>.
+                </p>
+                <form
+                  className="flex items-start gap-2"
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    if (!customModelInput.trim() || lookupMutation.isPending) return;
+                    lookupMutation.mutate();
+                  }}
+                >
+                  <Input
+                    aria-label="Custom model string"
+                    placeholder="provider/org/model-name"
+                    value={customModelInput}
+                    onChange={(event) => setCustomModelInput(event.target.value)}
+                    className="font-mono"
+                  />
+                  <Button type="submit" variant="secondary" disabled={!customModelInput.trim() || lookupMutation.isPending}>
+                    {lookupMutation.isPending ? "Looking up…" : "Look up"}
+                  </Button>
+                </form>
+                {lookupMutation.isError && (
+                  <p className="mt-2 text-13 text-parity-fail" role="alert">
+                    {lookupMutation.error instanceof ApiError
+                      ? lookupMutation.error.message
+                      : "Couldn't look up that model."}
+                  </p>
+                )}
+                {customModels.length > 0 && (
+                  <div className="mt-3 grid grid-cols-2 gap-3">
+                    {customModels.map((option) => (
+                      <ModelOptionCard
+                        key={option.model}
+                        option={option}
+                        checked={!isLocked(option) && selectedModels.has(option.model)}
+                        locked={isLocked(option)}
+                        modelCard={modelCards[option.model]}
+                        onToggle={() => toggleModel(option.model)}
+                        onRequestKey={() => setKeyDrawerProvider(option.provider)}
+                        onRemove={() => {
+                          setCustomModels((prev) => prev.filter((m) => m.model !== option.model));
+                          setSelectedModels((prev) => {
+                            const next = new Set(prev);
+                            next.delete(option.model);
+                            return next;
+                          });
+                        }}
+                      />
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
 
             {selectedModels.size > 0 && (

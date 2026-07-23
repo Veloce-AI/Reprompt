@@ -246,6 +246,16 @@ export function listModelOptions(pipelineId: number): Promise<ModelOption[]> {
   return request<ModelOption[]>(`/pipelines/${pipelineId}/models`);
 }
 
+/** Looks up any LiteLLM model string, not just the curated list - e.g. an
+ * NVIDIA NIM or OpenRouter model not in the curated subset. Never fails on
+ * an unrecognized string; it comes back with conservative/empty fields
+ * instead (see the endpoint's own docstring). */
+export function lookupModelOption(pipelineId: number, model: string): Promise<ModelOption> {
+  return request<ModelOption>(
+    `/pipelines/${pipelineId}/models/lookup?model=${encodeURIComponent(model)}`
+  );
+}
+
 export function createMigration(
   pipelineId: number,
   migration: MigrationCreate

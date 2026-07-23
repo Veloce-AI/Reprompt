@@ -4091,3 +4091,49 @@ suite 361/361, 2 skipped (`test_code_sample.py` updated: asserts plain
 purity check now verifies via AST imports rather than a raw substring
 search now that the generated *text* legitimately contains the string
 "litellm.completion").
+
+## Custom model lookup + a real credential bug [DONE — 2026-07-23]
+
+**Custom model lookup**: the migration wizard's target-model step was
+limited to `CURATED_MODELS` (~17 hand-picked strings) — no way to target
+any *other* NVIDIA NIM/OpenRouter model those providers actually offer.
+New `GET /pipelines/{id}/models/lookup?model=<string>` (`migrations.py`)
+resolves any LiteLLM model string the same way the curated list already
+does (`_to_option`), degrading to conservative/empty fields rather than
+404ing on an unrecognized string — "any provider" is already this
+project's stated design goal (`models.py`'s `WorkspaceApiKey` docstring).
+Frontend: `new-migration-wizard.tsx` gets an "Add a custom model" input +
+lookup button below the curated grid; successful lookups render with the
+exact same locked/unlocked treatment (including the inline
+`AddApiKeyDrawer` unlock) as curated ones. Extracted the curated grid's
+per-model card markup into a shared `ModelOptionCard` component so the
+curated grid and the custom-lookup list render identically instead of
+duplicating ~130 lines of JSX twice.
+
+**Real bug found investigating a live report** ("no API key configured
+for provider 'ollama'" shown while generating a rubric — an Ollama model
+has never needed a key anywhere else in this codebase): `llm_context.py`'s
+`complete_with_workspace_credentials` — the actual call path behind
+*every* real LLM call in the product (contracts, rubrics, judge, mutator,
+test-prompt) — unconditionally required a saved `WorkspaceApiKey` row for
+every model's provider, including Ollama/vLLM, which
+`reprompt_core.llm.registry`'s own `requires_api_key` already correctly
+reports as `False`. Every other surface (the registry, `CURATED_MODELS`
+filtering, Settings, the wizard) already agreed local models need no
+key — this one function hadn't been told. Fixed: `requires_api_key` is
+checked first; a `False` model skips the "must have a saved row"
+requirement entirely (never raises `ProviderKeyNotConfigured`), while
+still picking up an optional saved row's `base_url` if one exists (e.g. a
+workspace pointing at a remote Ollama instance) — its *absence* just
+stops being an error. This bug affected every product surface that calls
+an Ollama/vLLM model through the standard credential-scoping path, not
+just rubrics.
+
+**Verified**: `apps/api` full suite 210/210 (6 new: 2 lookup-endpoint
+happy/degrade-gracefully tests + 2 404/422 edge cases in
+`test_migrations.py`, 2 regression tests in `test_llm_context.py` — one
+proving a zero-keys workspace can still call `ollama/llama3.1`, one
+proving an optional `base_url` override still gets picked up). `apps/web`
+`tsc --noEmit` clean, full suite 178/178 (wizard's existing 11 tests still
+pass unchanged after the `ModelOptionCard` extraction — confirms it's a
+pure refactor, not a behavior change).

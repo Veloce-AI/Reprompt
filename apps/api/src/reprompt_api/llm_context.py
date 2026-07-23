@@ -76,6 +76,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from reprompt_core.llm.client import LLMResponse, Message, complete
+from reprompt_core.llm.registry import get_model_capabilities
 
 from reprompt_api import models
 from reprompt_api.crypto import decrypt
@@ -116,19 +117,36 @@ def _provider_for_model(model: str) -> str | None:
         return None
 
 
-def _resolve_workspace_key_row(
-    db: Session, workspace: models.Workspace, model: str
-) -> models.WorkspaceApiKey:
-    provider = _provider_for_model(model)
-    if provider is None:
-        raise ProviderKeyNotConfigured(model)
-
-    row = db.scalar(
+def _find_workspace_key_row(
+    db: Session, workspace: models.Workspace, provider: str
+) -> models.WorkspaceApiKey | None:
+    return db.scalar(
         select(models.WorkspaceApiKey).where(
             models.WorkspaceApiKey.workspace_id == workspace.id,
             models.WorkspaceApiKey.provider == provider,
         )
     )
+
+
+def _resolve_workspace_key_row(
+    db: Session, workspace: models.Workspace, model: str
+) -> models.WorkspaceApiKey:
+    """Requires a saved row to exist - only call this for a model whose
+    provider actually needs a credential (see the ``requires_api_key``
+    check in :func:`complete_with_workspace_credentials`). Calling this
+    unconditionally for *every* model, including no-key-required
+    local/self-hosted ones (Ollama, vLLM), was a real bug: it demanded a
+    workspace key even for a model
+    :class:`reprompt_core.llm.registry.ModelCapabilities` itself reports
+    as ``requires_api_key=False`` — every other surface in this codebase
+    (the registry, the curated model list, Settings, the migration
+    wizard) already agrees local models need no key; this function just
+    hadn't been told."""
+    provider = _provider_for_model(model)
+    if provider is None:
+        raise ProviderKeyNotConfigured(model)
+
+    row = _find_workspace_key_row(db, workspace, provider)
     if row is None:
         raise ProviderKeyNotConfigured(provider)
 
@@ -184,7 +202,23 @@ def complete_with_workspace_credentials(
     has no saved key for the required provider — callers should catch
     this specifically to build a "configure it in Settings" error
     response, not ``reprompt_core.llm.client``'s env-var-flavored one.
+
+    A model whose provider needs no credential at all (Ollama, vLLM — see
+    :class:`reprompt_core.llm.registry.ModelCapabilities.requires_api_key`)
+    skips the "must have a saved row" requirement entirely: no
+    :class:`ProviderKeyNotConfigured`, ever, for these. A workspace row
+    for that provider is still picked up and used *if one happens to
+    exist* (e.g. a custom ``base_url`` pointing at a remote Ollama
+    instance), purely as an optional override — its absence is never an
+    error for a no-key-required model.
     """
+    if not get_model_capabilities(model).requires_api_key:
+        provider = _provider_for_model(model)
+        row = _find_workspace_key_row(db, workspace, provider) if provider else None
+        if row and row.base_url:
+            kwargs.setdefault("api_base", row.base_url)
+        return complete(model, messages, **kwargs)
+
     row = _resolve_workspace_key_row(db, workspace, model)
     scoped_key = decrypt(row.encrypted_key)
     if row.base_url:

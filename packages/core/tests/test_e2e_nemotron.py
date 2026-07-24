@@ -73,12 +73,13 @@ def _call_with_backoff(model: str, messages: list[dict[str, Any]], **kwargs: Any
 
     Bounded to 3 attempts total. Keeps the backoff inside the harness rather
     than in client.complete() so existing unit tests are unaffected.
+
+    No per-provider special-casing: response_format is handled by the engine
+    itself (each call site consults reprompt_core.llm.registry.supports_json_mode
+    and omits the param for models that reject it, e.g. Nemotron), so this
+    wrapper is purely transport concerns — timeout + backoff — and works
+    unchanged for any target model.
     """
-    # Nemotron rejects response_format at the API level even though LiteLLM
-    # reports it as supported. Strip it for all nvidia_nim calls — mutation
-    # falls back to the original prompt, which the optimizer handles gracefully.
-    if model.startswith("nvidia_nim/"):
-        kwargs.pop("response_format", None)
     # Cap each call at 90 s — NVIDIA NIM free-tier has no server-side timeout
     # and will silently queue requests indefinitely under load.
     kwargs.setdefault("timeout", 90.0)

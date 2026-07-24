@@ -116,15 +116,47 @@ access to `~/Downloads` or any external file share.
 
 ## Model roles in the harness
 
-The optimizer uses three distinct model roles — do not confuse them:
+The optimizer uses three distinct model roles. By default the smoke test uses
+the same target model for all three (no separate mutator/judge configured):
 
-| Role | Model used | Why |
+| Role | Model used | Notes |
 |---|---|---|
 | **Target / sweep** | `nvidia_nim/nvidia/llama-3.3-nemotron-super-49b-v1` | The model being migrated to — evaluates each candidate prompt |
-| **Mutator** | *(fallback — original prompt)* | Nemotron rejects `response_format`; NVIDIA NIM free-tier connections hang before the 8b mutator can be used reliably. The optimizer falls back to using the original prompt, which the smoke test handles gracefully. For real migrations, configure a cloud mutator (e.g. `claude-haiku-4-5` or `gpt-4o-mini`). |
-| **Judge** | `nvidia_nim/nvidia/llama-3.3-nemotron-super-49b-v1` | Scores candidate outputs — Nemotron handles this without structured output |
+| **Mutator** | same target model | Rewrites prompts. Nemotron can't do native JSON mode (see below), so it's driven via prompted-JSON and parsed free-form |
+| **Judge** | same target model | Not exercised by the smoke test (empty `judge_criteria`) |
 
-Nemotron works fine as target and judge. It cannot be the mutator because mutation requires the model to return a strictly-typed JSON schema (`_RawMutationOutput`), and NVIDIA NIM rejects the `response_format` parameter for this model. Ollama's `qwen2.5:14b` handles mutation locally with no API cost or key.
+### How `response_format` is handled — the model-agnostic design
+
+Some models (notably NVIDIA NIM's Nemotron) **reject the OpenAI
+`response_format` parameter at the API level**, returning a 400
+`UnsupportedParamsError` — even though LiteLLM's `get_supported_openai_params`
+optimistically reports the `nvidia_nim` provider as supporting it. LiteLLM
+answers that question at the *provider* level, but aggregator providers route
+many different underlying models through one provider string, and support
+varies per model.
+
+The engine handles this **per-call, for every model**, with no per-provider
+special-casing in the harness:
+
+1. `reprompt_core.llm.registry.supports_json_mode(model)` returns the *true*
+   answer — it consults a small curated override
+   (`_MODELS_WITHOUT_JSON_MODE`) for models LiteLLM misreports, on top of
+   LiteLLM's own data.
+2. Every structured-output call site (mutator, judge, rubric generator, and
+   the sweep's `structured_output_mode` candidates) uses
+   `registry.json_mode_params(model, schema)`, which spreads
+   `{"response_format": schema}` into the call **only** when the model
+   genuinely supports it.
+3. Models that don't support it still get an explicit "respond with JSON
+   only" instruction in the prompt and are parsed free-form —
+   `response_format` is *enforcement on top of* that instruction, never the
+   only path to JSON.
+
+The upshot: the same test harness runs unchanged against **any** target model
+— a JSON-mode model (GPT, Claude, Gemini) uses native structured output; a
+model that rejects it (Nemotron) transparently falls back to prompted-JSON.
+To add another model that misreports its JSON support, add its string to
+`_MODELS_WITHOUT_JSON_MODE` in `registry.py` — no test change needed.
 
 ---
 

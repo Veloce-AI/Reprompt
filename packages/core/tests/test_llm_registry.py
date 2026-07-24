@@ -81,6 +81,28 @@ def test_supports_json_mode_never_raises_for_unrecognized_model() -> None:
     assert supports_json_mode("totally-not-a-real-model-xyz-123") is False
 
 
+def test_supports_json_mode_false_for_curated_override_model() -> None:
+    """LiteLLM over-optimistically reports response_format support for the
+    nvidia_nim provider, but Nemotron 49b rejects it at runtime — the curated
+    override in registry must correct that to False so callers fall back to
+    prompted-JSON instead of sending a param the model 400s on."""
+    assert supports_json_mode("nvidia_nim/nvidia/llama-3.3-nemotron-super-49b-v1") is False
+
+
+def test_json_mode_params_omits_response_format_for_override_model() -> None:
+    from pydantic import BaseModel
+
+    from reprompt_core.llm.registry import json_mode_params
+
+    class _Schema(BaseModel):
+        pass
+
+    # A model that genuinely supports it keeps the param...
+    assert json_mode_params("gpt-4o", _Schema) == {"response_format": _Schema}
+    # ...one that doesn't gets an empty dict (prompted-JSON fallback).
+    assert json_mode_params("nvidia_nim/nvidia/llama-3.3-nemotron-super-49b-v1", _Schema) == {}
+
+
 # ---------------------------------------------------------------------------
 # get_model_capabilities
 # ---------------------------------------------------------------------------

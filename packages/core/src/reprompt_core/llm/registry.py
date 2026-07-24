@@ -71,6 +71,7 @@ __all__ = [
     "ModelCapabilities",
     "get_model_capabilities",
     "supports_json_mode",
+    "json_mode_params",
     "missing_credential_env_vars",
 ]
 
@@ -92,6 +93,25 @@ _NO_KEY_PROVIDERS = frozenset({"ollama", "ollama_chat", "vllm"})
 # MissingAPIKeyError for local models, so any missing env var ending in one
 # of these suffixes is not treated as a credential requirement.
 _NON_CREDENTIAL_ENV_SUFFIXES = ("_API_BASE", "_BASE_URL", "_ENDPOINT")
+
+# Curated correction for models LiteLLM *over-optimistically* reports as
+# supporting ``response_format``. ``litellm.get_supported_openai_params``
+# answers at the **provider** level, which is wrong for aggregator providers
+# (``nvidia_nim``, ``openrouter``, ...) that route many unrelated underlying
+# models through one provider string: some of those models genuinely reject
+# ``response_format`` at runtime (NVIDIA NIM returns a 400
+# ``UnsupportedParamsError`` for it) even though LiteLLM claims the provider
+# supports it. Each entry here is a specific model string verified live
+# against the provider's API to reject the param — same "small hand-curated
+# override on top of LiteLLM's own data" pattern as ``_NO_KEY_PROVIDERS``
+# above. Callers use :func:`supports_json_mode` / :func:`json_mode_params`
+# and get a prompted-JSON fallback for these models automatically, so the
+# whole engine stays model-agnostic (see ``docs/E2E_TESTING.md``).
+_MODELS_WITHOUT_JSON_MODE = frozenset(
+    {
+        "nvidia_nim/nvidia/llama-3.3-nemotron-super-49b-v1",
+    }
+)
 
 
 def missing_credential_env_vars(model: str) -> list[str]:
@@ -129,18 +149,41 @@ def _provider_name(model: str) -> str | None:
 
 
 def supports_json_mode(model: str) -> bool:
-    """Whether LiteLLM reports ``response_format`` as a supported param for ``model``.
+    """Whether ``model`` genuinely accepts a ``response_format`` param.
+
+    Leans on ``litellm.get_supported_openai_params`` for the general case,
+    but consults :data:`_MODELS_WITHOUT_JSON_MODE` first to correct LiteLLM's
+    provider-level over-reporting for specific aggregator-hosted models that
+    reject the param at runtime (see that set's own comment).
 
     Used both by :mod:`reprompt_core.llm.client` (to fail fast with a clear
     error instead of an opaque provider error) and directly by callers that
-    want to branch ahead of time (e.g. the future rubric generator choosing
-    between JSON mode and a prompted-JSON fallback).
+    want to branch ahead of time between native JSON mode and a prompted-JSON
+    fallback (the mutator, judge, rubric generator, and sweep all do this via
+    :func:`json_mode_params`).
     """
+    if model in _MODELS_WITHOUT_JSON_MODE:
+        return False
     try:
         supported = litellm.get_supported_openai_params(model=model)
     except Exception:
         return False
     return "response_format" in (supported or [])
+
+
+def json_mode_params(model: str, response_format: _T) -> dict[str, _T]:
+    """``{"response_format": schema}`` if ``model`` supports it, else ``{}``.
+
+    A one-liner so every LLM call site that wants structured JSON output can
+    stay model-agnostic: spread the result into the ``call`` kwargs, and the
+    ``response_format`` param is sent only to models that actually accept it.
+    Models that don't still receive the caller's in-prompt "respond with JSON
+    only" instruction and are parsed free-form — ``response_format`` is
+    enforcement on top of that instruction, never the only path to JSON. This
+    keeps a single model (e.g. NVIDIA NIM's Nemotron) usable as both a
+    migration target and a mutator/judge without special-casing at each site.
+    """
+    return {"response_format": response_format} if supports_json_mode(model) else {}
 
 
 @dataclass(frozen=True)

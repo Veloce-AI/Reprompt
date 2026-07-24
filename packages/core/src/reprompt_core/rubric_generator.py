@@ -85,6 +85,8 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from reprompt_core.deterministic import DeterministicCheck, parse_deterministic_checks
 from reprompt_core.llm.client import LLMResponse
+from reprompt_core.llm.json_extract import extract_json
+from reprompt_core.llm.registry import json_mode_params
 
 __all__ = [
     "StageOutputSample",
@@ -285,7 +287,7 @@ def _translate_and_validate_checks(
 def _parse_raw_output(content: str) -> tuple[_RawRubricOutput | None, str | None]:
     """Returns ``(parsed, None)`` on success or ``(None, error_message)`` on failure. Never raises."""
     try:
-        return _RawRubricOutput.model_validate_json(content), None
+        return _RawRubricOutput.model_validate_json(extract_json(content)), None
     except (ValidationError, ValueError) as exc:
         return None, str(exc)
 
@@ -457,13 +459,17 @@ def generate_rubric(
     coerced = [s if isinstance(s, StageOutputSample) else StageOutputSample.model_validate(s) for s in samples]
     limited = coerced[:max_samples]
 
+    # Model-agnostic JSON handling: response_format only where accepted; the
+    # prompt already instructs JSON-only output for the fallback path.
+    json_mode = json_mode_params(generator_model, _RawRubricOutput)
+
     messages = _build_messages(stage_name, stage_model, prompt_template, limited)
     response = call(
         generator_model,
         messages,
         temperature=temperature,
         timeout=timeout,
-        response_format=_RawRubricOutput,
+        **json_mode,
     )
 
     raw_output, parse_error = _parse_raw_output(response.content)
@@ -493,7 +499,7 @@ def generate_rubric(
             retry_messages,
             temperature=temperature,
             timeout=timeout,
-            response_format=_RawRubricOutput,
+            **json_mode,
         )
         cost_usd = _sum_optional(cost_usd, retry_response.cost_usd)
         latency_ms = latency_ms + retry_response.latency_ms

@@ -59,10 +59,9 @@ FIXTURE_PATH = _FIXTURE_MAP.get(_fixture_key, _FIXTURE_DIR / f"{_fixture_key}.tx
 # ---------------------------------------------------------------------------
 
 def _call_with_backoff(model: str, messages: list[dict[str, Any]], **kwargs: Any) -> LLMResponse:
-    # Nemotron rejects response_format at the API level — strip for all
-    # nvidia_nim calls so the optimizer falls back gracefully on mutation.
-    if model.startswith("nvidia_nim/"):
-        kwargs.pop("response_format", None)
+    # response_format is handled by the engine (each call site consults
+    # supports_json_mode and omits it for models that reject it), so this
+    # wrapper is purely transport: timeout + backoff. Works for any model.
     kwargs.setdefault("timeout", 90.0)
     for attempt in range(3):
         try:

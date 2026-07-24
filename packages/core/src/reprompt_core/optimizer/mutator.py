@@ -37,6 +37,8 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from reprompt_core.judge import JudgeResult
 from reprompt_core.llm.client import LLMResponse
+from reprompt_core.llm.json_extract import extract_json
+from reprompt_core.llm.registry import json_mode_params
 from reprompt_core.scoring import CompositeScore
 
 __all__ = [
@@ -112,7 +114,7 @@ class _RawMutationOutput(BaseModel):
 def _parse_raw_output(content: str) -> tuple[_RawMutationOutput | None, str | None]:
     """Returns ``(parsed, None)`` on success or ``(None, error_message)`` on failure. Never raises."""
     try:
-        return _RawMutationOutput.model_validate_json(content), None
+        return _RawMutationOutput.model_validate_json(extract_json(content)), None
     except (ValidationError, ValueError) as exc:
         return None, str(exc)
 
@@ -329,7 +331,7 @@ def _build_critique_messages(
 
 def _parse_critique_output(content: str) -> tuple[_RawCritiqueOutput | None, str | None]:
     try:
-        parsed = _RawCritiqueOutput.model_validate_json(content)
+        parsed = _RawCritiqueOutput.model_validate_json(extract_json(content))
     except (ValidationError, ValueError) as exc:
         return None, str(exc)
     if not parsed.refined_prompt.strip():
@@ -388,13 +390,16 @@ def critique_and_refine(
     coerced = [e if isinstance(e, MutationExample) else MutationExample.model_validate(e) for e in original_examples]
     model_for_call = mutator_model or target_model
 
+    # Same model-agnostic JSON handling as generate_prompt_mutations.
+    json_mode = json_mode_params(model_for_call, _RawCritiqueOutput)
+
     messages = _build_critique_messages(prompt_variant, score, coerced, rubric, target_model, judge_result=judge_result)
     response = call(
         model_for_call,
         messages,
         temperature=temperature,
         timeout=timeout,
-        response_format=_RawCritiqueOutput,
+        **json_mode,
     )
 
     raw_output, parse_error = _parse_critique_output(response.content)
@@ -412,7 +417,7 @@ def critique_and_refine(
             retry_messages,
             temperature=temperature,
             timeout=timeout,
-            response_format=_RawCritiqueOutput,
+            **json_mode,
         )
         cost_usd = _sum_optional(cost_usd, retry_response.cost_usd)
         latency_ms = latency_ms + retry_response.latency_ms
@@ -487,10 +492,11 @@ def select_few_shot_examples(
         {"role": "user", "content": f"PROMPT:\n{prompt}\n\n{numbered}"},
     ]
 
+    json_mode = json_mode_params(model, _RawFewShotSelection)
     for _attempt in range(2):  # initial + one retry, same convention as elsewhere in this module
         try:
-            response = call(model, messages, temperature=temperature, timeout=timeout, response_format=_RawFewShotSelection)
-            parsed = _RawFewShotSelection.model_validate_json(response.content)
+            response = call(model, messages, temperature=temperature, timeout=timeout, **json_mode)
+            parsed = _RawFewShotSelection.model_validate_json(extract_json(response.content))
         except Exception:  # noqa: BLE001 - any failure here (transport or parse) just falls through to retry/fallback
             continue
         selected = [coerced[i - 1] for i in parsed.indices if 1 <= i <= len(coerced)]
@@ -552,13 +558,19 @@ def generate_prompt_mutations(
     coerced = [e if isinstance(e, MutationExample) else MutationExample.model_validate(e) for e in examples]
     model_for_call = mutator_model or target_model
 
+    # Send response_format only to models that genuinely accept it; the
+    # system prompt already instructs "Respond with JSON only", so a model
+    # without native JSON mode still returns parseable JSON that
+    # _parse_raw_output handles. Keeps the mutator model-agnostic.
+    json_mode = json_mode_params(model_for_call, _RawMutationOutput)
+
     messages = _build_messages(prompt_template, target_model, rubric, coerced, num_variants)
     response = call(
         model_for_call,
         messages,
         temperature=temperature,
         timeout=timeout,
-        response_format=_RawMutationOutput,
+        **json_mode,
     )
 
     raw_output, parse_error = _parse_raw_output(response.content)
@@ -578,7 +590,7 @@ def generate_prompt_mutations(
             retry_messages,
             temperature=temperature,
             timeout=timeout,
-            response_format=_RawMutationOutput,
+            **json_mode,
         )
         cost_usd = _sum_optional(cost_usd, retry_response.cost_usd)
         latency_ms = latency_ms + retry_response.latency_ms

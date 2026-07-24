@@ -656,6 +656,13 @@ export function listSystemModels(): Promise<SystemModel[]> {
 // Phase 5 — Contract Mining (assertions)
 // ---------------------------------------------------------------------------
 
+export interface AssertionCounterexample {
+  input: unknown;
+  output: string;
+  kind: string;
+  reason: string;
+}
+
 export interface AssertionOut {
   id: number;
   stage_id: number;
@@ -667,7 +674,7 @@ export interface AssertionOut {
   source: "mined" | "manual" | "counterexample";
   noise_floor: number | null;
   entropy: number | null;
-  counterexamples: unknown[];
+  counterexamples: AssertionCounterexample[];
   version: number;
   created_at: string;
 }

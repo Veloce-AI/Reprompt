@@ -84,6 +84,8 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from reprompt_core.llm import client as llm_client
+from reprompt_core.llm.json_extract import extract_json
+from reprompt_core.llm.registry import json_mode_params
 
 __all__ = [
     "JudgeCriterion",
@@ -290,11 +292,14 @@ def _run_judge_call(
         messages,
         temperature=temperature,
         timeout=timeout,
-        response_format=_JudgeCallOutput,
+        # Model-agnostic: send response_format only where it's genuinely
+        # accepted. The judge prompt already demands JSON-only output, so a
+        # model without native JSON mode is still parsed free-form below.
+        **json_mode_params(model, _JudgeCallOutput),
     )
 
     try:
-        parsed = _JudgeCallOutput.model_validate_json(response.content)
+        parsed = _JudgeCallOutput.model_validate_json(extract_json(response.content))
     except (ValidationError, ValueError) as exc:
         raise JudgeResponseError(
             f"Judge model '{model}' returned a response that doesn't match the "

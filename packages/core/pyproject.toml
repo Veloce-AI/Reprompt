@@ -21,3 +21,6 @@ dev = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+markers = [
+    "live: marks tests that make real network calls (skip unless the required API key is set)",
+]

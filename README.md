@@ -210,7 +210,7 @@ Never commit a real key to git or paste it into a prompt/chat.
 | Backend data | SQLAlchemy, Alembic | ORM + versioned schema migrations. SQLite for now, works with Postgres too — nothing in the schema is SQLite-only |
 | Core engine | Python, zero FastAPI imports | `packages/core` — the pipeline/scoring/optimizer logic, kept runnable headless (CLI, tests, no web server needed) |
 | Validation & data shapes | Pydantic v2 | Every internal data shape (trace schema, rubric checks, scoring results, optimizer types) is a typed, validated Pydantic model — not a loose dict |
-| Talking to AI models | LiteLLM | One call interface that works with OpenAI, Anthropic, Gemini, or a self-hosted model (Ollama/vLLM/etc.) — nothing in the codebase special-cases a provider |
+| Talking to AI models | LiteLLM | One call interface that works with OpenAI, Anthropic, Gemini, NVIDIA NIM, or a self-hosted model (Ollama/vLLM/etc.) — nothing in the codebase special-cases a provider. Structured-JSON output is capability-aware: models that support `response_format` use it natively; models that don't (e.g. Nemotron) fall back to prompted-JSON and lenient parsing, so any model works as target, mutator, or judge |
 | Secrets at rest | `cryptography` (Fernet) | Encrypts each workspace's saved API keys in the database — never stored in plaintext |
 | "Does this answer make sense" scoring | Rule-based checks (deterministic, free) + a local similarity model (`bge-m3` via `sentence-transformers`, no API key needed) + an AI judge (pairwise, bias-controlled) | The three-way scoring described above |
 | Parameter search | Optuna | Searches the *numeric/categorical* knobs around a prompt (temperature, output format, structured-output mode) — not prompt text itself. Currently plain grid search, deliberately routed through Optuna's API so it can swap to a smarter search strategy later without changing the calling code |
@@ -240,15 +240,20 @@ packages/core/                    The engine — no FastAPI, runs headless in te
   src/reprompt_core/
     optimizer/loop.py             run_optimizer() — the main search loop
     optimizer/mutator.py          Prompt mutation (rewrites + Prism critique-refine)
-    optimizer/scoring.py          Three-way scoring: rules + embedding sim + AI judge
+    scoring.py                    Three-way scoring: rules + embedding sim + AI judge
+    judge.py                      Pairwise AI judge (position-swapped to kill order bias)
+    rubric_generator.py           Learns "what good looks like" from examples
     llm/client.py                 complete() — one function, every provider via LiteLLM
-    llm/registry.py               Model capability facts (cost, context, JSON mode, key needed)
+    llm/registry.py               Model capability facts (cost, context, JSON mode, key needed);
+                                  curated override corrects models LiteLLM misreports
+    llm/json_extract.py           Lenient JSON extractor for models without native JSON mode
+                                  (strips markdown fences / preamble / trailing junk)
     llm/model_select.py           Auto-picks judge/mutator model from what's available
     importers/query_log.py        Parses real pipeline trace files into TraceFile
-    rubric_generator.py           Learns "what good looks like" from examples
   tests/
     test_e2e_nemotron.py          End-to-end smoke test: real NVIDIA NIM calls on a
                                   real production trace — skipped unless NVIDIA_NIM_API_KEY set
+    test_json_extract.py          Unit tests for the prompted-JSON extractor
     fixtures/query_log/           Two committed real trace files (3-stage CI fixture +
                                   32-stage demo fixture) from a legal/tax RAG pipeline
 

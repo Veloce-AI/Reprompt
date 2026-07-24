@@ -151,6 +151,12 @@ special-casing in the harness:
    only" instruction in the prompt and are parsed free-form —
    `response_format` is *enforcement on top of* that instruction, never the
    only path to JSON.
+4. That free-form output is run through `reprompt_core.llm.json_extract`
+   before parsing. Models on the prompted-JSON path routinely decorate their
+   reply (markdown ```` ```json ```` fences, a preamble like "Here are the
+   variants:", or a stray trailing brace) — the extractor strips that and
+   returns the first balanced JSON value, so strict `model_validate_json`
+   still succeeds. It's a no-op for already-clean native-JSON-mode output.
 
 The upshot: the same test harness runs unchanged against **any** target model
 — a JSON-mode model (GPT, Claude, Gemini) uses native structured output; a
